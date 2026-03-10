@@ -68,6 +68,22 @@ RUN --mount=type=secret,id=gh_token,required=false \
         pip install --no-cache-dir "git+https://github.com/BWCoast/tax-nor.git"; \
     fi
 
+# ── Python deps: blockchain-reader ────────────────────────────────────────────
+# Provides the blockchain_reader Python package, which is imported by
+# taxspine-xrpl-nor at runtime to fetch XRPL account transactions.
+# Must be installed AFTER tax-spine (blockchain-reader depends on tax-spine).
+#
+# Same token / cache-busting pattern as tax-spine above.
+ARG BLOCKCHAIN_READER_SHA=unknown
+RUN --mount=type=secret,id=gh_token,required=false \
+    echo "# blockchain-reader HEAD: ${BLOCKCHAIN_READER_SHA}" && \
+    TOKEN=$(cat /run/secrets/gh_token 2>/dev/null || echo "") && \
+    if [ -n "$TOKEN" ]; then \
+        pip install --no-cache-dir "git+https://${TOKEN}@github.com/BWCoast/blockchain-reader.git"; \
+    else \
+        pip install --no-cache-dir "git+https://github.com/BWCoast/blockchain-reader.git"; \
+    fi
+
 # ── Application source ────────────────────────────────────────────────────────
 # Copied after deps so that source edits don't invalidate the dep layers.
 COPY ui/         ./ui/

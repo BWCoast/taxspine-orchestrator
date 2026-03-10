@@ -1,7 +1,8 @@
 # Companion .dockerignore for Dockerfile.local (Option B local build).
 # Docker uses this file automatically when building with -f Dockerfile.local.
 # It is identical to .dockerignore EXCEPT vendor/ is NOT excluded —
-# Dockerfile.local needs vendor/tax-nor/ in the build context.
+# Dockerfile.local needs vendor/tax-nor/ and vendor/blockchain-reader/ in the
+# build context (both are copied by build-local.ps1 before the docker build).
 
 __pycache__
 *.pyc
@@ -26,4 +27,5 @@ ui.html
 
 tests/
 
-# vendor/ is intentionally NOT listed here so Dockerfile.local can COPY it.
+# vendor/ is intentionally NOT listed here so Dockerfile.local can COPY
+# vendor/tax-nor/ and vendor/blockchain-reader/ from the build context.

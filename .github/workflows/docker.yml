@@ -104,6 +104,27 @@ jobs:
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "tax-nor HEAD: ${SHA}"
 
+      # ── Fetch blockchain-reader HEAD SHA (cache-busting) ────────────────────
+      # Same pattern as tax-nor above.  blockchain-reader is imported by
+      # taxspine-xrpl-nor at runtime; its SHA must change the Docker layer
+      # cache key independently of tax-nor.
+      - name: Fetch blockchain-reader HEAD SHA
+        id: blockchain_reader_sha
+        env:
+          GH_READ_TOKEN: ${{ secrets.GH_READ_TOKEN }}
+        run: |
+          if [ -n "$GH_READ_TOKEN" ]; then
+            SHA=$(curl -sf \
+              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+              "https://api.github.com/repos/BWCoast/blockchain-reader/commits/main" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'][:12])" \
+              2>/dev/null || echo "unknown")
+          else
+            SHA="unknown"
+          fi
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "blockchain-reader HEAD: ${SHA}"
+
       # ── Build and push ──────────────────────────────────────────────────────
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -121,6 +142,7 @@ jobs:
           cache-to:   type=gha,mode=max
           build-args: |
             TAXNOR_SHA=${{ steps.taxnor_sha.outputs.sha }}
+            BLOCKCHAIN_READER_SHA=${{ steps.blockchain_reader_sha.outputs.sha }}
           # ── tax-nor auth ────────────────────────────────────────────────────
           # GH_READ_TOKEN is a repository secret containing a GitHub PAT with
           # read access to the tax-nor repo.

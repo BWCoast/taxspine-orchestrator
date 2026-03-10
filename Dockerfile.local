@@ -40,6 +40,13 @@ COPY vendor/tax-nor/ /tmp/tax-nor/
 RUN pip install --no-cache-dir /tmp/tax-nor \
     && rm -rf /tmp/tax-nor
 
+# ── Python deps: blockchain-reader from local vendor copy ─────────────────────
+# The build-local.ps1 script copies blockchain-reader to vendor/blockchain-reader/
+# before calling docker build.  Must be installed AFTER tax-spine (its dependency).
+COPY vendor/blockchain-reader/ /tmp/blockchain-reader/
+RUN pip install --no-cache-dir /tmp/blockchain-reader \
+    && rm -rf /tmp/blockchain-reader
+
 # ── Application source ────────────────────────────────────────────────────────
 COPY ui/         ./ui/
 COPY main.py     .
