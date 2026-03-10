@@ -44,8 +44,9 @@ class JobService:
         *,
         status: JobStatus | None = None,
         country: Country | None = None,
+        query: str | None = None,
     ) -> list[Job]:
-        return self.store.list(status=status, country=country)
+        return self.store.list(status=status, country=country, query=query)
 
     # ── Execution pipeline ───────────────────────────────────────────────
 

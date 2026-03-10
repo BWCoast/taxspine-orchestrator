@@ -27,19 +27,20 @@ pytest
 | GET    | `/jobs/{job_id}`              | Get a single job by ID               |
 | POST   | `/jobs/{job_id}/start`        | Execute the job synchronously        |
 | GET    | `/jobs/{job_id}/files`        | List output files for a job          |
-| GET    | `/jobs/{job_id}/files/{kind}` | Get a single output file by kind     |
+| GET    | `/jobs/{job_id}/files/{kind}` | Download a single output file        |
 
 ### Example — create and start a job
 
 ```bash
-# 1. Create
+# 1. Create (case_name is optional — handy for dashboard display)
 curl -s -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
   -d '{
     "xrpl_accounts": ["rEXAMPLE1"],
     "tax_year": 2025,
     "country": "norway",
-    "csv_files": ["data/generic-events-2025.csv"]
+    "csv_files": ["data/generic-events-2025.csv"],
+    "case_name": "2025 Norway – main wallets"
   }'
 
 # 2. Start (replace JOB_ID with the id from step 1)
@@ -48,7 +49,8 @@ curl -s -X POST http://localhost:8000/jobs/JOB_ID/start
 
 ### Filtering jobs
 
-`GET /jobs` accepts optional query parameters `status` and `country`:
+`GET /jobs` accepts optional query parameters `status`, `country`, and
+`query`:
 
 ```bash
 # Only completed jobs
@@ -59,23 +61,43 @@ curl -s 'http://localhost:8000/jobs?country=norway'
 
 # Combine filters
 curl -s 'http://localhost:8000/jobs?status=failed&country=uk'
+
+# Free-text search against case_name (case-insensitive substring)
+curl -s 'http://localhost:8000/jobs?query=wallets'
+
+# All three filters combined
+curl -s 'http://localhost:8000/jobs?status=completed&country=norway&query=main'
 ```
 
 Valid values — `status`: `pending`, `running`, `completed`, `failed`;
-`country`: `norway`, `uk`.  Invalid values return `422`.
+`country`: `norway`, `uk`.  Invalid enum values return `422`.
+`query` is a free-text substring match against `case_name`; jobs without
+a `case_name` are excluded when `query` is provided.
 
-### Listing output files
+### Listing and downloading output files
 
 ```bash
 # All output files for a job (JSON map of kind → path)
 curl -s http://localhost:8000/jobs/JOB_ID/files
 
-# Single file by kind (gains | wealth | summary | log)
-curl -s http://localhost:8000/jobs/JOB_ID/files/gains
+# Download a specific file (gains | wealth | summary | log)
+curl -OJ http://localhost:8000/jobs/JOB_ID/files/gains
 ```
 
-The `/files/{kind}` endpoint returns `{"kind", "path", "exists_on_disk"}`.
-A future iteration will return the file content directly via `FileResponse`.
+`GET /jobs/{id}/files` returns a JSON map of populated kinds → paths.
+
+`GET /jobs/{id}/files/{kind}` streams the actual file with appropriate
+headers:
+
+| Kind      | Content-Type       | Filename pattern           |
+|-----------|--------------------|----------------------------|
+| `gains`   | `text/csv`         | `gains-<job_id>.csv`       |
+| `wealth`  | `text/csv`         | `wealth-<job_id>.csv`      |
+| `summary` | `application/json` | `summary-<job_id>.json`    |
+| `log`     | `text/plain`       | `log-<job_id>.txt`         |
+
+Returns `404` if the job does not exist, the path is not recorded, or the
+file is missing from disk.
 
 ## Job execution
 
@@ -99,6 +121,10 @@ are empty the job fails immediately.
 | empty         | non-empty | CSV-only: tax CLI only (reader skipped)        |
 | non-empty     | non-empty | Combined: reader + tax CLI with both inputs    |
 | empty         | empty     | Immediate FAILED — no inputs                   |
+
+Jobs also accept an optional `case_name` string — a human-friendly label
+(e.g. `"2025 Norway – main wallets"`) that makes it easier to distinguish
+jobs in a dashboard.  It has no effect on execution and defaults to `null`.
 
 ### Pipeline steps
 

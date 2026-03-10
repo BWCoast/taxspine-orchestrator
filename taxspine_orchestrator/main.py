@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from .config import settings
 from .models import Country, Job, JobInput, JobStatus
@@ -48,6 +49,20 @@ _KIND_TO_FIELD: Dict[FileKind, str] = {
     FileKind.LOG: "log_path",
 }
 
+_KIND_MEDIA_TYPE: Dict[FileKind, str] = {
+    FileKind.GAINS: "text/csv",
+    FileKind.WEALTH: "text/csv",
+    FileKind.SUMMARY: "application/json",
+    FileKind.LOG: "text/plain",
+}
+
+_KIND_EXTENSION: Dict[FileKind, str] = {
+    FileKind.GAINS: "csv",
+    FileKind.WEALTH: "csv",
+    FileKind.SUMMARY: "json",
+    FileKind.LOG: "txt",
+}
+
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
@@ -68,9 +83,13 @@ def create_job(job_input: JobInput) -> Job:
 def list_jobs(
     status: Optional[JobStatus] = Query(default=None, description="Filter by job status"),
     country: Optional[Country] = Query(default=None, description="Filter by country"),
+    query: Optional[str] = Query(
+        default=None,
+        description="Free-text search against case_name (case-insensitive substring match)",
+    ),
 ) -> list[Job]:
-    """List jobs, optionally filtered by status and/or country."""
-    return _job_service.list_jobs(status=status, country=country)
+    """List jobs, optionally filtered by status, country, and/or case_name text."""
+    return _job_service.list_jobs(status=status, country=country, query=query)
 
 
 @app.get("/jobs/{job_id}", response_model=Job, tags=["jobs"])
@@ -113,18 +132,19 @@ def list_job_files(job_id: str) -> dict:
 
 
 @app.get("/jobs/{job_id}/files/{kind}", tags=["files"])
-def get_job_file(job_id: str, kind: FileKind) -> dict:
-    """Resolve a single output file for *job_id*.
+def get_job_file(job_id: str, kind: FileKind) -> FileResponse:
+    """Stream a single output file for *job_id*.
 
-    Returns the file path and confirms the file exists on disk.
-    In a future iteration this will return a ``FileResponse`` for direct
-    download.
+    Returns the file with an appropriate ``Content-Type`` and a
+    ``Content-Disposition`` header so browsers/curl offer a sensible
+    filename (e.g. ``gains-<job_id>.csv``).
 
-    Raises 404 if the job does not exist or the requested kind has no
-    path recorded.
+    Raises 404 if:
+    - The job does not exist.
+    - The requested kind has no path recorded (``None``).
+    - The path is recorded but the file does not exist on disk.
     """
-    # TODO: Replace the JSON response with ``FileResponse`` once we decide
-    #       on content-disposition headers and streaming behaviour.
+    # TODO: Add auth/permission checks before serving files.
     job = _job_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -137,5 +157,18 @@ def get_job_file(job_id: str, kind: FileKind) -> dict:
             detail=f"No {kind.value} file recorded for this job",
         )
 
-    exists = Path(path_str).is_file()
-    return {"kind": kind.value, "path": path_str, "exists_on_disk": exists}
+    file_path = Path(path_str)
+    if not file_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"File not found on disk: {path_str}",
+        )
+
+    ext = _KIND_EXTENSION[kind]
+    filename = f"{kind.value}-{job_id}.{ext}"
+
+    return FileResponse(
+        path=file_path,
+        media_type=_KIND_MEDIA_TYPE[kind],
+        filename=filename,
+    )

@@ -31,13 +31,23 @@ class InMemoryJobStore:
         *,
         status: JobStatus | None = None,
         country: Country | None = None,
+        query: str | None = None,
     ) -> List[Job]:
-        """Return stored jobs, optionally filtered by *status* and/or *country*."""
+        """Return stored jobs, optionally filtered by *status*, *country*,
+        and/or a free-text *query* matched against ``case_name``.
+        """
         jobs = self._jobs.values()
         if status is not None:
             jobs = [j for j in jobs if j.status == status]
         if country is not None:
             jobs = [j for j in jobs if j.input.country == country]
+        if query is not None:
+            query_lower = query.lower()
+            jobs = [
+                j for j in jobs
+                if j.input.case_name is not None
+                and query_lower in j.input.case_name.lower()
+            ]
         return list(jobs)
 
     def update_status(self, job_id: str, status: JobStatus) -> Job | None:

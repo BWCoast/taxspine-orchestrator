@@ -50,6 +50,14 @@ class JobInput(BaseModel):
             "by the orchestrator."
         ),
     )
+    case_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-friendly label for the job, e.g. "
+            "'2025 Norway – main wallets'.  Useful for dashboard display "
+            "and free-text filtering."
+        ),
+    )
 
 
 class JobOutput(BaseModel):
