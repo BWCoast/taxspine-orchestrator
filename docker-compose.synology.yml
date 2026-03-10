@@ -20,9 +20,10 @@
 #   → Build the project → containers start automatically.
 #
 # HOW TO UPDATE (pull new image):
-#   Container Manager → Project → taxspine → Action → Pull and redeploy
-#   OR via SSH:
-#     cd /volume1/docker/taxspine && docker compose -f docker-compose.synology.yml pull && docker compose -f docker-compose.synology.yml up -d
+#   Automatic: Watchtower (see service below) checks every 5 min and redeploys.
+#   Manual:    Container Manager → Project → taxspine → Action → Stop
+#              Container Manager → Image → bwcoast/taxspine-orchestrator → Update
+#              Container Manager → Project → taxspine → Action → Build
 #
 # ACCESSING THE DASHBOARD:
 #   http://<NAS-IP>:8000/ui/
@@ -105,3 +106,34 @@ services:
     #
     # Cloudflare Tunnel: point the tunnel at localhost:8000 on the NAS.
     # No additional Docker network config required.
+
+  # ── Watchtower — automatic image updates ─────────────────────────────────────
+  # Watchtower polls ghcr.io every 5 minutes.  When GitHub Actions pushes a new
+  # taxspine-orchestrator image, Watchtower pulls it and restarts the container
+  # automatically.  No SSH, no manual steps needed after a git push.
+  #
+  # It only watches the taxspine-orchestrator container (via the 'command' arg).
+  # Other containers on the NAS are left untouched.
+  watchtower:
+    image: containrrr/watchtower
+    container_name: taxspine-watchtower
+    restart: unless-stopped
+    volumes:
+      # Needs the Docker socket to manage containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      TZ: Europe/Oslo
+      # How often to check for new images (seconds). 300 = every 5 minutes.
+      WATCHTOWER_POLL_INTERVAL: "300"
+      # Remove old image versions after pulling a new one (keeps disk clean).
+      WATCHTOWER_CLEANUP: "true"
+      # Send a notification to container logs when an update is applied.
+      WATCHTOWER_NOTIFICATIONS: "shoutrrr"
+      WATCHTOWER_NOTIFICATION_URL: ""   # leave blank — logs only
+    # Only watch the orchestrator container, not everything on the NAS.
+    command: taxspine-orchestrator
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
