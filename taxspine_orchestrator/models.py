@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
@@ -58,6 +59,14 @@ class JobInput(BaseModel):
             "and free-text filtering."
         ),
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "When True the job skips actual CLI execution and only writes "
+            "an execution log listing the commands that *would* have been "
+            "run.  Useful for testing and previewing the pipeline."
+        ),
+    )
 
 
 class JobOutput(BaseModel):
@@ -77,3 +86,5 @@ class Job(BaseModel):
     status: JobStatus
     input: JobInput
     output: JobOutput = Field(default_factory=JobOutput)
+    created_at: datetime
+    updated_at: datetime

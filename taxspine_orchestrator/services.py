@@ -15,6 +15,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import settings
@@ -33,7 +34,14 @@ class JobService:
     def create_job(self, job_input: JobInput) -> Job:
         """Create a new job in PENDING state."""
         job_id = str(uuid.uuid4())
-        job = Job(id=job_id, status=JobStatus.PENDING, input=job_input)
+        now = datetime.now(timezone.utc)
+        job = Job(
+            id=job_id,
+            status=JobStatus.PENDING,
+            input=job_input,
+            created_at=now,
+            updated_at=now,
+        )
         return self.store.add(job)
 
     def get_job(self, job_id: str) -> Job | None:
@@ -45,8 +53,16 @@ class JobService:
         status: JobStatus | None = None,
         country: Country | None = None,
         query: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[Job]:
-        return self.store.list(status=status, country=country, query=query)
+        return self.store.list(
+            status=status,
+            country=country,
+            query=query,
+            limit=limit,
+            offset=offset,
+        )
 
     # ── Execution pipeline ───────────────────────────────────────────────
 
@@ -63,6 +79,10 @@ class JobService:
 
         Only PENDING jobs can be started.  If the job is already RUNNING,
         COMPLETED, or FAILED the call returns the job unchanged (idempotent).
+
+        When ``job.input.dry_run`` is True the pipeline logs which commands
+        *would* be executed but does not call any subprocess.  The job
+        completes immediately with only ``log_path`` populated.
         """
         job = self.store.get(job_id)
         if job is None:
@@ -84,6 +104,8 @@ class JobService:
 
         try:
             # ── Guard: no inputs at all ───────────────────────────────────
+            # dry_run does NOT override the no-inputs check — there is
+            # nothing useful to preview when there are no inputs.
             if not has_xrpl and not has_csv:
                 return self._fail_job(
                     job_id,
@@ -93,6 +115,19 @@ class JobService:
                     ),
                     log_lines=log_lines,
                     output_dir=output_dir,
+                )
+
+            # ── dry_run: log the would-be commands and finish ─────────────
+            # dry_run is intended for testing and "previewing" commands,
+            # not for generating tax outputs.  No subprocess calls are made.
+            if job.input.dry_run:
+                return self._execute_dry_run(
+                    job_id,
+                    job=job,
+                    has_xrpl=has_xrpl,
+                    work_dir=work_dir,
+                    output_dir=output_dir,
+                    log_lines=log_lines,
                 )
 
             # ── Guard: verify CSV files exist before calling any CLI ──────
@@ -326,4 +361,50 @@ class JobService:
         )
         return self.store.update_job(
             job_id, status=JobStatus.FAILED, output=output,
+        )
+
+    def _execute_dry_run(
+        self,
+        job_id: str,
+        *,
+        job: Job,
+        has_xrpl: bool,
+        work_dir: Path,
+        output_dir: Path,
+        log_lines: list[str],
+    ) -> Job | None:
+        """Complete a dry-run job without calling any subprocesses.
+
+        Writes an execution log listing the commands that *would* have
+        been run, then marks the job as COMPLETED.  No gains / wealth /
+        summary output paths are set — dry_run is intended for testing
+        and previewing the pipeline, not for generating tax outputs.
+        """
+        log_lines.append("[DRY RUN] — no subprocesses will be executed.")
+
+        events_path: Path | None = None
+        if has_xrpl:
+            events_path = work_dir / "events.json"
+            reader_cmd = self._build_reader_command(job.input, events_path)
+            log_lines.append(f"[would run] $ {' '.join(reader_cmd)}")
+
+        gains_path = work_dir / "gains.csv"
+        wealth_path = work_dir / "wealth.csv"
+        summary_path = work_dir / "summary.json"
+
+        report_cmd = self._build_report_command(
+            job.input,
+            events_path=events_path,
+            gains_path=gains_path,
+            wealth_path=wealth_path,
+            summary_path=summary_path,
+        )
+        log_lines.append(
+            f"[would run] $ {' '.join(str(c) for c in report_cmd)}"
+        )
+
+        log_path = self._write_log(output_dir, log_lines)
+        output = JobOutput(log_path=str(log_path))
+        return self.store.update_job(
+            job_id, status=JobStatus.COMPLETED, output=output,
         )

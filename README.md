@@ -32,7 +32,7 @@ pytest
 ### Example — create and start a job
 
 ```bash
-# 1. Create (case_name is optional — handy for dashboard display)
+# 1. Create (case_name and dry_run are optional)
 curl -s -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
   -d '{
@@ -40,17 +40,27 @@ curl -s -X POST http://localhost:8000/jobs \
     "tax_year": 2025,
     "country": "norway",
     "csv_files": ["data/generic-events-2025.csv"],
-    "case_name": "2025 Norway – main wallets"
+    "case_name": "2025 Norway – main wallets",
+    "dry_run": false
   }'
 
 # 2. Start (replace JOB_ID with the id from step 1)
 curl -s -X POST http://localhost:8000/jobs/JOB_ID/start
 ```
 
-### Filtering jobs
+### Filtering, sorting, and paging
 
-`GET /jobs` accepts optional query parameters `status`, `country`, and
-`query`:
+`GET /jobs` accepts optional query parameters for filtering, sorting, and
+paging.  Results are always sorted by `created_at` descending (newest
+first).
+
+| Parameter | Type   | Default | Description                                  |
+|-----------|--------|---------|----------------------------------------------|
+| `status`  | enum   | —       | Filter by job status                         |
+| `country` | enum   | —       | Filter by country                            |
+| `query`   | string | —       | Case-insensitive substring match on case_name|
+| `limit`   | int    | 50      | Max results (1–200)                           |
+| `offset`  | int    | 0       | Number of results to skip                    |
 
 ```bash
 # Only completed jobs
@@ -62,11 +72,14 @@ curl -s 'http://localhost:8000/jobs?country=norway'
 # Combine filters
 curl -s 'http://localhost:8000/jobs?status=failed&country=uk'
 
-# Free-text search against case_name (case-insensitive substring)
+# Free-text search against case_name
 curl -s 'http://localhost:8000/jobs?query=wallets'
 
-# All three filters combined
-curl -s 'http://localhost:8000/jobs?status=completed&country=norway&query=main'
+# Paging: first page of 10
+curl -s 'http://localhost:8000/jobs?limit=10'
+
+# Paging: second page of 10
+curl -s 'http://localhost:8000/jobs?limit=10&offset=10'
 ```
 
 Valid values — `status`: `pending`, `running`, `completed`, `failed`;
@@ -122,9 +135,19 @@ are empty the job fails immediately.
 | non-empty     | non-empty | Combined: reader + tax CLI with both inputs    |
 | empty         | empty     | Immediate FAILED — no inputs                   |
 
-Jobs also accept an optional `case_name` string — a human-friendly label
-(e.g. `"2025 Norway – main wallets"`) that makes it easier to distinguish
-jobs in a dashboard.  It has no effect on execution and defaults to `null`.
+Jobs also accept:
+
+- **`case_name`** (optional string) — a human-friendly label
+  (e.g. `"2025 Norway – main wallets"`) for dashboard display and
+  free-text filtering.  Defaults to `null`.
+- **`dry_run`** (optional bool, default `false`) — when `true`, the job
+  skips actual CLI execution and only writes an execution log listing
+  the commands that *would* have been run.  Useful for testing and
+  previewing the pipeline.
+
+Every job response includes **`created_at`** and **`updated_at`**
+timestamps (UTC, ISO-8601).  `created_at` is set once on creation;
+`updated_at` is refreshed whenever the job status or output changes.
 
 ### Pipeline steps
 
@@ -179,6 +202,39 @@ PENDING ──▶ RUNNING ──▶ COMPLETED   (outputs populated)
 
 Starting a non-PENDING job is a no-op — the current state is returned
 unchanged.
+
+### Dry-run mode
+
+Set `"dry_run": true` when creating a job to preview the pipeline
+without executing any CLI commands:
+
+```bash
+curl -s -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "xrpl_accounts": ["rEXAMPLE1"],
+    "tax_year": 2025,
+    "country": "norway",
+    "dry_run": true
+  }'
+
+# Start as usual
+curl -s -X POST http://localhost:8000/jobs/JOB_ID/start
+```
+
+The resulting execution log will contain entries like:
+
+```
+[DRY RUN] — no subprocesses will be executed.
+[would run] $ blockchain-reader --mode scenario --xrpl-account rEXAMPLE1 --output …/events.json
+[would run] $ taxspine-nor-report --xrpl-scenario …/events.json --tax-year 2025 …
+```
+
+The job completes with `status=completed` and only `log_path` set.
+Gains, wealth, and summary paths remain `null`.
+
+If the job has no inputs (`xrpl_accounts=[]` and `csv_files=[]`), it
+still fails even in dry-run mode — there is nothing useful to preview.
 
 ### Error handling
 

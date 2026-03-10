@@ -87,9 +87,14 @@ def list_jobs(
         default=None,
         description="Free-text search against case_name (case-insensitive substring match)",
     ),
+    limit: int = Query(default=50, ge=1, le=200, description="Max jobs to return"),
+    offset: int = Query(default=0, ge=0, description="Number of jobs to skip"),
 ) -> list[Job]:
-    """List jobs, optionally filtered by status, country, and/or case_name text."""
-    return _job_service.list_jobs(status=status, country=country, query=query)
+    """List jobs, sorted newest-first, with filtering and paging."""
+    return _job_service.list_jobs(
+        status=status, country=country, query=query,
+        limit=limit, offset=offset,
+    )
 
 
 @app.get("/jobs/{job_id}", response_model=Job, tags=["jobs"])

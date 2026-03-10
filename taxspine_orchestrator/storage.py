@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from .models import Country, Job, JobStatus
@@ -32,11 +33,21 @@ class InMemoryJobStore:
         status: JobStatus | None = None,
         country: Country | None = None,
         query: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> List[Job]:
-        """Return stored jobs, optionally filtered by *status*, *country*,
-        and/or a free-text *query* matched against ``case_name``.
+        """Return stored jobs, filtered, sorted newest-first, then paged.
+
+        Filtering (all optional, combined with AND):
+        - *status* — exact match on job status.
+        - *country* — exact match on input country.
+        - *query* — case-insensitive substring match against ``case_name``.
+
+        Results are sorted by ``created_at`` descending (newest first),
+        then sliced by *offset* and *limit*.
         """
-        jobs = self._jobs.values()
+        jobs: list[Job] = list(self._jobs.values())
+
         if status is not None:
             jobs = [j for j in jobs if j.status == status]
         if country is not None:
@@ -48,14 +59,19 @@ class InMemoryJobStore:
                 if j.input.case_name is not None
                 and query_lower in j.input.case_name.lower()
             ]
-        return list(jobs)
+
+        # Sort by created_at descending (newest first).
+        jobs.sort(key=lambda j: j.created_at, reverse=True)
+
+        return jobs[offset : offset + limit]
 
     def update_status(self, job_id: str, status: JobStatus) -> Job | None:
         """Set a new status on an existing job.  Returns the updated job."""
         job = self._jobs.get(job_id)
         if job is None:
             return None
-        updated = job.model_copy(update={"status": status})
+        now = datetime.now(timezone.utc)
+        updated = job.model_copy(update={"status": status, "updated_at": now})
         self._jobs[job_id] = updated
         return updated
 
@@ -64,11 +80,13 @@ class InMemoryJobStore:
 
         Accepts keyword arguments matching Job field names, e.g.
         ``store.update_job(id, status=JobStatus.COMPLETED, output=new_output)``.
+        Automatically refreshes ``updated_at`` to the current UTC time.
         Returns the updated job, or ``None`` if not found.
         """
         job = self._jobs.get(job_id)
         if job is None:
             return None
+        fields.setdefault("updated_at", datetime.now(timezone.utc))
         updated = job.model_copy(update=fields)
         self._jobs[job_id] = updated
         return updated
