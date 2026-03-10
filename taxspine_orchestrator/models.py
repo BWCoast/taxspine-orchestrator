@@ -19,6 +19,17 @@ class Country(str, Enum):
     UK = "uk"
 
 
+class ValuationMode(str, Enum):
+    """How the tax CLIs should value assets.
+
+    - ``DUMMY`` — use the built-in dummy/default valuation (current behaviour).
+    - ``PRICE_TABLE`` — use an external CSV price table via ``--csv-prices``.
+    """
+
+    DUMMY = "dummy"
+    PRICE_TABLE = "price_table"
+
+
 class JobStatus(str, Enum):
     """Lifecycle states of a tax job."""
 
@@ -65,6 +76,22 @@ class JobInput(BaseModel):
             "When True the job skips actual CLI execution and only writes "
             "an execution log listing the commands that *would* have been "
             "run.  Useful for testing and previewing the pipeline."
+        ),
+    )
+    valuation_mode: ValuationMode = Field(
+        default=ValuationMode.DUMMY,
+        description=(
+            "Valuation strategy for the tax CLIs.  'dummy' uses the "
+            "built-in default; 'price_table' passes a CSV price table "
+            "via --csv-prices."
+        ),
+    )
+    csv_prices_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to a CSV price table on disk.  Only meaningful when "
+            "valuation_mode is 'price_table'.  The orchestrator checks "
+            "that the file exists but does not validate its contents."
         ),
     )
 

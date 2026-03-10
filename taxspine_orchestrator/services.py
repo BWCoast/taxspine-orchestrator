@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import settings
-from .models import Country, Job, JobInput, JobOutput, JobStatus
+from .models import Country, Job, JobInput, JobOutput, JobStatus, ValuationMode
 from .storage import InMemoryJobStore
 
 
@@ -103,6 +103,29 @@ class JobService:
         log_lines: list[str] = []
 
         try:
+            # ── Guard: valuation_mode consistency ────────────────────────
+            if job.input.valuation_mode == ValuationMode.PRICE_TABLE:
+                if job.input.csv_prices_path is None:
+                    return self._fail_job(
+                        job_id,
+                        error=(
+                            "valuation_mode=price_table requires "
+                            "csv_prices_path"
+                        ),
+                        log_lines=log_lines,
+                        output_dir=output_dir,
+                    )
+                if not Path(job.input.csv_prices_path).is_file():
+                    return self._fail_job(
+                        job_id,
+                        error=(
+                            "CSV price table not found: "
+                            f"{job.input.csv_prices_path}"
+                        ),
+                        log_lines=log_lines,
+                        output_dir=output_dir,
+                    )
+
             # ── Guard: no inputs at all ───────────────────────────────────
             # dry_run does NOT override the no-inputs check — there is
             # nothing useful to preview when there are no inputs.
@@ -305,6 +328,13 @@ class JobService:
 
         # Common flags
         cmd.extend(["--tax-year", str(job_input.tax_year)])
+
+        # Valuation — CSV price table
+        if (
+            job_input.valuation_mode == ValuationMode.PRICE_TABLE
+            and job_input.csv_prices_path is not None
+        ):
+            cmd.extend(["--csv-prices", job_input.csv_prices_path])
 
         # Country-specific output flags
         if job_input.country == Country.NORWAY:

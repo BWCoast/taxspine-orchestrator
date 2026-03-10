@@ -146,6 +146,11 @@ Jobs also accept:
   skips actual CLI execution and only writes an execution log listing
   the commands that *would* have been run.  Useful for testing and
   previewing the pipeline.
+- **`valuation_mode`** (optional enum, default `"dummy"`) — controls how
+  the tax CLIs value assets.  See [Valuation mode](#valuation-mode).
+- **`csv_prices_path`** (optional string, default `null`) — path to a
+  CSV price table on disk.  Only used when `valuation_mode` is
+  `"price_table"`.
 
 Every job response includes **`created_at`** and **`updated_at`**
 timestamps (UTC, ISO-8601).  `created_at` is set once on creation;
@@ -238,14 +243,51 @@ Gains, wealth, and summary paths remain `null`.
 If the job has no inputs (`xrpl_accounts=[]` and `csv_files=[]`), it
 still fails even in dry-run mode — there is nothing useful to preview.
 
+### Valuation mode
+
+By default jobs use `valuation_mode: "dummy"`, which relies on the
+built-in default valuation in the tax CLIs (no extra flags are passed).
+
+Set `valuation_mode: "price_table"` to instruct the tax CLIs to use an
+external CSV price table.  You must also provide `csv_prices_path`
+pointing to an existing file on disk.  The orchestrator verifies the
+file exists but does not validate its contents — it is passed as-is
+via `--csv-prices <path>` to the tax CLI.
+
+```bash
+curl -s -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "xrpl_accounts": ["rEXAMPLE1"],
+    "tax_year": 2025,
+    "country": "norway",
+    "csv_files": [],
+    "case_name": "2025 NO with price table",
+    "valuation_mode": "price_table",
+    "csv_prices_path": "/tmp/prices-2025-nok.csv"
+  }'
+```
+
+Failure scenarios:
+
+- `valuation_mode=price_table` without `csv_prices_path` → FAILED
+  (`"valuation_mode=price_table requires csv_prices_path"`).
+- `csv_prices_path` points to a non-existent file → FAILED
+  (`"CSV price table not found: <path>"`).
+
+In dry-run mode the `--csv-prices` flag appears in the logged
+would-be commands but no subprocess is called.
+
 ### Error handling
 
-| Condition               | Behaviour                                       |
-|-------------------------|-------------------------------------------------|
-| No inputs at all        | FAILED — `"job has no inputs …"`                |
-| CSV file not found      | FAILED — `"CSV file not found: <path>"`         |
-| blockchain-reader fails | FAILED — `"blockchain-reader failed (rc=N)"`    |
-| Tax CLI fails           | FAILED — `"tax report CLI failed (rc=N)"`       |
+| Condition                   | Behaviour                                           |
+|-----------------------------|-----------------------------------------------------|
+| No inputs at all            | FAILED — `"job has no inputs …"`                    |
+| CSV file not found          | FAILED — `"CSV file not found: <path>"`             |
+| price_table without path    | FAILED — `"valuation_mode=price_table requires …"` |
+| CSV price table not found   | FAILED — `"CSV price table not found: <path>"`      |
+| blockchain-reader fails     | FAILED — `"blockchain-reader failed (rc=N)"`        |
+| Tax CLI fails               | FAILED — `"tax report CLI failed (rc=N)"`           |
 
 In all failure cases `job.output.log_path` points to an `execution.log`
 with captured commands and stderr.
