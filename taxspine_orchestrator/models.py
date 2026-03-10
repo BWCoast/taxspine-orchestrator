@@ -31,14 +31,24 @@ class JobStatus(str, Enum):
 
 
 class JobInput(BaseModel):
-    """User-supplied inputs when creating a tax job."""
+    """User-supplied inputs when creating a tax job.
+
+    A job may include XRPL accounts, generic-events CSV files, or both.
+    At least one of ``xrpl_accounts`` or ``csv_files`` must be non-empty
+    for execution to succeed.
+    """
 
     xrpl_accounts: List[str] = Field(default_factory=list)
     tax_year: int
     country: Country
     csv_files: List[str] = Field(
         default_factory=list,
-        description="Placeholder for uploaded CSV paths or IDs.",
+        description=(
+            "Paths to generic-events CSV files (already in the canonical "
+            "schema understood by the taxspine CLIs).  These are passed "
+            "as --generic-events-csv flags and are not parsed or validated "
+            "by the orchestrator."
+        ),
     )
 
 

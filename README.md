@@ -36,7 +36,8 @@ curl -s -X POST http://localhost:8000/jobs \
   -d '{
     "xrpl_accounts": ["rEXAMPLE1"],
     "tax_year": 2025,
-    "country": "norway"
+    "country": "norway",
+    "csv_files": ["data/generic-events-2025.csv"]
   }'
 
 # 2. Start (replace JOB_ID with the id from step 1)
@@ -45,26 +46,59 @@ curl -s -X POST http://localhost:8000/jobs/JOB_ID/start
 
 ## Job execution
 
-A job represents **XRPL accounts + country + tax year → tax report**.
+A job represents **inputs + country + tax year → tax report**.
 
-When you `POST /jobs/{id}/start`, the orchestrator runs a synchronous
-two-step pipeline:
+Inputs can be any combination of:
 
-1. **blockchain-reader** — exports XRPL events for the given accounts into
-   an `events.json` file.
-2. **Country-specific tax CLI** — reads the events and produces gains CSV,
-   wealth CSV, and a summary JSON.
+- **XRPL accounts** — fetched via `blockchain-reader` into `events.json`.
+- **Generic-events CSV files** — already in the canonical CSV schema
+  understood by the taxspine CLIs.  Passed through as-is; the orchestrator
+  does not parse or validate CSV content.
 
-### Norway pipeline
+At least one of `xrpl_accounts` or `csv_files` must be non-empty.  If both
+are empty the job fails immediately.
+
+### Input combinations
+
+| xrpl_accounts | csv_files | Behaviour                                     |
+|---------------|-----------|-----------------------------------------------|
+| non-empty     | empty     | XRPL-only: reader + tax CLI                   |
+| empty         | non-empty | CSV-only: tax CLI only (reader skipped)        |
+| non-empty     | non-empty | Combined: reader + tax CLI with both inputs    |
+| empty         | empty     | Immediate FAILED — no inputs                   |
+
+### Pipeline steps
+
+1. **Validate CSV paths** — each path in `csv_files` is checked for
+   existence.  If any file is missing the job fails before any CLI is called.
+2. **blockchain-reader** _(XRPL-only / combined)_ — exports XRPL events
+   for the given accounts into `events.json`.
+3. **Country-specific tax CLI** — processes all inputs and produces gains
+   CSV, wealth CSV, and summary JSON.
+
+### Norway — combined example
 
 ```
 blockchain-reader \
     --mode scenario \
-    --xrpl-account rACCOUNT1 --xrpl-account rACCOUNT2 \
+    --xrpl-account rACCOUNT1 \
     --output <work_dir>/events.json
 
 taxspine-nor-report \
     --xrpl-scenario <work_dir>/events.json \
+    --generic-events-csv data/generic-events-2025.csv \
+    --tax-year 2025 \
+    --gains-csv <work_dir>/gains.csv \
+    --wealth-csv <work_dir>/wealth.csv \
+    --summary-json <work_dir>/summary.json
+```
+
+### Norway — CSV-only example
+
+```
+taxspine-nor-report \
+    --generic-events-csv data/file1.csv \
+    --generic-events-csv data/file2.csv \
     --tax-year 2025 \
     --gains-csv <work_dir>/gains.csv \
     --wealth-csv <work_dir>/wealth.csv \
@@ -73,19 +107,9 @@ taxspine-nor-report \
 
 ### UK pipeline
 
-```
-blockchain-reader \
-    --mode scenario \
-    --xrpl-account rACCOUNT1 \
-    --output <work_dir>/events.json
-
-taxspine-uk-report \
-    --xrpl-scenario <work_dir>/events.json \
-    --tax-year 2025 \
-    --uk-gains-csv <work_dir>/gains.csv \
-    --uk-wealth-csv <work_dir>/wealth.csv \
-    --uk-summary-json <work_dir>/summary.json
-```
+Uses `taxspine-uk-report` with `--uk-gains-csv`, `--uk-wealth-csv`,
+`--uk-summary-json` instead.  The `--xrpl-scenario` and
+`--generic-events-csv` flags work the same way.
 
 ### Job lifecycle
 
@@ -99,13 +123,15 @@ unchanged.
 
 ### Error handling
 
-If either CLI returns a non-zero exit code:
+| Condition               | Behaviour                                       |
+|-------------------------|-------------------------------------------------|
+| No inputs at all        | FAILED — `"job has no inputs …"`                |
+| CSV file not found      | FAILED — `"CSV file not found: <path>"`         |
+| blockchain-reader fails | FAILED — `"blockchain-reader failed (rc=N)"`    |
+| Tax CLI fails           | FAILED — `"tax report CLI failed (rc=N)"`       |
 
-- `job.status` is set to `"failed"`.
-- `job.output.error_message` contains a short description (which step
-  failed and the return code).
-- `job.output.log_path` points to an `execution.log` with the full
-  command lines and captured stdout/stderr.
+In all failure cases `job.output.log_path` points to an `execution.log`
+with captured commands and stderr.
 
 ### Configuration
 
@@ -121,7 +147,7 @@ CLI paths and working directories are configured via environment variables:
 
 ## Non-goals (current scope)
 
-- No CSV file ingestion (XRPL-only for now).
 - No background workers or async queues (execution is synchronous).
 - No authentication or multi-tenant concerns.
 - No database (in-memory store).
+- No CSV schema validation (CSVs are treated as opaque files).
