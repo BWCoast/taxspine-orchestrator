@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🇳🇴 TaxNor — XRPL Skatteetaten Calculator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      min-height: 100vh;
+      color: #e2e8f0;
+      padding: 24px 16px;
+    }
+
+    /* ── Layout ── */
+    .page { max-width: 960px; margin: 0 auto; }
+
+    .header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .header h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.5px; }
+    .header p  { color: #94a3b8; margin-top: 6px; font-size: 0.95rem; }
+
+    .card {
+      background: rgba(255,255,255,0.06);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 28px;
+      margin-bottom: 20px;
+    }
+    .card h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 18px;
+      color: #e2e8f0;
+    }
+
+    /* ── Form elements ── */
+    label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: #94a3b8;
+      margin-bottom: 6px;
+      margin-top: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    label:first-child { margin-top: 0; }
+
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 10px 14px;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      font-family: inherit;
+      transition: border-color 0.2s;
+    }
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    select:focus {
+      outline: none;
+      border-color: #6366f1;
+    }
+    input.mono { font-family: 'Consolas', 'Monaco', monospace; font-size: 0.82rem; }
+
+    /* ── Grid helpers ── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 600px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    /* ── Wallets ── */
+    .wallet-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .wallet-row input { flex: 1; }
+    .remove-btn {
+      background: none; border: none; color: #64748b;
+      font-size: 1.4rem; cursor: pointer; padding: 2px 6px;
+      border-radius: 6px; transition: color 0.15s;
+      flex-shrink: 0;
+    }
+    .remove-btn:hover { color: #f87171; }
+    .add-wallet-btn {
+      background: none; border: 1px dashed rgba(99,102,241,0.5);
+      color: #818cf8; padding: 8px 14px; border-radius: 8px;
+      font-size: 0.85rem; cursor: pointer; width: 100%;
+      transition: all 0.15s; margin-top: 4px;
+    }
+    .add-wallet-btn:hover { border-color: #818cf8; background: rgba(99,102,241,0.1); }
+
+    /* ── Upload zone ── */
+    .upload-zone {
+      border: 2px dashed rgba(255,255,255,0.2);
+      border-radius: 12px;
+      padding: 32px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .upload-zone:hover, .upload-zone.dragover {
+      border-color: #6366f1;
+      background: rgba(99,102,241,0.08);
+    }
+    .upload-zone .icon { font-size: 2.5rem; margin-bottom: 10px; }
+    .upload-zone p { color: #94a3b8; font-size: 0.9rem; }
+    .upload-zone small { color: #64748b; font-size: 0.78rem; display: block; margin-top: 6px; font-family: monospace; }
+
+    /* ── Toggle ── */
+    .toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 0; border-top: 1px solid rgba(255,255,255,0.07);
+      margin-top: 8px;
+    }
+    .toggle-label { font-size: 0.85rem; color: #cbd5e1; }
+    .toggle-sub   { font-size: 0.75rem; color: #64748b; }
+    .toggle-btn {
+      position: relative; width: 42px; height: 24px;
+      background: #374151; border: none; border-radius: 12px;
+      cursor: pointer; transition: background 0.2s; flex-shrink: 0;
+    }
+    .toggle-btn.on { background: #6366f1; }
+    .toggle-knob {
+      position: absolute; top: 4px; left: 4px;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #9ca3af; transition: transform 0.2s, background 0.2s;
+    }
+    .toggle-btn.on .toggle-knob { transform: translateX(18px); background: #fff; }
+
+    /* ── Buttons ── */
+    .btn-primary {
+      width: 100%; padding: 14px;
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: white; border: none; border-radius: 10px;
+      font-size: 1rem; font-weight: 600; cursor: pointer;
+      transition: all 0.2s; margin-top: 20px;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    .btn-primary:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    /* ── Status banners ── */
+    .banner {
+      border-radius: 10px; padding: 12px 16px;
+      font-size: 0.88rem; margin-top: 14px; display: none;
+    }
+    .banner.show { display: block; }
+    .banner.success { background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.3); color: #86efac; }
+    .banner.error   { background: rgba(239,68,68,0.15);  border: 1px solid rgba(239,68,68,0.3);  color: #fca5a5; }
+    .banner.info    { background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.3); color: #a5b4fc; }
+
+    /* ── API config bar ── */
+    .api-bar {
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(0,0,0,0.25); border-radius: 10px;
+      padding: 10px 14px; margin-bottom: 20px; flex-wrap: wrap;
+    }
+    .api-bar label { margin: 0; text-transform: none; font-size: 0.8rem; white-space: nowrap; }
+    .api-bar input { flex: 1; min-width: 200px; margin: 0; }
+    .health-dot { width: 10px; height: 10px; border-radius: 50%; background: #374151; flex-shrink: 0; }
+    .health-dot.ok  { background: #22c55e; }
+    .health-dot.err { background: #ef4444; }
+
+    /* ── Download buttons ── */
+    .download-row {
+      display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px;
+    }
+    .dl-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 10px 18px; border-radius: 8px;
+      font-size: 0.88rem; font-weight: 500; cursor: pointer;
+      border: none; text-decoration: none; transition: all 0.15s;
+    }
+    .dl-report { background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; }
+    .dl-log    { background: rgba(255,255,255,0.1); color: #cbd5e1; border: 1px solid rgba(255,255,255,0.15); }
+    .dl-btn:hover { filter: brightness(1.15); transform: translateY(-1px); }
+
+    /* ── Report embed ── */
+    #report-frame-wrap {
+      margin-top: 20px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.1);
+      display: none;
+    }
+    #report-frame-wrap.show { display: block; }
+    #report-frame {
+      width: 100%; border: none;
+      background: white;
+      min-height: 500px;
+    }
+
+    /* ── Progress ── */
+    .progress-ring {
+      width: 36px; height: 36px;
+      animation: spin 1.2s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .job-status-row {
+      display: flex; align-items: center; gap: 14px;
+      padding: 14px; background: rgba(0,0,0,0.2);
+      border-radius: 10px; margin-top: 14px;
+    }
+    .job-status-text { font-size: 0.9rem; }
+    .job-status-text .label { font-weight: 600; }
+    .job-status-text .sub   { color: #94a3b8; font-size: 0.8rem; margin-top: 2px; font-family: monospace; }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>🇳🇴 TaxNor</h1>
+    <p>XRPL Skatteetaten Tax Calculator — powered by taxspine</p>
+  </div>
+
+  <!-- API config bar -->
+  <div class="api-bar">
+    <div class="health-dot" id="health-dot" title="API health"></div>
+    <label>API</label>
+    <input type="text" id="api-url" class="mono"
+           value="http://localhost:8000" placeholder="http://localhost:8000"
+           oninput="onApiUrlChange()">
+    <small id="health-txt" style="color:#64748b;font-size:0.78rem;">checking…</small>
+  </div>
+
+  <!-- ── Card 1: Price CSV ── -->
+  <div class="card">
+    <h3>📊 1. Upload Price Table <span style="font-weight:400;font-size:0.85rem;color:#94a3b8;">(optional — needed for price_table mode)</span></h3>
+
+    <div class="upload-zone" id="drop-zone"
+         onclick="document.getElementById('csv-file').click()"
+         ondrop="onDrop(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)">
+      <div class="icon" id="drop-icon">📁</div>
+      <p>Drop XRP/NOK price CSV here, or click to browse</p>
+      <small>date, asset_id, fiat_currency, price_fiat</small>
+      <input type="file" id="csv-file" accept=".csv" style="display:none" onchange="onFileChosen(event)">
+    </div>
+
+    <div class="banner" id="upload-banner"></div>
+  </div>
+
+  <!-- ── Card 2: Run ── -->
+  <div class="card">
+    <h3>🚀 2. Calculate Taxes</h3>
+
+    <!-- XRPL Accounts -->
+    <label>XRPL Account Addresses</label>
+    <div id="wallets-list"></div>
+    <button class="add-wallet-btn" type="button" onclick="addWallet()">＋ Add another account</button>
+
+    <div class="grid-2" style="margin-top:16px;">
+      <div>
+        <label>Tax Year</label>
+        <input type="number" id="tax-year" value="2025" min="2015" max="2035">
+      </div>
+      <div>
+        <label>Country</label>
+        <select id="country">
+          <option value="norway">🇳🇴 Norway (NOK)</option>
+          <option value="uk">🇬🇧 United Kingdom (GBP)</option>
+        </select>
+      </div>
+    </div>
+
+    <label style="margin-top:16px;">Valuation Mode</label>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <label style="text-transform:none;font-size:0.9rem;display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400;">
+        <input type="radio" name="val_mode" value="dummy" checked> Dummy (NOK passthrough)
+      </label>
+      <label style="text-transform:none;font-size:0.9rem;display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400;">
+        <input type="radio" name="val_mode" value="price_table"> Price Table (uploaded CSV)
+      </label>
+    </div>
+
+    <!-- Debug toggle -->
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Debug Valuation</div>
+        <div class="toggle-sub">Adds diagnostics to execution log</div>
+      </div>
+      <button class="toggle-btn" id="debug-btn" type="button" onclick="toggleDebug()" aria-pressed="false">
+        <span class="toggle-knob"></span>
+      </button>
+    </div>
+
+    <!-- Form error -->
+    <div class="banner error" id="form-error"></div>
+
+    <button class="btn-primary" id="run-btn" type="button" onclick="runPipeline()">
+      <span id="run-icon">▶</span>
+      <span id="run-label">Calculate My Taxes</span>
+    </button>
+  </div>
+
+  <!-- ── Card 3: Job status + results ── -->
+  <div class="card" id="results-card" style="display:none;">
+    <h3>📋 Job Status</h3>
+
+    <div class="job-status-row" id="status-row">
+      <svg class="progress-ring" id="status-spinner" viewBox="0 0 36 36">
+        <circle cx="18" cy="18" r="14" fill="none" stroke="#374151" stroke-width="4"/>
+        <circle cx="18" cy="18" r="14" fill="none" stroke="#6366f1" stroke-width="4"
+                stroke-dasharray="30 58" stroke-linecap="round"/>
+      </svg>
+      <div class="job-status-text">
+        <div class="label" id="status-label">Starting…</div>
+        <div class="sub" id="status-sub"></div>
+      </div>
+    </div>
+
+    <!-- Downloads (shown when complete) -->
+    <div id="downloads" style="display:none;">
+      <div class="download-row" id="dl-row"></div>
+      <div id="report-frame-wrap">
+        <iframe id="report-frame" title="Tax Report"></iframe>
+      </div>
+    </div>
+  </div>
+
+</div><!-- .page -->
+
+<script>
+'use strict';
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let _uploadedCsvPath = null;   // path returned by /uploads/csv
+let _debug = false;
+let _pollTimer = null;
+let _currentJobId = null;
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+
+function apiBase() {
+  return (document.getElementById('api-url').value || 'http://localhost:8000').replace(/\/$/, '');
+}
+
+async function apiFetch(method, path, body) {
+  const url = apiBase() + path;
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try { const j = await res.json(); msg = j.detail || j.message || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+async function apiUpload(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch(apiBase() + '/uploads/csv', { method: 'POST', body: fd });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try { const j = await res.json(); msg = j.detail || j.message || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+// ── Health check ──────────────────────────────────────────────────────────────
+async function checkHealth() {
+  const dot = document.getElementById('health-dot');
+  const txt = document.getElementById('health-txt');
+  try {
+    const d = await apiFetch('GET', '/health');
+    dot.className = 'health-dot ok';
+    txt.textContent = d.status ?? 'ok';
+  } catch {
+    dot.className = 'health-dot err';
+    txt.textContent = 'unreachable';
+  }
+}
+
+function onApiUrlChange() {
+  clearTimeout(window._healthTimer);
+  window._healthTimer = setTimeout(checkHealth, 600);
+}
+
+// ── CSV Upload ────────────────────────────────────────────────────────────────
+function onDragOver(e) { e.preventDefault(); document.getElementById('drop-zone').classList.add('dragover'); }
+function onDragLeave()  { document.getElementById('drop-zone').classList.remove('dragover'); }
+function onDrop(e)      { e.preventDefault(); onDragLeave(); handleFile(e.dataTransfer?.files?.[0]); }
+function onFileChosen(e){ handleFile(e.target.files?.[0]); e.target.value = ''; }
+
+async function handleFile(file) {
+  if (!file) return;
+  const banner = document.getElementById('upload-banner');
+  showBanner(banner, 'info', `⏳ Uploading ${file.name}…`);
+  document.getElementById('drop-icon').textContent = '⏳';
+
+  try {
+    const data = await apiUpload(file);
+    _uploadedCsvPath = data.path;
+    showBanner(banner, 'success', `✓ Uploaded: ${_uploadedCsvPath}`);
+    document.getElementById('drop-icon').textContent = '✅';
+  } catch (err) {
+    showBanner(banner, 'error', `✗ Upload failed: ${err.message}`);
+    document.getElementById('drop-icon').textContent = '📁';
+  }
+}
+
+// ── Wallet rows ───────────────────────────────────────────────────────────────
+function addWallet(value = '') {
+  const list = document.getElementById('wallets-list');
+  const row  = document.createElement('div');
+  row.className = 'wallet-row';
+  row.innerHTML = `
+    <input type="text" class="wallet-input mono"
+           value="${escHtml(value)}"
+           placeholder="rXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+           spellcheck="false" autocomplete="off">
+    <button type="button" class="remove-btn" onclick="removeWallet(this)" title="Remove">×</button>
+  `;
+  list.appendChild(row);
+}
+
+function removeWallet(btn) {
+  const list = document.getElementById('wallets-list');
+  if (list.children.length <= 1) {
+    list.querySelector('.wallet-input').value = '';
+    return;
+  }
+  btn.closest('.wallet-row').remove();
+}
+
+// ── Debug toggle ──────────────────────────────────────────────────────────────
+function toggleDebug() {
+  _debug = !_debug;
+  const btn = document.getElementById('debug-btn');
+  btn.classList.toggle('on', _debug);
+  btn.setAttribute('aria-pressed', _debug);
+}
+
+// ── Form validation + submission ──────────────────────────────────────────────
+async function runPipeline() {
+  const errBanner = document.getElementById('form-error');
+  errBanner.classList.remove('show');
+
+  const wallets = Array.from(document.querySelectorAll('.wallet-input'))
+                       .map(i => i.value.trim()).filter(Boolean);
+  if (wallets.length === 0) return showBanner(errBanner, 'error', 'Add at least one XRPL account address.');
+
+  const valMode = document.querySelector('input[name="val_mode"]:checked')?.value ?? 'dummy';
+  if (valMode === 'price_table' && !_uploadedCsvPath) {
+    return showBanner(errBanner, 'error', 'Price Table mode requires uploading a CSV first (step 1).');
+  }
+
+  setRunState(true, '⟳ Creating job…');
+
+  try {
+    const payload = {
+      xrpl_accounts:   wallets,
+      tax_year:        parseInt(document.getElementById('tax-year').value, 10),
+      country:         document.getElementById('country').value,
+      valuation_mode:  valMode,
+      debug_valuation: _debug,
+    };
+    if (valMode === 'price_table' && _uploadedCsvPath) {
+      payload.csv_prices_path = _uploadedCsvPath;
+    }
+
+    // Create job
+    const job = await apiFetch('POST', '/jobs', payload);
+    _currentJobId = job.id;
+
+    // Show status card
+    showResults(true);
+    updateStatus('starting', `Job ${job.id}`);
+
+    // Start job
+    setRunState(true, '⟳ Starting pipeline…');
+    await apiFetch('POST', `/jobs/${job.id}/start`, null);
+
+    // Begin polling
+    startPolling(job.id);
+
+  } catch (err) {
+    showBanner(errBanner, 'error', err.message);
+    showResults(false);
+  } finally {
+    setRunState(false, '▶ Calculate My Taxes');
+  }
+}
+
+function setRunState(loading, label) {
+  const btn = document.getElementById('run-btn');
+  btn.disabled = loading;
+  document.getElementById('run-label').textContent = loading
+    ? label.replace(/^[▶⟳]\s*/, '')
+    : 'Calculate My Taxes';
+  document.getElementById('run-icon').textContent = loading ? '⟳' : '▶';
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+function startPolling(jobId) {
+  stopPolling();
+  _pollTimer = setInterval(() => pollJob(jobId), 2500);
+}
+
+function stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
+async function pollJob(jobId) {
+  try {
+    const job = await apiFetch('GET', `/jobs/${jobId}`);
+    const status = (job.status || '').toLowerCase();
+
+    updateStatus(status, `Job ${jobId}`);
+
+    if (status === 'completed') {
+      stopPolling();
+      await loadResults(jobId);
+    } else if (status === 'failed') {
+      stopPolling();
+      const errMsg = job.output?.error_message || 'Pipeline failed — check log';
+      updateStatus('failed', `${jobId} — ${errMsg}`);
+      // Still try to show log download
+      await loadResults(jobId, true);
+    }
+  } catch (err) {
+    console.warn('Poll error:', err.message);
+  }
+}
+
+async function loadResults(jobId, failedJob = false) {
+  try {
+    const files = await apiFetch('GET', `/jobs/${jobId}/files`);
+    // files is a dict: { "report": "/path/...", "log": "/path/..." }
+    const dlRow  = document.getElementById('dl-row');
+    const dlArea = document.getElementById('downloads');
+    dlRow.innerHTML = '';
+
+    const kindLabels = {
+      report:  { icon: '📊', label: 'Tax Report (HTML)', cls: 'dl-report' },
+      gains:   { icon: '📈', label: 'gains.csv',          cls: 'dl-log' },
+      wealth:  { icon: '💰', label: 'wealth.csv',          cls: 'dl-log' },
+      summary: { icon: '📋', label: 'summary.json',        cls: 'dl-log' },
+      log:     { icon: '🪵', label: 'Execution Log',       cls: 'dl-log' },
+    };
+
+    let hasReport = false;
+
+    Object.entries(files).forEach(([kind, _path]) => {
+      const meta = kindLabels[kind] || { icon: '📄', label: kind, cls: 'dl-log' };
+      const btn  = document.createElement('button');
+      btn.className = `dl-btn ${meta.cls}`;
+      btn.innerHTML = `${meta.icon} ${meta.label}`;
+      btn.onclick = () => downloadKind(jobId, kind, meta.label);
+      dlRow.appendChild(btn);
+      if (kind === 'report') hasReport = true;
+    });
+
+    dlArea.style.display = 'block';
+
+    // Embed the HTML report in an iframe
+    if (hasReport && !failedJob) {
+      const frameWrap = document.getElementById('report-frame-wrap');
+      const frame     = document.getElementById('report-frame');
+      const reportUrl = `${apiBase()}/jobs/${jobId}/files/report`;
+      frame.src = reportUrl;
+      frameWrap.classList.add('show');
+
+      // Auto-resize iframe to content height after load
+      frame.onload = () => {
+        try {
+          frame.style.height = Math.max(400, frame.contentWindow.document.body.scrollHeight + 32) + 'px';
+        } catch { frame.style.height = '600px'; }
+      };
+    }
+  } catch (err) {
+    console.warn('Could not load file list:', err.message);
+  }
+}
+
+async function downloadKind(jobId, kind, label) {
+  try {
+    const url = `${apiBase()}/jobs/${jobId}/files/${kind}`;
+    const a   = document.createElement('a');
+    a.href    = url;
+    a.download = label; // browser will use server Content-Disposition
+    a.target   = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (err) {
+    alert(`Download failed: ${err.message}`);
+  }
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function showResults(show) {
+  document.getElementById('results-card').style.display = show ? '' : 'none';
+}
+
+const STATUS_LABELS = {
+  pending:   '⏳ Pending',
+  starting:  '⏳ Starting…',
+  running:   '⚙ Running pipeline…',
+  completed: '✅ Complete!',
+  failed:    '❌ Failed',
+};
+
+function updateStatus(status, sub) {
+  document.getElementById('status-label').textContent = STATUS_LABELS[status] ?? status;
+  document.getElementById('status-sub').textContent   = sub || '';
+
+  const spinner = document.getElementById('status-spinner');
+  const running = status === 'running' || status === 'starting' || status === 'pending';
+  spinner.style.display = running ? '' : 'none';
+}
+
+function showBanner(el, type, msg) {
+  el.className = `banner ${type} show`;
+  el.textContent = msg;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  addWallet();               // seed one empty wallet row
+  checkHealth();
+  setInterval(checkHealth, 20_000);
+});
+</script>
+</body>
+</html>

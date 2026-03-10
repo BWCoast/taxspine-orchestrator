@@ -72,13 +72,12 @@ class JobService:
         Lifecycle: PENDING → RUNNING → COMPLETED | FAILED.
 
         Supported input combinations:
-        - XRPL-only  (xrpl_accounts non-empty, csv_files empty)
-        - CSV-only   (xrpl_accounts empty, csv_files non-empty)
-        - Combined   (both non-empty)
-        - Neither    → immediate FAILED
-
-        Only PENDING jobs can be started.  If the job is already RUNNING,
-        COMPLETED, or FAILED the call returns the job unchanged (idempotent).
+        - XRPL-only  — runs ``taxspine-xrpl-nor`` for each account,
+                        collecting one HTML report per account.
+        - CSV-only   — runs ``taxspine-nor-report`` (or UK equivalent)
+                        for each generic-events CSV file.
+        - Combined   — XRPL accounts first, then CSV files.
+        - Neither    → immediate FAILED.
 
         When ``job.input.dry_run`` is True the pipeline logs which commands
         *would* be executed but does not call any subprocess.  The job
@@ -108,41 +107,28 @@ class JobService:
                 if job.input.csv_prices_path is None:
                     return self._fail_job(
                         job_id,
-                        error=(
-                            "valuation_mode=price_table requires "
-                            "csv_prices_path"
-                        ),
+                        error="valuation_mode=price_table requires csv_prices_path",
                         log_lines=log_lines,
                         output_dir=output_dir,
                     )
                 if not Path(job.input.csv_prices_path).is_file():
                     return self._fail_job(
                         job_id,
-                        error=(
-                            "CSV price table not found: "
-                            f"{job.input.csv_prices_path}"
-                        ),
+                        error=f"CSV price table not found: {job.input.csv_prices_path}",
                         log_lines=log_lines,
                         output_dir=output_dir,
                     )
 
-            # ── Guard: no inputs at all ───────────────────────────────────
-            # dry_run does NOT override the no-inputs check — there is
-            # nothing useful to preview when there are no inputs.
+            # ── Guard: no inputs ──────────────────────────────────────────
             if not has_xrpl and not has_csv:
                 return self._fail_job(
                     job_id,
-                    error=(
-                        "job has no inputs "
-                        "(no XRPL accounts and no CSV files)"
-                    ),
+                    error="job has no inputs (no XRPL accounts and no CSV files)",
                     log_lines=log_lines,
                     output_dir=output_dir,
                 )
 
-            # ── dry_run: log the would-be commands and finish ─────────────
-            # dry_run is intended for testing and "previewing" commands,
-            # not for generating tax outputs.  No subprocess calls are made.
+            # ── dry_run: preview commands only ────────────────────────────
             if job.input.dry_run:
                 return self._execute_dry_run(
                     job_id,
@@ -153,10 +139,9 @@ class JobService:
                     log_lines=log_lines,
                 )
 
-            # ── Guard: verify CSV files exist before calling any CLI ──────
+            # ── Guard: verify CSV files exist ─────────────────────────────
             for csv_path_str in job.input.csv_files:
-                csv_path = Path(csv_path_str)
-                if not csv_path.is_file():
+                if not Path(csv_path_str).is_file():
                     return self._fail_job(
                         job_id,
                         error=f"CSV file not found: {csv_path_str}",
@@ -164,94 +149,90 @@ class JobService:
                         output_dir=output_dir,
                     )
 
-            # ── Step 1: blockchain-reader → events.json (XRPL only) ──────
-            events_path: Path | None = None
+            # ── Step 1: XRPL accounts → taxspine-xrpl-nor ────────────────
+            # taxspine-xrpl-nor handles the full XRPL → Norway pipeline
+            # internally (no separate blockchain-reader step required).
+            # When multiple accounts are present we run once per account
+            # and write separate HTML reports.
+            report_html_path: Path | None = None
 
             if has_xrpl:
-                events_path = work_dir / "events.json"
-                reader_cmd = self._build_reader_command(
-                    job.input, events_path,
-                )
-                log_lines.append(f"$ {' '.join(reader_cmd)}")
+                for idx, account in enumerate(job.input.xrpl_accounts):
+                    suffix = f"_{idx}" if len(job.input.xrpl_accounts) > 1 else ""
+                    html_dest = output_dir / f"report{suffix}.html"
 
-                reader_result = subprocess.run(
-                    reader_cmd,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                log_lines.append(f"  rc={reader_result.returncode}")
-                if reader_result.stdout:
-                    log_lines.append(
-                        f"  stdout: {reader_result.stdout.rstrip()}"
+                    xrpl_cmd = self._build_xrpl_command(
+                        job.input,
+                        account=account,
+                        html_path=html_dest,
                     )
-                if reader_result.stderr:
-                    log_lines.append(
-                        f"  stderr: {reader_result.stderr.rstrip()}"
+                    log_lines.append(f"$ {' '.join(str(c) for c in xrpl_cmd)}")
+
+                    xrpl_result = subprocess.run(
+                        xrpl_cmd, capture_output=True, text=True, check=False,
                     )
+                    log_lines.append(f"  rc={xrpl_result.returncode}")
+                    if xrpl_result.stdout:
+                        log_lines.append(f"  stdout:\n{xrpl_result.stdout.rstrip()}")
+                    if xrpl_result.stderr:
+                        log_lines.append(f"  stderr:\n{xrpl_result.stderr.rstrip()}")
 
-                if reader_result.returncode != 0:
-                    return self._fail_job(
-                        job_id,
-                        error=(
-                            "blockchain-reader failed "
-                            f"(rc={reader_result.returncode})"
-                        ),
-                        log_lines=log_lines,
-                        output_dir=output_dir,
+                    if xrpl_result.returncode != 0:
+                        return self._fail_job(
+                            job_id,
+                            error=(
+                                f"taxspine-xrpl-nor failed for {account} "
+                                f"(rc={xrpl_result.returncode})"
+                            ),
+                            log_lines=log_lines,
+                            output_dir=output_dir,
+                        )
+
+                    # Use the first account's report as the primary report.
+                    if report_html_path is None and html_dest.exists():
+                        report_html_path = html_dest
+
+            # ── Step 2: generic-events CSVs → taxspine-nor-report ─────────
+            if has_csv:
+                for csv_path_str in job.input.csv_files:
+                    csv_stem = Path(csv_path_str).stem
+                    html_dest = output_dir / f"report_{csv_stem}.html"
+
+                    csv_cmd = self._build_csv_command(
+                        job.input,
+                        csv_path=Path(csv_path_str),
+                        html_path=html_dest,
                     )
+                    log_lines.append(f"$ {' '.join(str(c) for c in csv_cmd)}")
 
-            # ── Step 2: taxspine report CLI → CSV / JSON ──────────────────
-            gains_path = work_dir / "gains.csv"
-            wealth_path = work_dir / "wealth.csv"
-            summary_path = work_dir / "summary.json"
+                    csv_result = subprocess.run(
+                        csv_cmd, capture_output=True, text=True, check=False,
+                    )
+                    log_lines.append(f"  rc={csv_result.returncode}")
+                    if csv_result.stdout:
+                        log_lines.append(f"  stdout:\n{csv_result.stdout.rstrip()}")
+                    if csv_result.stderr:
+                        log_lines.append(f"  stderr:\n{csv_result.stderr.rstrip()}")
 
-            report_cmd = self._build_report_command(
-                job.input,
-                events_path=events_path,
-                gains_path=gains_path,
-                wealth_path=wealth_path,
-                summary_path=summary_path,
-            )
-            log_lines.append(
-                f"$ {' '.join(str(c) for c in report_cmd)}"
-            )
+                    if csv_result.returncode != 0:
+                        return self._fail_job(
+                            job_id,
+                            error=(
+                                f"taxspine-nor-report failed for {csv_path_str} "
+                                f"(rc={csv_result.returncode})"
+                            ),
+                            log_lines=log_lines,
+                            output_dir=output_dir,
+                        )
 
-            report_result = subprocess.run(
-                report_cmd, capture_output=True, text=True, check=False,
-            )
-            log_lines.append(f"  rc={report_result.returncode}")
-            if report_result.stdout:
-                log_lines.append(
-                    f"  stdout: {report_result.stdout.rstrip()}"
-                )
-            if report_result.stderr:
-                log_lines.append(
-                    f"  stderr: {report_result.stderr.rstrip()}"
-                )
+                    if report_html_path is None and html_dest.exists():
+                        report_html_path = html_dest
 
-            if report_result.returncode != 0:
-                return self._fail_job(
-                    job_id,
-                    error=(
-                        "tax report CLI failed "
-                        f"(rc={report_result.returncode})"
-                    ),
-                    log_lines=log_lines,
-                    output_dir=output_dir,
-                )
-
-            # ── Step 3: copy artefacts to output dir ──────────────────────
-            for src in (gains_path, wealth_path, summary_path):
-                if src.exists():
-                    shutil.copy2(src, output_dir / src.name)
-
+            # ── Step 3: write log + build output record ───────────────────
             log_path = self._write_log(output_dir, log_lines)
 
             output = JobOutput(
-                gains_csv_path=str(output_dir / "gains.csv"),
-                wealth_csv_path=str(output_dir / "wealth.csv"),
-                summary_json_path=str(output_dir / "summary.json"),
+                report_html_path=str(report_html_path) if report_html_path else None,
                 log_path=str(log_path),
             )
             return self.store.update_job(
@@ -270,85 +251,80 @@ class JobService:
     # ── Command builders ─────────────────────────────────────────────────
 
     @staticmethod
-    def _build_reader_command(
-        job_input: JobInput,
-        events_path: Path,
-    ) -> list[str]:
-        """Assemble the blockchain-reader CLI command.
-
-        TODO: The exact flags will be finalised once blockchain-reader
-              exposes a multi-account scenario export mode.  For now we
-              pass each account as a repeated ``--xrpl-account`` flag.
-        """
-        cmd: list[str] = [
-            settings.BLOCKCHAIN_READER_CLI,
-            "--mode", "scenario",
-        ]
-        for acct in job_input.xrpl_accounts:
-            cmd.extend(["--xrpl-account", acct])
-        cmd.extend(["--output", str(events_path)])
-        return cmd
-
-    @staticmethod
-    def _build_report_command(
+    def _build_xrpl_command(
         job_input: JobInput,
         *,
-        events_path: Path | None,
-        gains_path: Path,
-        wealth_path: Path,
-        summary_path: Path,
+        account: str,
+        html_path: Path,
     ) -> list[str]:
-        """Assemble the country-specific tax-report CLI command.
+        """Build a ``taxspine-xrpl-nor`` command for a single XRPL account.
 
-        ``events_path`` is ``None`` when the job is CSV-only (no XRPL
-        accounts).  In that case the ``--xrpl-scenario`` flag is omitted.
+        taxspine-xrpl-nor handles the full pipeline internally:
+        it fetches transactions from the ledger and runs the Norway
+        tax pipeline.  No blockchain-reader step is needed.
 
-        Each entry in ``job_input.csv_files`` is appended as a
-        ``--generic-events-csv <path>`` argument.  The tax CLI merges
-        XRPL events and generic CSVs internally.
-
-        TODO: Flag names are aspirational — adjust once the taxspine CLIs
-              are finalised.
+        Real CLI flags (as of Phase 2):
+            --account ADDRESS  (required)
+            --year    YEAR     (required)
+            --csv-prices PATH  (optional; CSV format price table)
+            --debug-valuation  (optional)
+            --html-output PATH (optional; self-contained HTML report)
         """
-        if job_input.country == Country.NORWAY:
-            cmd: list[str] = [settings.TAXSPINE_NOR_REPORT_CLI]
-        elif job_input.country == Country.UK:
-            cmd = [settings.TAXSPINE_UK_REPORT_CLI]
-        else:
-            # Unreachable thanks to the Country enum, but be safe.
-            raise ValueError(f"Unsupported country: {job_input.country}")
+        cmd: list[str] = [
+            settings.TAXSPINE_XRPL_NOR_CLI,
+            "--account", account,
+            "--year", str(job_input.tax_year),
+            "--html-output", str(html_path),
+        ]
 
-        # XRPL scenario (only when blockchain-reader ran)
-        if events_path is not None:
-            cmd.extend(["--xrpl-scenario", str(events_path)])
-
-        # Generic events CSVs
-        for csv_path in job_input.csv_files:
-            cmd.extend(["--generic-events-csv", csv_path])
-
-        # Common flags
-        cmd.extend(["--tax-year", str(job_input.tax_year)])
-
-        # Valuation — CSV price table
         if (
             job_input.valuation_mode == ValuationMode.PRICE_TABLE
             and job_input.csv_prices_path is not None
         ):
             cmd.extend(["--csv-prices", job_input.csv_prices_path])
 
-        # Country-specific output flags
+        if job_input.debug_valuation:
+            cmd.append("--debug-valuation")
+
+        return cmd
+
+    @staticmethod
+    def _build_csv_command(
+        job_input: JobInput,
+        *,
+        csv_path: Path,
+        html_path: Path,
+    ) -> list[str]:
+        """Build a ``taxspine-nor-report`` command for a generic-events CSV.
+
+        Real CLI flags (as of Phase 2):
+            --input      PATH  (required; CSV file)
+            --year       YEAR  (required)
+            --csv-prices PATH  (optional; CSV format price table)
+            --debug-valuation  (optional)
+            --html-output PATH (optional; self-contained HTML report)
+        """
         if job_input.country == Country.NORWAY:
-            cmd.extend([
-                "--gains-csv", str(gains_path),
-                "--wealth-csv", str(wealth_path),
-                "--summary-json", str(summary_path),
-            ])
+            cmd: list[str] = [settings.TAXSPINE_NOR_REPORT_CLI]
         elif job_input.country == Country.UK:
-            cmd.extend([
-                "--uk-gains-csv", str(gains_path),
-                "--uk-wealth-csv", str(wealth_path),
-                "--uk-summary-json", str(summary_path),
-            ])
+            cmd = [settings.TAXSPINE_UK_REPORT_CLI]
+        else:
+            raise ValueError(f"Unsupported country: {job_input.country}")
+
+        cmd.extend([
+            "--input", str(csv_path),
+            "--year", str(job_input.tax_year),
+            "--html-output", str(html_path),
+        ])
+
+        if (
+            job_input.valuation_mode == ValuationMode.PRICE_TABLE
+            and job_input.csv_prices_path is not None
+        ):
+            cmd.extend(["--csv-prices", job_input.csv_prices_path])
+
+        if job_input.debug_valuation:
+            cmd.append("--debug-valuation")
 
         return cmd
 
@@ -406,32 +382,23 @@ class JobService:
         """Complete a dry-run job without calling any subprocesses.
 
         Writes an execution log listing the commands that *would* have
-        been run, then marks the job as COMPLETED.  No gains / wealth /
-        summary output paths are set — dry_run is intended for testing
-        and previewing the pipeline, not for generating tax outputs.
+        been run, then marks the job as COMPLETED.  No output file paths
+        are set — dry_run is intended for testing and previewing only.
         """
         log_lines.append("[DRY RUN] — no subprocesses will be executed.")
 
-        events_path: Path | None = None
         if has_xrpl:
-            events_path = work_dir / "events.json"
-            reader_cmd = self._build_reader_command(job.input, events_path)
-            log_lines.append(f"[would run] $ {' '.join(reader_cmd)}")
+            for account in job.input.xrpl_accounts:
+                html_path = output_dir / "report.html"
+                cmd = self._build_xrpl_command(job.input, account=account, html_path=html_path)
+                log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
 
-        gains_path = work_dir / "gains.csv"
-        wealth_path = work_dir / "wealth.csv"
-        summary_path = work_dir / "summary.json"
-
-        report_cmd = self._build_report_command(
-            job.input,
-            events_path=events_path,
-            gains_path=gains_path,
-            wealth_path=wealth_path,
-            summary_path=summary_path,
-        )
-        log_lines.append(
-            f"[would run] $ {' '.join(str(c) for c in report_cmd)}"
-        )
+        for csv_path_str in job.input.csv_files:
+            html_path = output_dir / f"report_{Path(csv_path_str).stem}.html"
+            cmd = self._build_csv_command(
+                job.input, csv_path=Path(csv_path_str), html_path=html_path,
+            )
+            log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
 
         log_path = self._write_log(output_dir, log_lines)
         output = JobOutput(log_path=str(log_path))

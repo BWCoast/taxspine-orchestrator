@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -19,6 +20,15 @@ from .storage import InMemoryJobStore
 # ── Wiring ───────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Taxspine Orchestrator")
+
+# Allow the local UI (file:// or any localhost port) to reach the API.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],          # tighten in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Ensure working directories exist at import time so the first job doesn't
 # have to create them mid-flight.
@@ -41,6 +51,7 @@ class FileKind(str, Enum):
     GAINS = "gains"
     WEALTH = "wealth"
     SUMMARY = "summary"
+    REPORT = "report"   # self-contained HTML tax report
     LOG = "log"
 
 
@@ -48,6 +59,7 @@ _KIND_TO_FIELD: Dict[FileKind, str] = {
     FileKind.GAINS: "gains_csv_path",
     FileKind.WEALTH: "wealth_csv_path",
     FileKind.SUMMARY: "summary_json_path",
+    FileKind.REPORT: "report_html_path",
     FileKind.LOG: "log_path",
 }
 
@@ -55,6 +67,7 @@ _KIND_MEDIA_TYPE: Dict[FileKind, str] = {
     FileKind.GAINS: "text/csv",
     FileKind.WEALTH: "text/csv",
     FileKind.SUMMARY: "application/json",
+    FileKind.REPORT: "text/html",
     FileKind.LOG: "text/plain",
 }
 
@@ -62,6 +75,7 @@ _KIND_EXTENSION: Dict[FileKind, str] = {
     FileKind.GAINS: "csv",
     FileKind.WEALTH: "csv",
     FileKind.SUMMARY: "json",
+    FileKind.REPORT: "html",
     FileKind.LOG: "txt",
 }
 

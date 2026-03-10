@@ -78,6 +78,13 @@ class JobInput(BaseModel):
             "run.  Useful for testing and previewing the pipeline."
         ),
     )
+    debug_valuation: bool = Field(
+        default=False,
+        description=(
+            "When True, passes --debug-valuation to the tax CLI so that "
+            "valuation diagnostics are written to stderr / the execution log."
+        ),
+    )
     valuation_mode: ValuationMode = Field(
         default=ValuationMode.DUMMY,
         description=(
@@ -102,6 +109,7 @@ class JobOutput(BaseModel):
     gains_csv_path: Optional[str] = None
     wealth_csv_path: Optional[str] = None
     summary_json_path: Optional[str] = None
+    report_html_path: Optional[str] = None  # self-contained HTML tax report
     log_path: Optional[str] = None
     error_message: Optional[str] = None
 
