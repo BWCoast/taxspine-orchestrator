@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     TEMP_DIR: Path = _DEFAULT_BASE / "tmp"
     OUTPUT_DIR: Path = _DEFAULT_BASE / "output"
     UPLOAD_DIR: Path = _DEFAULT_BASE / "uploads"
+    # DATA_DIR stores persistent state: jobs.db and workspace.json
+    DATA_DIR: Path = _DEFAULT_BASE / "data"
 
     # ── External CLI binaries ─────────────────────────────────────────────
     # taxspine-xrpl-nor: single-command XRPL → Norway pipeline
@@ -41,10 +43,11 @@ class Settings(BaseSettings):
     BLOCKCHAIN_READER_CLI: str = "blockchain-reader"
 
     def ensure_dirs(self) -> None:
-        """Create TEMP_DIR, OUTPUT_DIR, and UPLOAD_DIR if they do not exist."""
+        """Create all working directories if they do not exist."""
         self.TEMP_DIR.mkdir(parents=True, exist_ok=True)
         self.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         self.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        self.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

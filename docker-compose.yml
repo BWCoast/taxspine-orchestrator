@@ -1,0 +1,54 @@
+# ── Taxspine Orchestrator — Docker Compose ────────────────────────────────────
+#
+# Usage:
+#   docker compose up -d           # start in background
+#   docker compose logs -f         # tail logs
+#   docker compose down            # stop
+#
+# Data is persisted in ./data/ on the host (or NAS bind-mount).
+# Override CLI paths in the environment section below.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  orchestrator:
+    build: .
+    container_name: taxspine-orchestrator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist all data (jobs DB, workspace config, uploads, outputs, temp).
+      # On a Synology NAS, point this to your desired share:
+      #   - /volume1/taxspine/data:/data
+      - ./data:/data
+    environment:
+      # All paths inside the container reference /data.
+      OUTPUT_DIR: /data/output
+      TEMP_DIR: /data/tmp
+      UPLOAD_DIR: /data/uploads
+      DATA_DIR: /data/state
+
+      # ── CLI binary paths ───────────────────────────────────────────────────
+      # Uncomment and set to the installed CLI names/paths if they differ
+      # from the defaults.
+      #
+      # TAXSPINE_XRPL_NOR_CLI: taxspine-xrpl-nor
+      # TAXSPINE_NOR_REPORT_CLI: taxspine-nor-report
+      # TAXSPINE_UK_REPORT_CLI: taxspine-uk-report
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Uncomment to add to a Tailscale or Cloudflare Tunnel network:
+    # networks:
+    #   - tailscale
+    # Or simply expose port 8000 and let Tailscale/CF handle routing externally.
+
+# networks:
+#   tailscale:
+#     external: true

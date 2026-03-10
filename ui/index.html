@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Taxspine Orchestrator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; }
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #1e2130; } ::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 3px; }
+    .card { background: #1a1f2e; border: 1px solid #2d3748; border-radius: 12px; }
+    .btn-primary { background: #3b82f6; color: white; padding: 8px 18px; border-radius: 8px; font-weight: 600; font-size: 14px; transition: background .15s; cursor: pointer; border: none; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-primary:disabled { background: #374151; color: #6b7280; cursor: not-allowed; }
+    .btn-danger { background: #ef4444; color: white; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; border: none; transition: background .15s; }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-secondary { background: #1e2130; border: 1px solid #4a5568; color: #cbd5e0; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all .15s; }
+    .btn-secondary:hover { border-color: #3b82f6; color: #93c5fd; }
+    .badge { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 99px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+    .badge-pending { background: #1e3a5f; color: #60a5fa; }
+    .badge-running { background: #1c3a2a; color: #34d399; }
+    .badge-completed { background: #14352a; color: #10b981; }
+    .badge-failed { background: #3b1515; color: #f87171; }
+    .input { background: #111827; border: 1px solid #374151; color: #e2e8f0; padding: 8px 12px; border-radius: 8px; font-size: 14px; width: 100%; outline: none; transition: border-color .15s; }
+    .input:focus { border-color: #3b82f6; }
+    .input::placeholder { color: #4b5563; }
+    .select { background: #111827; border: 1px solid #374151; color: #e2e8f0; padding: 8px 12px; border-radius: 8px; font-size: 14px; outline: none; cursor: pointer; }
+    .select:focus { border-color: #3b82f6; }
+    .tag { display: inline-flex; align-items: center; gap: 6px; background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-family: monospace; }
+    .tag .remove { color: #64748b; cursor: pointer; font-size: 16px; line-height: 1; }
+    .tag .remove:hover { color: #f87171; }
+    .spin { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .pulse { animation: pulse 1.5s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+    .fade-in { animation: fadeIn .2s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+    .job-row { border: 1px solid #1e2a3a; border-radius: 10px; transition: border-color .15s, background .15s; cursor: pointer; }
+    .job-row:hover { border-color: #3b82f6; background: #131929; }
+    .job-row.selected { border-color: #3b82f6; background: #0d1a2d; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot-ok { background: #10b981; }
+    .dot-err { background: #ef4444; }
+    .dot-loading { background: #6b7280; }
+    hr.divider { border-color: #1e2a3a; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<!-- ── Top bar ─────────────────────────────────────────────────────────── -->
+<header class="sticky top-0 z-50 border-b border-gray-800" style="background:#0f1117;">
+  <div class="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <span class="text-lg font-bold text-white">⚡ Taxspine</span>
+      <span class="text-gray-600 text-sm">Orchestrator</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <div id="health-indicator" class="flex items-center gap-2 text-xs text-gray-500">
+        <div class="dot dot-loading pulse" id="health-dot"></div>
+        <span id="health-text">Connecting…</span>
+      </div>
+      <span class="text-gray-700 text-xs">|</span>
+      <a href="/docs" target="_blank" class="text-xs text-blue-500 hover:text-blue-400">API Docs ↗</a>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main layout ──────────────────────────────────────────────────────── -->
+<div class="max-w-7xl mx-auto px-6 py-6 grid grid-cols-1 xl:grid-cols-3 gap-6">
+
+  <!-- LEFT COLUMN: Workspace + Run -->
+  <div class="xl:col-span-1 flex flex-col gap-5">
+
+    <!-- Workspace: XRPL Accounts -->
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-white text-sm uppercase tracking-widest text-xs">XRPL Accounts</h2>
+        <span id="accounts-count" class="text-xs text-gray-500">0 registered</span>
+      </div>
+
+      <!-- Registered accounts list -->
+      <div id="accounts-list" class="flex flex-col gap-2 mb-4 min-h-[32px]">
+        <p class="text-gray-600 text-xs italic">No accounts registered yet.</p>
+      </div>
+
+      <!-- Add account form -->
+      <div class="flex gap-2">
+        <input id="add-account-input" class="input text-xs flex-1" placeholder="r…  (XRPL address)" style="font-family:monospace;">
+        <button onclick="addAccount()" class="btn-primary text-xs px-3">Add</button>
+      </div>
+    </div>
+
+    <!-- Workspace: CSV Files -->
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-white text-xs uppercase tracking-widest">CSV Files</h2>
+        <span id="csv-count" class="text-xs text-gray-500">0 registered</span>
+      </div>
+
+      <!-- Registered CSV list -->
+      <div id="csv-list" class="flex flex-col gap-2 mb-4 min-h-[32px]">
+        <p class="text-gray-600 text-xs italic">No CSV files registered yet.</p>
+      </div>
+
+      <!-- Upload CSV -->
+      <label class="block cursor-pointer">
+        <div id="drop-zone" class="border-2 border-dashed border-gray-700 rounded-lg px-4 py-3 text-center hover:border-blue-600 transition-colors">
+          <p class="text-gray-500 text-xs">Drop CSV here or <span class="text-blue-500">click to upload</span></p>
+        </div>
+        <input type="file" id="csv-file-input" accept=".csv,text/csv" class="hidden" onchange="uploadCsv(this)">
+      </label>
+      <div id="upload-status" class="mt-2 text-xs text-gray-500 hidden"></div>
+    </div>
+
+    <!-- Run Report -->
+    <div class="card p-5">
+      <h2 class="font-semibold text-white text-xs uppercase tracking-widest mb-4">Run Report</h2>
+
+      <div class="flex flex-col gap-3">
+        <div>
+          <label class="text-xs text-gray-400 mb-1 block">Tax Year</label>
+          <input type="number" id="run-tax-year" class="input" value="2024" min="2015" max="2030" step="1">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 mb-1 block">Country</label>
+          <select id="run-country" class="select w-full">
+            <option value="norway">🇳🇴 Norway</option>
+            <option value="uk">🇬🇧 United Kingdom</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 mb-1 block">Valuation</label>
+          <select id="run-valuation" class="select w-full" onchange="togglePricesField()">
+            <option value="dummy">Default (built-in)</option>
+            <option value="price_table">Price table CSV</option>
+          </select>
+        </div>
+        <div id="prices-field" class="hidden">
+          <label class="text-xs text-gray-400 mb-1 block">Price table path</label>
+          <input id="run-prices-path" class="input text-xs" placeholder="/abs/path/to/prices.csv" style="font-family:monospace;">
+        </div>
+        <div class="flex items-center gap-2">
+          <input type="checkbox" id="run-debug" class="accent-blue-500 w-4 h-4">
+          <label for="run-debug" class="text-xs text-gray-400 cursor-pointer">Debug valuation output</label>
+        </div>
+        <div class="flex items-center gap-2">
+          <input type="checkbox" id="run-dry" class="accent-blue-500 w-4 h-4">
+          <label for="run-dry" class="text-xs text-gray-400 cursor-pointer">Dry run (preview commands only)</label>
+        </div>
+
+        <button id="run-btn" onclick="runReport()" class="btn-primary w-full mt-1">
+          ▶ Run Report
+        </button>
+        <p id="run-status" class="text-xs text-gray-500 text-center hidden"></p>
+      </div>
+    </div>
+
+  </div><!-- end left column -->
+
+  <!-- RIGHT COLUMN: Jobs + Results -->
+  <div class="xl:col-span-2 flex flex-col gap-5">
+
+    <!-- Jobs list -->
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-white text-xs uppercase tracking-widest">Job History</h2>
+        <button onclick="loadJobs()" class="btn-secondary text-xs">↻ Refresh</button>
+      </div>
+      <div id="jobs-list" class="flex flex-col gap-2">
+        <p class="text-gray-600 text-xs italic text-center py-4">Loading jobs…</p>
+      </div>
+    </div>
+
+    <!-- Results panel (shown when a job is selected) -->
+    <div id="results-panel" class="hidden card p-5 fade-in">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-white text-xs uppercase tracking-widest">Report</h2>
+        <button onclick="closeResults()" class="text-gray-600 hover:text-gray-300 text-lg leading-none">✕</button>
+      </div>
+
+      <!-- Job meta -->
+      <div id="results-meta" class="flex flex-wrap gap-3 mb-4 text-xs text-gray-400"></div>
+
+      <!-- Error message -->
+      <div id="results-error" class="hidden bg-red-900/30 border border-red-800 rounded-lg p-3 mb-4 text-sm text-red-300"></div>
+
+      <!-- Download buttons -->
+      <div id="results-downloads" class="flex flex-wrap gap-2 mb-4"></div>
+
+      <!-- Inline HTML report -->
+      <div id="results-iframe-wrap" class="hidden">
+        <p class="text-xs text-gray-500 mb-2">Inline preview:</p>
+        <iframe id="results-iframe" class="w-full rounded-lg border border-gray-700" style="height:600px; background:white;" sandbox="allow-same-origin allow-scripts"></iframe>
+      </div>
+
+      <!-- Execution log -->
+      <div id="results-log-wrap" class="hidden">
+        <p class="text-xs text-gray-500 mb-2">Execution log:</p>
+        <pre id="results-log" class="bg-gray-900 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 overflow-auto" style="max-height:300px;"></pre>
+      </div>
+    </div>
+
+  </div><!-- end right column -->
+
+</div><!-- end grid -->
+
+<!-- Loading spinner overlay (during run) -->
+<div id="run-overlay" class="hidden fixed inset-0 flex items-center justify-center z-50" style="background:rgba(0,0,0,.65)">
+  <div class="card p-8 flex flex-col items-center gap-4">
+    <svg class="spin w-10 h-10 text-blue-500" fill="none" viewBox="0 0 24 24">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+    </svg>
+    <p class="text-white font-semibold" id="overlay-text">Running pipeline…</p>
+    <p class="text-gray-400 text-sm">This can take a minute. Please wait.</p>
+  </div>
+</div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+// When served by FastAPI at /ui/, use relative API paths (same origin).
+// When opened as file://, fall back to localhost:8000.
+const API = (location.protocol === 'file:') ? 'http://localhost:8000' : '';
+
+// ── Health check ────────────────────────────────────────────────────────────
+async function checkHealth() {
+  const dot = document.getElementById('health-dot');
+  const txt = document.getElementById('health-text');
+  try {
+    const r = await fetch(`${API}/health`);
+    if (r.ok) {
+      dot.className = 'dot dot-ok';
+      txt.textContent = 'API connected';
+    } else {
+      throw new Error();
+    }
+  } catch {
+    dot.className = 'dot dot-err';
+    txt.textContent = 'API offline';
+  }
+}
+
+// ── Workspace ────────────────────────────────────────────────────────────────
+let workspace = { xrpl_accounts: [], csv_files: [] };
+
+async function loadWorkspace() {
+  try {
+    const r = await fetch(`${API}/workspace`);
+    if (!r.ok) throw new Error();
+    workspace = await r.json();
+    renderWorkspace();
+  } catch {
+    // silently skip if offline
+  }
+}
+
+function renderWorkspace() {
+  // Accounts
+  const al = document.getElementById('accounts-list');
+  const ac = document.getElementById('accounts-count');
+  ac.textContent = `${workspace.xrpl_accounts.length} registered`;
+  if (!workspace.xrpl_accounts.length) {
+    al.innerHTML = '<p class="text-gray-600 text-xs italic">No accounts registered yet.</p>';
+  } else {
+    al.innerHTML = workspace.xrpl_accounts.map(a => `
+      <div class="tag">
+        <span class="truncate max-w-[200px]" title="${a}">${a}</span>
+        <span class="remove" onclick="removeAccount('${a}')" title="Remove">×</span>
+      </div>`).join('');
+  }
+
+  // CSV files
+  const cl = document.getElementById('csv-list');
+  const cc = document.getElementById('csv-count');
+  cc.textContent = `${workspace.csv_files.length} registered`;
+  if (!workspace.csv_files.length) {
+    cl.innerHTML = '<p class="text-gray-600 text-xs italic">No CSV files registered yet.</p>';
+  } else {
+    cl.innerHTML = workspace.csv_files.map(p => {
+      const name = p.split(/[\\/]/).pop();
+      return `
+      <div class="tag">
+        <span class="truncate max-w-[180px]" title="${p}">${name}</span>
+        <span class="remove" onclick="removeCsv('${p.replace(/\\/g,'\\\\')}')" title="Remove">×</span>
+      </div>`;
+    }).join('');
+  }
+}
+
+async function addAccount() {
+  const inp = document.getElementById('add-account-input');
+  const account = inp.value.trim();
+  if (!account) return;
+  try {
+    const r = await fetch(`${API}/workspace/accounts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account }),
+    });
+    if (!r.ok) {
+      const err = await r.json();
+      alert(err.detail || 'Failed to add account');
+      return;
+    }
+    workspace = await r.json();
+    inp.value = '';
+    renderWorkspace();
+  } catch {
+    alert('Could not reach API. Is the server running?');
+  }
+}
+
+async function removeAccount(account) {
+  try {
+    const r = await fetch(`${API}/workspace/accounts/${encodeURIComponent(account)}`, { method: 'DELETE' });
+    if (!r.ok) return;
+    workspace = await r.json();
+    renderWorkspace();
+  } catch {}
+}
+
+async function removeCsv(path) {
+  try {
+    const r = await fetch(`${API}/workspace/csv`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    if (!r.ok) return;
+    workspace = await r.json();
+    renderWorkspace();
+  } catch {}
+}
+
+// ── CSV upload ────────────────────────────────────────────────────────────────
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('csv-file-input');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('border-blue-500'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('border-blue-500'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('border-blue-500');
+  if (e.dataTransfer.files.length) handleCsvFile(e.dataTransfer.files[0]);
+});
+dropZone.addEventListener('click', () => fileInput.click());
+
+async function uploadCsv(input) {
+  if (!input.files.length) return;
+  await handleCsvFile(input.files[0]);
+  input.value = '';
+}
+
+async function handleCsvFile(file) {
+  const statusEl = document.getElementById('upload-status');
+  statusEl.textContent = `Uploading ${file.name}…`;
+  statusEl.className = 'mt-2 text-xs text-blue-400';
+  statusEl.classList.remove('hidden');
+
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    // register=true (default) → auto-adds to workspace
+    const r = await fetch(`${API}/uploads/csv?register=true`, { method: 'POST', body: fd });
+    if (!r.ok) {
+      const err = await r.json();
+      statusEl.textContent = `Error: ${err.detail || r.statusText}`;
+      statusEl.className = 'mt-2 text-xs text-red-400';
+      return;
+    }
+    const data = await r.json();
+    statusEl.textContent = `✓ Uploaded and registered: ${file.name}`;
+    statusEl.className = 'mt-2 text-xs text-green-400';
+    // Refresh workspace display
+    await loadWorkspace();
+    setTimeout(() => statusEl.classList.add('hidden'), 3000);
+  } catch {
+    statusEl.textContent = 'Upload failed — is the server running?';
+    statusEl.className = 'mt-2 text-xs text-red-400';
+  }
+}
+
+// ── Run report ────────────────────────────────────────────────────────────────
+function togglePricesField() {
+  const v = document.getElementById('run-valuation').value;
+  document.getElementById('prices-field').classList.toggle('hidden', v !== 'price_table');
+}
+
+async function runReport() {
+  const taxYear = parseInt(document.getElementById('run-tax-year').value);
+  const country = document.getElementById('run-country').value;
+  const valMode = document.getElementById('run-valuation').value;
+  const pricesPath = document.getElementById('run-prices-path').value.trim() || null;
+  const debug = document.getElementById('run-debug').checked;
+  const dry = document.getElementById('run-dry').checked;
+
+  if (!workspace.xrpl_accounts.length && !workspace.csv_files.length) {
+    alert('Add at least one XRPL account or CSV file to the workspace first.');
+    return;
+  }
+
+  if (valMode === 'price_table' && !pricesPath) {
+    alert('Enter the path to your price table CSV when using "Price table" valuation.');
+    return;
+  }
+
+  document.getElementById('run-overlay').classList.remove('hidden');
+  document.getElementById('overlay-text').textContent = `Running ${country.toUpperCase()} ${taxYear} pipeline…`;
+  document.getElementById('run-btn').disabled = true;
+
+  try {
+    const r = await fetch(`${API}/workspace/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tax_year: taxYear,
+        country,
+        valuation_mode: valMode,
+        csv_prices_path: pricesPath,
+        debug_valuation: debug,
+        dry_run: dry,
+      }),
+    });
+
+    const job = await r.json();
+    document.getElementById('run-overlay').classList.add('hidden');
+    document.getElementById('run-btn').disabled = false;
+
+    if (!r.ok) {
+      alert(`Error: ${job.detail || r.statusText}`);
+      return;
+    }
+
+    await loadJobs();
+    openResults(job);
+  } catch (e) {
+    document.getElementById('run-overlay').classList.add('hidden');
+    document.getElementById('run-btn').disabled = false;
+    alert('Request failed — is the server running?');
+  }
+}
+
+// ── Jobs list ─────────────────────────────────────────────────────────────────
+let selectedJobId = null;
+
+async function loadJobs() {
+  try {
+    const r = await fetch(`${API}/jobs?limit=50`);
+    if (!r.ok) throw new Error();
+    const jobs = await r.json();
+    renderJobs(jobs);
+  } catch {
+    document.getElementById('jobs-list').innerHTML =
+      '<p class="text-red-400 text-xs text-center py-4">Could not load jobs — is the server running?</p>';
+  }
+}
+
+function renderJobs(jobs) {
+  const el = document.getElementById('jobs-list');
+  if (!jobs.length) {
+    el.innerHTML = '<p class="text-gray-600 text-xs italic text-center py-4">No jobs yet. Run your first report above.</p>';
+    return;
+  }
+
+  el.innerHTML = jobs.map(j => {
+    const created = new Date(j.created_at).toLocaleString();
+    const badge = badgeHtml(j.status);
+    const sel = j.id === selectedJobId ? 'selected' : '';
+    const hasReport = j.output?.report_html_path ? '📄' : '';
+    const label = j.input.case_name || `${j.input.country} ${j.input.tax_year}`;
+    return `
+    <div class="job-row ${sel} p-3 fade-in" onclick="openResultsById('${j.id}')">
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            ${badge}
+            <span class="text-white text-sm font-medium truncate">${escHtml(label)}</span>
+            <span class="text-gray-600">${hasReport}</span>
+          </div>
+          <div class="text-xs text-gray-500 mt-1 flex gap-3">
+            <span>${created}</span>
+            <span class="text-gray-700">·</span>
+            <span>${j.input.xrpl_accounts.length} acct${j.input.xrpl_accounts.length !== 1 ? 's' : ''}
+              + ${j.input.csv_files.length} CSV${j.input.csv_files.length !== 1 ? 's' : ''}</span>
+            ${j.input.dry_run ? '<span class="text-yellow-600 font-semibold">DRY RUN</span>' : ''}
+          </div>
+          ${j.output?.error_message
+            ? `<div class="text-xs text-red-400 mt-1 truncate">✗ ${escHtml(j.output.error_message)}</div>` : ''}
+        </div>
+        <span class="text-gray-600 text-sm flex-shrink-0">›</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function badgeHtml(status) {
+  const map = {
+    pending: 'badge-pending',
+    running: 'badge-running',
+    completed: 'badge-completed',
+    failed: 'badge-failed',
+  };
+  return `<span class="badge ${map[status] || 'badge-pending'}">${status}</span>`;
+}
+
+// ── Results panel ─────────────────────────────────────────────────────────────
+async function openResultsById(jobId) {
+  try {
+    const r = await fetch(`${API}/jobs/${jobId}`);
+    if (!r.ok) return;
+    const job = await r.json();
+    openResults(job);
+  } catch {}
+}
+
+async function openResults(job) {
+  selectedJobId = job.id;
+  renderJobs(await fetchJobsList());
+
+  const panel = document.getElementById('results-panel');
+  panel.classList.remove('hidden');
+
+  // Meta
+  const created = new Date(job.created_at).toLocaleString();
+  const updated = new Date(job.updated_at).toLocaleString();
+  document.getElementById('results-meta').innerHTML = `
+    <span>${badgeHtml(job.status)}</span>
+    <span>Year: <strong class="text-white">${job.input.tax_year}</strong></span>
+    <span>Country: <strong class="text-white">${job.input.country}</strong></span>
+    <span>Created: ${created}</span>
+    <span>Updated: ${updated}</span>
+    <span class="text-gray-600 text-xs truncate" title="${job.id}">ID: ${job.id.slice(0, 8)}…</span>
+  `;
+
+  // Error
+  const errEl = document.getElementById('results-error');
+  if (job.output?.error_message) {
+    errEl.textContent = job.output.error_message;
+    errEl.classList.remove('hidden');
+  } else {
+    errEl.classList.add('hidden');
+  }
+
+  // Downloads
+  const dlEl = document.getElementById('results-downloads');
+  dlEl.innerHTML = '';
+  try {
+    const fr = await fetch(`${API}/jobs/${job.id}/files`);
+    if (fr.ok) {
+      const files = await fr.json();
+      const icons = { gains: '📈', wealth: '💰', summary: '🗂️', report: '📄', log: '📋' };
+      for (const [kind, path] of Object.entries(files)) {
+        const btn = document.createElement('a');
+        btn.href = `${API}/jobs/${job.id}/files/${kind}`;
+        btn.download = '';
+        btn.className = 'btn-secondary text-xs flex items-center gap-1';
+        btn.innerHTML = `${icons[kind] || '📎'} Download ${kind}`;
+        dlEl.appendChild(btn);
+
+        // Embed HTML report inline
+        if (kind === 'report') {
+          const iframeWrap = document.getElementById('results-iframe-wrap');
+          const iframe = document.getElementById('results-iframe');
+          iframeWrap.classList.remove('hidden');
+          // Load report into iframe via fetch to bypass potential CORS on file:// paths
+          loadReportInIframe(job.id, iframe);
+        }
+      }
+      // Always show log if available
+      if (files.log) {
+        loadLog(job.id);
+      }
+    }
+  } catch {}
+
+  // Scroll panel into view
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadReportInIframe(jobId, iframe) {
+  try {
+    const r = await fetch(`${API}/jobs/${jobId}/files/report`);
+    if (!r.ok) return;
+    const html = await r.text();
+    // Write HTML into iframe via blob URL to avoid CSP issues
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    iframe.src = url;
+  } catch {}
+}
+
+async function loadLog(jobId) {
+  try {
+    const r = await fetch(`${API}/jobs/${jobId}/files/log`);
+    if (!r.ok) return;
+    const text = await r.text();
+    const logEl = document.getElementById('results-log');
+    const logWrap = document.getElementById('results-log-wrap');
+    logEl.textContent = text;
+    logWrap.classList.remove('hidden');
+  } catch {}
+}
+
+function closeResults() {
+  document.getElementById('results-panel').classList.add('hidden');
+  document.getElementById('results-iframe-wrap').classList.add('hidden');
+  document.getElementById('results-log-wrap').classList.add('hidden');
+  selectedJobId = null;
+}
+
+async function fetchJobsList() {
+  try {
+    const r = await fetch(`${API}/jobs?limit=50`);
+    if (r.ok) return await r.json();
+  } catch {}
+  return [];
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Enter key on account input
+document.getElementById('add-account-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addAccount();
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+(async () => {
+  await Promise.all([checkHealth(), loadWorkspace(), loadJobs()]);
+  // Auto-refresh jobs every 30s
+  setInterval(loadJobs, 30_000);
+  setInterval(checkHealth, 15_000);
+})();
+</script>
+</body>
+</html>

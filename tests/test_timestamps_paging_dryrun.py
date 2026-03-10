@@ -39,7 +39,7 @@ def _ok_subprocess(*_args, **_kwargs):
 def _reset_store():
     from taxspine_orchestrator import main as _m
 
-    _m._job_store._jobs.clear()
+    _m._job_store.clear()
 
 
 @pytest.fixture()
@@ -248,8 +248,8 @@ class TestDryRun:
 
         assert "DRY RUN" in log_text
         assert "[would run]" in log_text
-        assert "blockchain-reader" in log_text
-        assert "taxspine-nor-report" in log_text
+        assert "taxspine-xrpl-nor" in log_text
+        assert "rEXAMPLE1" in log_text
 
     @patch("taxspine_orchestrator.services.subprocess.run")
     def test_dry_run_no_inputs_still_fails(
@@ -278,7 +278,7 @@ class TestDryRun:
         self, mock_run, client: TestClient,
     ) -> None:
         """Normal job (dry_run=false) still triggers subprocess calls."""
-        mock_run.side_effect = [_ok_subprocess(), _ok_subprocess()]
+        mock_run.side_effect = [_ok_subprocess()]
         payload = {**_SAMPLE_INPUT, "dry_run": False}
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
@@ -287,8 +287,8 @@ class TestDryRun:
         body = resp.json()
 
         assert body["status"] == "completed"
-        assert mock_run.call_count == 2
-        assert body["output"]["gains_csv_path"] is not None
+        assert mock_run.call_count == 1
+        assert body["output"]["log_path"] is not None
 
     def test_dry_run_defaults_to_false(self, client: TestClient) -> None:
         resp = client.post("/jobs", json=_SAMPLE_INPUT)
@@ -314,6 +314,6 @@ class TestDryRun:
         log_path = resp.json()["output"]["log_path"]
         log_text = Path(log_path).read_text()
 
-        assert "blockchain-reader" in log_text
-        assert "--generic-events-csv" in log_text
+        assert "taxspine-xrpl-nor" in log_text
+        assert "--input" in log_text
         assert mock_run.call_count == 0

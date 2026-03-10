@@ -19,7 +19,7 @@ def _reset_store() -> None:
     """Clear the in-memory store between tests so they don't leak state."""
     from taxspine_orchestrator import main as _m
 
-    _m._job_store._jobs.clear()
+    _m._job_store.clear()
 
 
 @pytest.fixture()
@@ -209,7 +209,7 @@ class TestDownloadFile:
     def test_download_gains_csv(self, client: TestClient, tmp_path: Path) -> None:
         job = _create_job(client)
         dummy = tmp_path / "gains.csv"
-        dummy.write_text("asset,amount\nXRP,100\n")
+        dummy.write_bytes(b"asset,amount\nXRP,100\n")  # binary to avoid CRLF on Windows
 
         output = JobOutput(gains_csv_path=str(dummy))
         _force_status(job["id"], JobStatus.COMPLETED, output=output)
@@ -217,13 +217,13 @@ class TestDownloadFile:
         resp = client.get(f"/jobs/{job['id']}/files/gains")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "text/csv; charset=utf-8"
-        assert resp.text == "asset,amount\nXRP,100\n"
+        assert resp.content == b"asset,amount\nXRP,100\n"
         assert f"gains-{job['id']}.csv" in resp.headers["content-disposition"]
 
     def test_download_wealth_csv(self, client: TestClient, tmp_path: Path) -> None:
         job = _create_job(client)
         dummy = tmp_path / "wealth.csv"
-        dummy.write_text("date,value\n2025-01-01,5000\n")
+        dummy.write_bytes(b"date,value\n2025-01-01,5000\n")  # binary to avoid CRLF on Windows
 
         output = JobOutput(wealth_csv_path=str(dummy))
         _force_status(job["id"], JobStatus.COMPLETED, output=output)
@@ -231,7 +231,7 @@ class TestDownloadFile:
         resp = client.get(f"/jobs/{job['id']}/files/wealth")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "text/csv; charset=utf-8"
-        assert resp.text == "date,value\n2025-01-01,5000\n"
+        assert resp.content == b"date,value\n2025-01-01,5000\n"
         assert f"wealth-{job['id']}.csv" in resp.headers["content-disposition"]
 
     def test_download_summary_json(self, client: TestClient, tmp_path: Path) -> None:
@@ -251,7 +251,7 @@ class TestDownloadFile:
     def test_download_log_txt(self, client: TestClient, tmp_path: Path) -> None:
         job = _create_job(client)
         dummy = tmp_path / "execution.log"
-        dummy.write_text("$ blockchain-reader ...\n  rc=0\n")
+        dummy.write_bytes(b"$ taxspine-xrpl-nor ...\n  rc=0\n")  # binary to avoid CRLF on Windows
 
         output = JobOutput(log_path=str(dummy))
         _force_status(job["id"], JobStatus.COMPLETED, output=output)
@@ -259,7 +259,7 @@ class TestDownloadFile:
         resp = client.get(f"/jobs/{job['id']}/files/log")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "text/plain; charset=utf-8"
-        assert resp.text == "$ blockchain-reader ...\n  rc=0\n"
+        assert resp.content == b"$ taxspine-xrpl-nor ...\n  rc=0\n"
         assert f"log-{job['id']}.txt" in resp.headers["content-disposition"]
 
     def test_file_missing_on_disk_returns_404(self, client: TestClient) -> None:

@@ -45,7 +45,7 @@ def _make_ok(**overrides):
 def _reset_store():
     from taxspine_orchestrator import main as _m
 
-    _m._job_store._jobs.clear()
+    _m._job_store.clear()
 
 
 @pytest.fixture()
@@ -61,7 +61,8 @@ class TestDefaultDummy:
 
     @patch("taxspine_orchestrator.services.subprocess.run")
     def test_no_csv_prices_flag_by_default(self, mock_run, client):
-        mock_run.side_effect = [_make_ok(), _make_ok()]
+        # _NORWAY_BASE has 1 XRPL account → 1 subprocess call.
+        mock_run.side_effect = [_make_ok()]
 
         resp = client.post("/jobs", json=_NORWAY_BASE)
         job_id = resp.json()["id"]
@@ -69,9 +70,9 @@ class TestDefaultDummy:
         resp = client.post(f"/jobs/{job_id}/start")
         assert resp.json()["status"] == "completed"
 
-        # Tax CLI command (second call) should NOT contain --csv-prices.
-        report_cmd = mock_run.call_args_list[1][0][0]
-        assert "--csv-prices" not in report_cmd
+        # The only CLI call (taxspine-xrpl-nor) should NOT contain --csv-prices.
+        xrpl_cmd = mock_run.call_args_list[0][0][0]
+        assert "--csv-prices" not in xrpl_cmd
 
     def test_valuation_mode_defaults_to_dummy(self, client):
         resp = client.post("/jobs", json=_NORWAY_BASE)
@@ -81,7 +82,8 @@ class TestDefaultDummy:
     @patch("taxspine_orchestrator.services.subprocess.run")
     def test_explicit_dummy_no_csv_prices_flag(self, mock_run, client):
         """Explicitly setting valuation_mode=dummy should also omit --csv-prices."""
-        mock_run.side_effect = [_make_ok(), _make_ok()]
+        # _NORWAY_BASE has 1 XRPL account → 1 subprocess call.
+        mock_run.side_effect = [_make_ok()]
 
         payload = {**_NORWAY_BASE, "valuation_mode": "dummy"}
         resp = client.post("/jobs", json=payload)
@@ -89,8 +91,8 @@ class TestDefaultDummy:
 
         client.post(f"/jobs/{job_id}/start")
 
-        report_cmd = mock_run.call_args_list[1][0][0]
-        assert "--csv-prices" not in report_cmd
+        xrpl_cmd = mock_run.call_args_list[0][0][0]
+        assert "--csv-prices" not in xrpl_cmd
 
 
 # ── PRICE_TABLE with valid path ──────────────────────────────────────────────
@@ -104,7 +106,8 @@ class TestPriceTableSuccess:
         prices_file = tmp_path / "prices.csv"
         prices_file.write_text("date,asset,price\n2025-01-01,XRP,2.5\n")
 
-        mock_run.side_effect = [_make_ok(), _make_ok()]
+        # _NORWAY_BASE has 1 XRPL account → 1 subprocess call.
+        mock_run.side_effect = [_make_ok()]
 
         payload = {
             **_NORWAY_BASE,
@@ -119,17 +122,19 @@ class TestPriceTableSuccess:
 
         assert body["status"] == "completed"
 
-        report_cmd = mock_run.call_args_list[1][0][0]
-        assert "--csv-prices" in report_cmd
-        idx = report_cmd.index("--csv-prices")
-        assert report_cmd[idx + 1] == str(prices_file)
+        # The xrpl-nor CLI (only call) should carry --csv-prices.
+        xrpl_cmd = mock_run.call_args_list[0][0][0]
+        assert "--csv-prices" in xrpl_cmd
+        idx = xrpl_cmd.index("--csv-prices")
+        assert xrpl_cmd[idx + 1] == str(prices_file)
 
     @patch("taxspine_orchestrator.services.subprocess.run")
     def test_uk_includes_csv_prices_flag(self, mock_run, client, tmp_path):
         prices_file = tmp_path / "prices-gbp.csv"
         prices_file.write_text("date,asset,price\n2025-01-01,XRP,1.8\n")
 
-        mock_run.side_effect = [_make_ok(), _make_ok()]
+        # _UK_BASE has 1 XRPL account → 1 subprocess call.
+        mock_run.side_effect = [_make_ok()]
 
         payload = {
             **_UK_BASE,
@@ -144,10 +149,10 @@ class TestPriceTableSuccess:
 
         assert body["status"] == "completed"
 
-        report_cmd = mock_run.call_args_list[1][0][0]
-        assert "--csv-prices" in report_cmd
-        idx = report_cmd.index("--csv-prices")
-        assert report_cmd[idx + 1] == str(prices_file)
+        xrpl_cmd = mock_run.call_args_list[0][0][0]
+        assert "--csv-prices" in xrpl_cmd
+        idx = xrpl_cmd.index("--csv-prices")
+        assert xrpl_cmd[idx + 1] == str(prices_file)
 
     @patch("taxspine_orchestrator.services.subprocess.run")
     def test_completed_with_outputs(self, mock_run, client, tmp_path):
@@ -155,7 +160,8 @@ class TestPriceTableSuccess:
         prices_file = tmp_path / "prices.csv"
         prices_file.write_text("date,asset,price\n")
 
-        mock_run.side_effect = [_make_ok(), _make_ok()]
+        # _NORWAY_BASE has 1 XRPL account → 1 subprocess call.
+        mock_run.side_effect = [_make_ok()]
 
         payload = {
             **_NORWAY_BASE,
@@ -169,9 +175,8 @@ class TestPriceTableSuccess:
         body = resp.json()
 
         assert body["status"] == "completed"
-        assert body["output"]["gains_csv_path"] is not None
-        assert body["output"]["wealth_csv_path"] is not None
-        assert body["output"]["summary_json_path"] is not None
+        # log is always written; gains/wealth/summary CSVs are not produced
+        # by the taxspine-xrpl-nor pipeline.
         assert body["output"]["log_path"] is not None
         assert body["output"]["error_message"] is None
 

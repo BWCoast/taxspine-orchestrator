@@ -123,3 +123,23 @@ class Job(BaseModel):
     output: JobOutput = Field(default_factory=JobOutput)
     created_at: datetime
     updated_at: datetime
+
+
+# ── Workspace ────────────────────────────────────────────────────────────────
+
+
+class WorkspaceConfig(BaseModel):
+    """Persistent workspace state — survives server restarts.
+
+    Tracks the XRPL accounts and CSV file paths that are registered for
+    continuous year-over-year tracking.  Stored as JSON on disk.
+    """
+
+    xrpl_accounts: List[str] = Field(
+        default_factory=list,
+        description="XRPL account addresses registered for tracking.",
+    )
+    csv_files: List[str] = Field(
+        default_factory=list,
+        description="Absolute paths to registered generic-events CSV files.",
+    )

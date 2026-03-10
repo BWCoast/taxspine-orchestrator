@@ -35,7 +35,7 @@ def _reset_store() -> None:
     """Clear the in-memory store between tests so they don't leak state."""
     from taxspine_orchestrator import main as _m
 
-    _m._job_store._jobs.clear()
+    _m._job_store.clear()
 
 
 @pytest.fixture()
