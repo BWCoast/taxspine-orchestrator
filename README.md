@@ -26,8 +26,10 @@ pytest
 | GET    | `/jobs`                       | List jobs (with optional filters)    |
 | GET    | `/jobs/{job_id}`              | Get a single job by ID               |
 | POST   | `/jobs/{job_id}/start`        | Execute the job synchronously        |
+| POST   | `/jobs/{job_id}/attach-csv`   | Attach uploaded CSVs to a pending job|
 | GET    | `/jobs/{job_id}/files`        | List output files for a job          |
 | GET    | `/jobs/{job_id}/files/{kind}` | Download a single output file        |
+| POST   | `/uploads/csv`                | Upload a CSV file                    |
 
 ### Example — create and start a job
 
@@ -256,9 +258,63 @@ CLI paths and working directories are configured via environment variables:
 |----------------------------|--------------------------------------|
 | `TEMP_DIR`                 | `/tmp/taxspine_orchestrator/tmp`     |
 | `OUTPUT_DIR`               | `/tmp/taxspine_orchestrator/output`  |
+| `UPLOAD_DIR`               | `/tmp/taxspine_orchestrator/uploads` |
 | `BLOCKCHAIN_READER_CLI`    | `blockchain-reader`                  |
 | `TAXSPINE_NOR_REPORT_CLI`  | `taxspine-nor-report`                |
 | `TAXSPINE_UK_REPORT_CLI`   | `taxspine-uk-report`                 |
+
+## Uploading CSVs
+
+The orchestrator can accept CSV files over HTTP so that dashboard users
+don't need direct filesystem access.  Upload a file, then reference its
+path in `csv_files` when creating a job (or attach it afterwards).
+
+### Upload a CSV
+
+```bash
+curl -F "file=@generic-events-2025.csv" http://localhost:8000/uploads/csv
+```
+
+Example response:
+
+```json
+{
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "path": "/tmp/taxspine_orchestrator/uploads/a1b2c3d4-e5f6-7890-abcd-ef1234567890.csv",
+  "original_filename": "generic-events-2025.csv"
+}
+```
+
+Use the returned `path` value in `JobInput.csv_files` — either when
+creating a job or via the attach endpoint below.
+
+Content-type validation is intentionally lenient: `text/csv`,
+`application/vnd.ms-excel`, and `application/octet-stream` are all
+accepted.  Obviously wrong types (e.g. `image/*`) are rejected with
+a `400`.
+
+### Attach CSVs to an existing job
+
+```bash
+curl -s -X POST http://localhost:8000/jobs/JOB_ID/attach-csv \
+  -H "Content-Type: application/json" \
+  -d '{
+    "csv_paths": [
+      "/tmp/taxspine_orchestrator/uploads/a1b2c3d4-....csv"
+    ]
+  }'
+```
+
+Behaviour:
+
+- Only works for **PENDING** jobs (returns `400` otherwise).
+- Each path must point to an existing file (returns `400` if any is
+  missing).
+- Paths already present in `csv_files` are not duplicated.
+- Returns the updated job.
+
+This is a convenience endpoint for the dashboard.  Users can still
+supply `csv_files` directly in the initial `POST /jobs` body.
 
 ## Non-goals (current scope)
 

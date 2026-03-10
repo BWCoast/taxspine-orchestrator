@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # ── Directories ───────────────────────────────────────────────────────
     TEMP_DIR: Path = Path("/tmp/taxspine_orchestrator/tmp")
     OUTPUT_DIR: Path = Path("/tmp/taxspine_orchestrator/output")
+    UPLOAD_DIR: Path = Path("/tmp/taxspine_orchestrator/uploads")
 
     # ── External CLI binaries ─────────────────────────────────────────────
     BLOCKCHAIN_READER_CLI: str = "blockchain-reader"
@@ -28,9 +29,10 @@ class Settings(BaseSettings):
     TAXSPINE_UK_REPORT_CLI: str = "taxspine-uk-report"
 
     def ensure_dirs(self) -> None:
-        """Create TEMP_DIR and OUTPUT_DIR if they do not exist."""
+        """Create TEMP_DIR, OUTPUT_DIR, and UPLOAD_DIR if they do not exist."""
         self.TEMP_DIR.mkdir(parents=True, exist_ok=True)
         self.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        self.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()
