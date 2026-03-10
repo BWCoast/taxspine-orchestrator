@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from .models import Job, JobStatus
 
@@ -36,5 +36,19 @@ class InMemoryJobStore:
         if job is None:
             return None
         updated = job.model_copy(update={"status": status})
+        self._jobs[job_id] = updated
+        return updated
+
+    def update_job(self, job_id: str, **fields: Any) -> Job | None:
+        """Update arbitrary top-level fields on a job.
+
+        Accepts keyword arguments matching Job field names, e.g.
+        ``store.update_job(id, status=JobStatus.COMPLETED, output=new_output)``.
+        Returns the updated job, or ``None`` if not found.
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        updated = job.model_copy(update=fields)
         self._jobs[job_id] = updated
         return updated

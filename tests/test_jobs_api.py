@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 
 from taxspine_orchestrator.main import app
-from taxspine_orchestrator.storage import InMemoryJobStore
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -18,14 +19,21 @@ _SAMPLE_INPUT = {
 }
 
 
+def _ok_subprocess(*_args, **_kwargs):
+    """Fake subprocess.run that always returns rc=0."""
+    from unittest.mock import MagicMock
+
+    result = MagicMock()
+    result.returncode = 0
+    result.stdout = ""
+    result.stderr = ""
+    return result
+
+
 @pytest.fixture(autouse=True)
 def _reset_store() -> None:
-    """Clear the in-memory store between tests so they don't leak state.
-
-    We reach into the app-level singleton; once we migrate to proper DI
-    this fixture will inject a fresh store via overrides instead.
-    """
-    from taxspine_orchestrator import main as _m  # noqa: WPS433
+    """Clear the in-memory store between tests so they don't leak state."""
+    from taxspine_orchestrator import main as _m
 
     _m._job_store._jobs.clear()
 
@@ -68,6 +76,7 @@ class TestCreateJob:
         assert out["wealth_csv_path"] is None
         assert out["summary_json_path"] is None
         assert out["log_path"] is None
+        assert out["error_message"] is None
 
 
 # ── GET /jobs ────────────────────────────────────────────────────────────────
@@ -110,22 +119,26 @@ class TestGetJob:
 
 
 class TestStartJob:
-    def test_start_flips_to_running(self, client: TestClient) -> None:
+    @patch("taxspine_orchestrator.services.subprocess.run", side_effect=_ok_subprocess)
+    def test_start_completes_job(self, mock_run, client: TestClient) -> None:
         create_resp = client.post("/jobs", json=_SAMPLE_INPUT)
         job_id = create_resp.json()["id"]
 
         resp = client.post(f"/jobs/{job_id}/start")
         assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
+        assert resp.json()["status"] == "completed"
 
     def test_start_nonexistent_returns_404(self, client: TestClient) -> None:
         resp = client.post("/jobs/does-not-exist/start")
         assert resp.status_code == 404
 
-    def test_get_after_start_shows_running(self, client: TestClient) -> None:
+    @patch("taxspine_orchestrator.services.subprocess.run", side_effect=_ok_subprocess)
+    def test_get_after_start_shows_completed(
+        self, mock_run, client: TestClient,
+    ) -> None:
         create_resp = client.post("/jobs", json=_SAMPLE_INPUT)
         job_id = create_resp.json()["id"]
         client.post(f"/jobs/{job_id}/start")
 
         resp = client.get(f"/jobs/{job_id}")
-        assert resp.json()["status"] == "running"
+        assert resp.json()["status"] == "completed"

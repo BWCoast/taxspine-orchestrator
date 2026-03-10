@@ -49,6 +49,7 @@ class JobOutput(BaseModel):
     wealth_csv_path: Optional[str] = None
     summary_json_path: Optional[str] = None
     log_path: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 class Job(BaseModel):
