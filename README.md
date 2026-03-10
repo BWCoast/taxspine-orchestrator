@@ -19,13 +19,15 @@ pytest
 
 ## API overview
 
-| Method | Path                   | Description                       |
-|--------|------------------------|-----------------------------------|
-| GET    | `/health`              | Health check                      |
-| POST   | `/jobs`                | Create a new tax job              |
-| GET    | `/jobs`                | List all jobs                     |
-| GET    | `/jobs/{job_id}`       | Get a single job by ID            |
-| POST   | `/jobs/{job_id}/start` | Execute the job synchronously     |
+| Method | Path                          | Description                          |
+|--------|-------------------------------|--------------------------------------|
+| GET    | `/health`                     | Health check                         |
+| POST   | `/jobs`                       | Create a new tax job                 |
+| GET    | `/jobs`                       | List jobs (with optional filters)    |
+| GET    | `/jobs/{job_id}`              | Get a single job by ID               |
+| POST   | `/jobs/{job_id}/start`        | Execute the job synchronously        |
+| GET    | `/jobs/{job_id}/files`        | List output files for a job          |
+| GET    | `/jobs/{job_id}/files/{kind}` | Get a single output file by kind     |
 
 ### Example — create and start a job
 
@@ -43,6 +45,37 @@ curl -s -X POST http://localhost:8000/jobs \
 # 2. Start (replace JOB_ID with the id from step 1)
 curl -s -X POST http://localhost:8000/jobs/JOB_ID/start
 ```
+
+### Filtering jobs
+
+`GET /jobs` accepts optional query parameters `status` and `country`:
+
+```bash
+# Only completed jobs
+curl -s 'http://localhost:8000/jobs?status=completed'
+
+# Only Norway jobs
+curl -s 'http://localhost:8000/jobs?country=norway'
+
+# Combine filters
+curl -s 'http://localhost:8000/jobs?status=failed&country=uk'
+```
+
+Valid values — `status`: `pending`, `running`, `completed`, `failed`;
+`country`: `norway`, `uk`.  Invalid values return `422`.
+
+### Listing output files
+
+```bash
+# All output files for a job (JSON map of kind → path)
+curl -s http://localhost:8000/jobs/JOB_ID/files
+
+# Single file by kind (gains | wealth | summary | log)
+curl -s http://localhost:8000/jobs/JOB_ID/files/gains
+```
+
+The `/files/{kind}` endpoint returns `{"kind", "path", "exists_on_disk"}`.
+A future iteration will return the file content directly via `FileResponse`.
 
 ## Job execution
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from .models import Job, JobStatus
+from .models import Country, Job, JobStatus
 
 
 class InMemoryJobStore:
@@ -26,9 +26,19 @@ class InMemoryJobStore:
         """Retrieve a job by ID, or ``None`` if not found."""
         return self._jobs.get(job_id)
 
-    def list(self) -> List[Job]:
-        """Return all stored jobs (insertion order)."""
-        return list(self._jobs.values())
+    def list(
+        self,
+        *,
+        status: JobStatus | None = None,
+        country: Country | None = None,
+    ) -> List[Job]:
+        """Return stored jobs, optionally filtered by *status* and/or *country*."""
+        jobs = self._jobs.values()
+        if status is not None:
+            jobs = [j for j in jobs if j.status == status]
+        if country is not None:
+            jobs = [j for j in jobs if j.input.country == country]
+        return list(jobs)
 
     def update_status(self, job_id: str, status: JobStatus) -> Job | None:
         """Set a new status on an existing job.  Returns the updated job."""

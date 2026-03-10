@@ -39,8 +39,13 @@ class JobService:
     def get_job(self, job_id: str) -> Job | None:
         return self.store.get(job_id)
 
-    def list_jobs(self) -> list[Job]:
-        return self.store.list()
+    def list_jobs(
+        self,
+        *,
+        status: JobStatus | None = None,
+        country: Country | None = None,
+    ) -> list[Job]:
+        return self.store.list(status=status, country=country)
 
     # ── Execution pipeline ───────────────────────────────────────────────
 
