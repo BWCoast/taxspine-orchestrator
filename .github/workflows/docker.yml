@@ -89,10 +89,20 @@ jobs:
           # Cache layers in GitHub's cache — speeds up subsequent builds.
           cache-from: type=gha
           cache-to:   type=gha,mode=max
-          # ── tax-nor auth (only needed if tax-nor is a private repo) ────────
-          # Uncomment and add GH_READ_TOKEN secret if needed:
-          # secrets: |
-          #   gh_token=${{ secrets.GH_READ_TOKEN }}
+          # ── tax-nor auth ────────────────────────────────────────────────────
+          # GH_READ_TOKEN is a repository secret containing a GitHub PAT with
+          # read access to the tax-nor repo.
+          #
+          # Add it at: taxspine-orchestrator → Settings → Secrets → Actions
+          #              → New repository secret → Name: GH_READ_TOKEN
+          #
+          # The token is injected via BuildKit secret mount — it does NOT
+          # appear in docker history or any image layer.
+          #
+          # If GH_READ_TOKEN is not set (public repo), the secret is empty
+          # and the Dockerfile falls back to the unauthenticated URL.
+          secrets: |
+            gh_token=${{ secrets.GH_READ_TOKEN }}
           # Then switch Dockerfile RUN to the --mount=type=secret variant.
 
       # ── Summary ────────────────────────────────────────────────────────────

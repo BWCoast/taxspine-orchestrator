@@ -39,19 +39,26 @@ COPY taxspine_orchestrator/ ./taxspine_orchestrator/
 RUN pip install --no-cache-dir .
 
 # ── Python deps: tax-spine CLIs ───────────────────────────────────────────────
-# This installs taxspine-xrpl-nor, taxspine-nor-report, taxspine-uk-report
-# from the tax-nor repository.  The layer is cached until this RUN line changes.
+# Installs taxspine-xrpl-nor, taxspine-nor-report, taxspine-uk-report
+# from the tax-nor repository.
 #
-# Public repo (no authentication):
-RUN pip install --no-cache-dir \
-        "git+https://github.com/BWCoast/tax-nor.git"
+# Works for both public and private repos:
+#   - Public:  no secret needed; leave GH_READ_TOKEN unset.
+#   - Private: set GH_READ_TOKEN as a GitHub Actions secret (or --secret at
+#              local build time). The token is injected via BuildKit secret
+#              mount and is NEVER baked into any image layer or docker history.
 #
-# Private repo: replace the RUN above with the secret-mount variant below.
-# Then build with: docker build --secret id=gh_token,src=.gh_token ...
-#
-# RUN --mount=type=secret,id=gh_token \
-#     TOKEN=$(cat /run/secrets/gh_token) && \
-#     pip install --no-cache-dir "git+https://${TOKEN}@github.com/BWCoast/tax-nor.git"
+# Local build with secret file:
+#   echo "ghp_yourtoken" > .gh_token
+#   docker build --secret id=gh_token,src=.gh_token -t taxspine-orchestrator .
+#   rm .gh_token
+RUN --mount=type=secret,id=gh_token,required=false \
+    TOKEN=$(cat /run/secrets/gh_token 2>/dev/null || echo "") && \
+    if [ -n "$TOKEN" ]; then \
+        pip install --no-cache-dir "git+https://${TOKEN}@github.com/BWCoast/tax-nor.git"; \
+    else \
+        pip install --no-cache-dir "git+https://github.com/BWCoast/tax-nor.git"; \
+    fi
 
 # ── Application source ────────────────────────────────────────────────────────
 # Copied after deps so that source edits don't invalidate the dep layers.
