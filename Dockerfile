@@ -52,7 +52,15 @@ RUN pip install --no-cache-dir .
 #   echo "ghp_yourtoken" > .gh_token
 #   docker build --secret id=gh_token,src=.gh_token -t taxspine-orchestrator .
 #   rm .gh_token
+#
+# Cache-busting: TAXNOR_SHA is the HEAD commit SHA of the tax-nor repo,
+# fetched by the GitHub Actions workflow before the build.  When tax-nor
+# gets new commits, the SHA changes → Docker cannot reuse the cached layer
+# → pip installs the fresh version.  Defaults to "unknown" for local builds
+# where the SHA is not passed (triggering a fresh install every time locally).
+ARG TAXNOR_SHA=unknown
 RUN --mount=type=secret,id=gh_token,required=false \
+    echo "# tax-nor HEAD: ${TAXNOR_SHA}" && \
     TOKEN=$(cat /run/secrets/gh_token 2>/dev/null || echo "") && \
     if [ -n "$TOKEN" ]; then \
         pip install --no-cache-dir "git+https://${TOKEN}@github.com/BWCoast/tax-nor.git"; \

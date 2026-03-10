@@ -76,6 +76,34 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # ── Fetch tax-nor HEAD SHA (cache-busting) ──────────────────────────────
+      # The Dockerfile installs tax-nor via pip install git+https://...
+      # Docker caches that layer by the RUN instruction text — it cannot
+      # detect that the remote repo has new commits.  We pass the current
+      # tax-nor HEAD SHA as a build ARG so the cache key changes whenever
+      # tax-nor is updated, forcing pip to re-install the latest version.
+      #
+      # Falls back to "unknown" if GH_READ_TOKEN is not set or the API call
+      # fails (e.g. public repo, rate-limited) — "unknown" still busts the
+      # GHA layer cache relative to a SHA-keyed build, but may reuse a
+      # previous "unknown" layer.  In practice GH_READ_TOKEN is always set.
+      - name: Fetch tax-nor HEAD SHA
+        id: taxnor_sha
+        env:
+          GH_READ_TOKEN: ${{ secrets.GH_READ_TOKEN }}
+        run: |
+          if [ -n "$GH_READ_TOKEN" ]; then
+            SHA=$(curl -sf \
+              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+              "https://api.github.com/repos/BWCoast/tax-nor/commits/main" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'][:12])" \
+              2>/dev/null || echo "unknown")
+          else
+            SHA="unknown"
+          fi
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "tax-nor HEAD: ${SHA}"
+
       # ── Build and push ──────────────────────────────────────────────────────
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -87,8 +115,12 @@ jobs:
           tags:   ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Cache layers in GitHub's cache — speeds up subsequent builds.
+          # The TAXNOR_SHA build arg ensures the tax-nor install layer is
+          # invalidated whenever tax-nor has new commits.
           cache-from: type=gha
           cache-to:   type=gha,mode=max
+          build-args: |
+            TAXNOR_SHA=${{ steps.taxnor_sha.outputs.sha }}
           # ── tax-nor auth ────────────────────────────────────────────────────
           # GH_READ_TOKEN is a repository secret containing a GitHub PAT with
           # read access to the tax-nor repo.
@@ -103,7 +135,6 @@ jobs:
           # and the Dockerfile falls back to the unauthenticated URL.
           secrets: |
             gh_token=${{ secrets.GH_READ_TOKEN }}
-          # Then switch Dockerfile RUN to the --mount=type=secret variant.
 
       # ── Summary ────────────────────────────────────────────────────────────
       - name: Print image digest
