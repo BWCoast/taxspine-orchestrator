@@ -1,0 +1,107 @@
+# ── Taxspine Orchestrator — Synology NAS Production Compose ───────────────────
+#
+# This file is for production deployment on a Synology NAS via Container Manager.
+# It pulls the pre-built image from GitHub Container Registry (ghcr.io) rather
+# than building from source on the NAS.
+#
+# PREREQUISITES on Synology DSM:
+#   1. Open Container Manager → Registry → Add registry:
+#         URL:  ghcr.io
+#         (no login needed for public images)
+#   2. Create a shared folder for taxspine data, e.g.:
+#         DSM → File Station → Create shared folder → name it "taxspine"
+#         This creates /volume1/taxspine on the NAS filesystem.
+#   3. Copy or paste this file to the NAS via File Station or SSH.
+#
+# HOW TO DEPLOY (Container Manager — Projects tab):
+#   Container Manager → Project → Create
+#     Path:       /volume1/docker/taxspine/          (or wherever you put this file)
+#     Source:     Upload docker-compose.synology.yml  (or point to git repo)
+#   → Build the project → containers start automatically.
+#
+# HOW TO UPDATE (pull new image):
+#   Container Manager → Project → taxspine → Action → Pull and redeploy
+#   OR via SSH:
+#     cd /volume1/docker/taxspine && docker compose -f docker-compose.synology.yml pull && docker compose -f docker-compose.synology.yml up -d
+#
+# ACCESSING THE DASHBOARD:
+#   http://<NAS-IP>:8000/ui/
+#   Via Tailscale: http://<NAS-Tailscale-hostname>:8000/ui/
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  orchestrator:
+    # Pull pre-built image from GitHub Container Registry.
+    # GitHub Actions builds and pushes this automatically on every push to main.
+    image: ghcr.io/bwcoast/taxspine-orchestrator:latest
+
+    container_name: taxspine-orchestrator
+    restart: unless-stopped
+
+    # ── Platform ─────────────────────────────────────────────────────────────
+    # Most Synology NAS (DS218+, DS920+, DS1621+, etc.) use Intel/AMD x86_64.
+    # ARM-based Synology (RTD1619B chip, e.g. DS223j) would need linux/arm64.
+    platform: linux/amd64
+
+    ports:
+      # Host port 8000 → container port 8000.
+      # Access at http://<NAS-IP>:8000/ui/
+      # Change the left number if 8000 is taken on your NAS (e.g. "8080:8000").
+      - "8000:8000"
+
+    volumes:
+      # ── IMPORTANT: update this path to match your Synology shared folder ──
+      # The left side must be the real path on your NAS filesystem.
+      # Common Synology paths:
+      #   /volume1/taxspine/data      ← if you created a "taxspine" shared folder
+      #   /volume1/docker/taxspine    ← if you use a "docker" shared folder
+      #
+      # Create the shared folder in DSM → Control Panel → Shared Folder first.
+      - /volume1/docker/taxspine/data:/data
+
+    environment:
+      # All paths resolve inside /data (the volume above).
+      OUTPUT_DIR: /data/output
+      TEMP_DIR:   /data/tmp
+      UPLOAD_DIR: /data/uploads
+      DATA_DIR:   /data/state
+
+      # CLI binary names (installed inside the image from tax-nor).
+      # Only change these if you have a custom build with different CLI names.
+      TAXSPINE_XRPL_NOR_CLI:  taxspine-xrpl-nor
+      TAXSPINE_NOR_REPORT_CLI: taxspine-nor-report
+      TAXSPINE_UK_REPORT_CLI:  taxspine-uk-report
+
+      # Timezone — helps log timestamps match your local time.
+      # Find yours at: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+      TZ: Europe/Oslo
+
+    healthcheck:
+      # Python's urllib is built-in — no curl needed.
+      test: ["CMD", "python", "-c",
+             "import urllib.request, sys; r = urllib.request.urlopen('http://localhost:8000/health'); sys.exit(0 if r.status == 200 else 1)"]
+      interval: 30s
+      timeout:  5s
+      retries:  3
+      start_period: 20s
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    # Keeps log files small — visible in Container Manager → Project → Logs.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # ── Synology notes ───────────────────────────────────────────────────────
+    # Permissions: files written to /data will be owned by root inside the
+    # container, appearing as root:root on the NAS shared folder.  This is fine
+    # for a single-user private NAS.  You can read/download files via DSM
+    # File Station or the dashboard's download buttons.
+    #
+    # Tailscale: no container-level network config needed.  Install Tailscale
+    # on the NAS (DSM Package Center → Tailscale), then access the dashboard
+    # at http://<NAS-Tailscale-IP>:8000/ui/ from any Tailscale device.
+    #
+    # Cloudflare Tunnel: point the tunnel at localhost:8000 on the NAS.
+    # No additional Docker network config required.

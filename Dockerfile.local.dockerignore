@@ -1,0 +1,29 @@
+# Companion .dockerignore for Dockerfile.local (Option B local build).
+# Docker uses this file automatically when building with -f Dockerfile.local.
+# It is identical to .dockerignore EXCEPT vendor/ is NOT excluded —
+# Dockerfile.local needs vendor/tax-nor/ in the build context.
+
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+*.egg-info
+.git
+.gitignore
+.github
+
+data/
+*.db
+
+gains.csv
+prices.csv
+events.json
+test-orchestrator.py
+test-full-stack.py
+
+dashboard/
+ui.html
+
+tests/
+
+# vendor/ is intentionally NOT listed here so Dockerfile.local can COPY it.

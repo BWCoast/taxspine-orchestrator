@@ -1,54 +1,86 @@
 # ── Taxspine Orchestrator — Docker Compose ────────────────────────────────────
 #
-# Usage:
-#   docker compose up -d           # start in background
-#   docker compose logs -f         # tail logs
-#   docker compose down            # stop
+# Local development / manual build:
+#   docker compose up --build -d     # build from Dockerfile and start
+#   docker compose logs -f           # tail logs
+#   docker compose down              # stop
 #
-# Data is persisted in ./data/ on the host (or NAS bind-mount).
-# Override CLI paths in the environment section below.
+# Production (pre-built image from GitHub Container Registry):
+#   Use docker-compose.synology.yml on the NAS instead of this file.
+#
+# Data is persisted in ./data/ on the host.
+# On a Synology NAS, use an absolute path — see docker-compose.synology.yml.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
   orchestrator:
-    build: .
+    # ── Image source ─────────────────────────────────────────────────────────
+    # Option A (default): build from Dockerfile (installs CLIs from GitHub).
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # Option B: build from local tax-nor source (run scripts/build-local.ps1
+    # first, then switch build.dockerfile to Dockerfile.local).
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.local
+
+    # Pull pre-built image instead of building (for NAS / CI deployments):
+    # Uncomment 'image' and comment out 'build' above to pull from ghcr.io.
+    # image: ghcr.io/bwcoast/taxspine-orchestrator:latest
+
     container_name: taxspine-orchestrator
     restart: unless-stopped
+
+    # ── Platform ─────────────────────────────────────────────────────────────
+    # Explicitly request x86_64 — matches most Synology NAS (Intel/AMD CPUs).
+    # Remove this line on Apple Silicon / ARM developer machines.
+    platform: linux/amd64
+
     ports:
       - "8000:8000"
-    volumes:
-      # Persist all data (jobs DB, workspace config, uploads, outputs, temp).
-      # On a Synology NAS, point this to your desired share:
-      #   - /volume1/taxspine/data:/data
-      - ./data:/data
-    environment:
-      # All paths inside the container reference /data.
-      OUTPUT_DIR: /data/output
-      TEMP_DIR: /data/tmp
-      UPLOAD_DIR: /data/uploads
-      DATA_DIR: /data/state
 
-      # ── CLI binary paths ───────────────────────────────────────────────────
-      # Uncomment and set to the installed CLI names/paths if they differ
-      # from the defaults.
+    volumes:
+      # All persistent state: SQLite job DB, workspace config, uploads, outputs.
+      # Local development: relative path is fine.
+      - ./data:/data
       #
+      # Synology NAS: replace with absolute path to your Docker shared folder.
+      # Create the shared folder first in DSM → File Station, then update here.
+      # - /volume1/docker/taxspine/data:/data
+
+    environment:
+      # All runtime paths resolve inside /data (the volume above).
+      OUTPUT_DIR: /data/output
+      TEMP_DIR:   /data/tmp
+      UPLOAD_DIR: /data/uploads
+      DATA_DIR:   /data/state
+
+      # CLI binary names — these match what pip installs from tax-nor.
+      # Override here if you installed the CLIs under different names.
       # TAXSPINE_XRPL_NOR_CLI: taxspine-xrpl-nor
       # TAXSPINE_NOR_REPORT_CLI: taxspine-nor-report
       # TAXSPINE_UK_REPORT_CLI: taxspine-uk-report
 
     healthcheck:
+      # Uses Python's built-in urllib — no curl needed (works on Synology).
       test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+             "import urllib.request, sys; r = urllib.request.urlopen('http://localhost:8000/health'); sys.exit(0 if r.status == 200 else 1)"]
       interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      timeout:  5s
+      retries:  3
+      start_period: 15s
 
-    # Uncomment to add to a Tailscale or Cloudflare Tunnel network:
-    # networks:
-    #   - tailscale
-    # Or simply expose port 8000 and let Tailscale/CF handle routing externally.
+    # ── Logging ──────────────────────────────────────────────────────────────
+    # Container Manager shows logs in the project detail view.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-# networks:
-#   tailscale:
-#     external: true
+    # ── Networking ───────────────────────────────────────────────────────────
+    # Default bridge networking.  For Tailscale or Cloudflare Tunnel, expose
+    # port 8000 on the NAS and let the tunnel handle external routing.
+    # No special network config needed for Synology Container Manager.

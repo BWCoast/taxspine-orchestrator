@@ -5,7 +5,27 @@ __pycache__
 *.egg-info
 .git
 .gitignore
+.github
+
+# Persistent data — never bake runtime data into the image
 data/
 *.db
+
+# Scratch files
+gains.csv
+prices.csv
+events.json
+test-orchestrator.py
+test-full-stack.py
+
+# Old dashboard file (replaced by ui/)
 dashboard/
+ui.html
+
+# Test suite — not needed at runtime
 tests/
+
+# Option B vendor dir — populated at build time by build-local.ps1, then removed.
+# Listed here so it's excluded from Option A (Dockerfile) builds.
+# Dockerfile.local explicitly COPY vendor/tax-nor/, which overrides this.
+vendor/

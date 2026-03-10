@@ -1,0 +1,63 @@
+# ── Taxspine Orchestrator — Dockerfile.local (Option B: CLIs from local source)
+#
+# Use this when tax-nor is a private repo and you don't want to pass GitHub
+# credentials at build time, OR when you want to build against local changes
+# to tax-spine that haven't been pushed yet.
+#
+# HOW TO BUILD:
+#   Do NOT run "docker build" directly — use the helper script instead:
+#
+#     .\scripts\build-local.ps1
+#
+#   That script copies the tax-nor source into vendor/tax-nor/, builds this
+#   image, then removes the vendor copy.
+#
+# The resulting image is identical to the Option A image at runtime.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# syntax=docker/dockerfile:1
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# ── OS deps ───────────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python deps: orchestrator ─────────────────────────────────────────────────
+COPY pyproject.toml .
+COPY taxspine_orchestrator/ ./taxspine_orchestrator/
+RUN pip install --no-cache-dir .
+
+# ── Python deps: tax-spine CLIs from local vendor copy ────────────────────────
+# The build-local.ps1 script copies the tax-nor source to vendor/tax-nor/
+# before calling docker build, so it is available in the build context here.
+COPY vendor/tax-nor/ /tmp/tax-nor/
+RUN pip install --no-cache-dir /tmp/tax-nor \
+    && rm -rf /tmp/tax-nor
+
+# ── Application source ────────────────────────────────────────────────────────
+COPY ui/         ./ui/
+COPY main.py     .
+COPY scripts/    ./scripts/
+
+# ── Runtime configuration ─────────────────────────────────────────────────────
+ENV OUTPUT_DIR=/data/output \
+    TEMP_DIR=/data/tmp \
+    UPLOAD_DIR=/data/uploads \
+    DATA_DIR=/data/state
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c \
+        "import urllib.request, sys; \
+         r = urllib.request.urlopen('http://localhost:8000/health'); \
+         sys.exit(0 if r.status == 200 else 1)"
+
+CMD ["python", "-m", "uvicorn", "taxspine_orchestrator.main:app", \
+     "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
