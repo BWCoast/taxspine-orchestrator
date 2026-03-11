@@ -283,6 +283,9 @@ class JobService:
         ):
             cmd.extend(["--csv-prices", job_input.csv_prices_path])
 
+        if job_input.include_trades:
+            cmd.append("--include-trades")
+
         if job_input.debug_valuation:
             cmd.append("--debug-valuation")
 

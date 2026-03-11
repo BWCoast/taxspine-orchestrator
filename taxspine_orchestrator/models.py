@@ -101,6 +101,15 @@ class JobInput(BaseModel):
             "that the file exists but does not validate its contents."
         ),
     )
+    include_trades: bool = Field(
+        default=False,
+        description=(
+            "When True, passes --include-trades to taxspine-xrpl-nor so that "
+            "DEX swap events (XRPL OfferCreate) are fetched and included in "
+            "the pipeline alongside payment events.  Has no effect on CSV-only "
+            "jobs."
+        ),
+    )
 
 
 class JobOutput(BaseModel):

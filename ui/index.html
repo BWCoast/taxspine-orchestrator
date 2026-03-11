@@ -140,6 +140,10 @@
           <input id="run-prices-path" class="input text-xs" placeholder="/abs/path/to/prices.csv" style="font-family:monospace;">
         </div>
         <div class="flex items-center gap-2">
+          <input type="checkbox" id="run-trades" class="accent-blue-500 w-4 h-4">
+          <label for="run-trades" class="text-xs text-gray-400 cursor-pointer">Include DEX trades (XRPL OfferCreate swaps)</label>
+        </div>
+        <div class="flex items-center gap-2">
           <input type="checkbox" id="run-debug" class="accent-blue-500 w-4 h-4">
           <label for="run-debug" class="text-xs text-gray-400 cursor-pointer">Debug valuation output</label>
         </div>
@@ -391,6 +395,7 @@ async function runReport() {
   const country = document.getElementById('run-country').value;
   const valMode = document.getElementById('run-valuation').value;
   const pricesPath = document.getElementById('run-prices-path').value.trim() || null;
+  const includeTrades = document.getElementById('run-trades').checked;
   const debug = document.getElementById('run-debug').checked;
   const dry = document.getElementById('run-dry').checked;
 
@@ -417,6 +422,7 @@ async function runReport() {
         country,
         valuation_mode: valMode,
         csv_prices_path: pricesPath,
+        include_trades: includeTrades,
         debug_valuation: debug,
         dry_run: dry,
       }),
