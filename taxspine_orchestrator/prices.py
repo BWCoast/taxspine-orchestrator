@@ -1,24 +1,25 @@
 """Price-fetching service for the orchestrator.
 
-Fetches historical daily NOK prices for crypto assets from the CoinGecko
-public API and caches them as CSV files in PRICES_DIR.
+Fetches historical daily NOK prices for crypto assets from the Kraken
+public REST API and caches them as CSV files in PRICES_DIR.
 
 The CSV format matches what taxspine CLIs expect via --csv-prices:
     date,asset_id,fiat_currency,price_fiat
     2025-01-01,XRP,NOK,7.4200
     ...
 
+Why Kraken?
+-----------
+- No API key or account required.
+- Native NOK trading pairs (XRPNOK, XBTNOK, ETHNOK) — prices are what
+  Norwegian users actually transacted at, not a USD→NOK conversion.
+- Reliable public OHLC endpoint with no meaningful rate limits for
+  single-user private systems.
+
 Caching policy
 --------------
 - Past years  (year < current year): fetched once, never re-fetched.
 - Current year (year == current year): re-fetched if the file is > 24 h old.
-  This keeps the price table fresh during the tax year without hammering the API.
-
-CoinGecko free API
-------------------
-No API key required for the /coins/{id}/market_chart/range endpoint.
-Rate limit: ~30 requests/minute on the free tier.
-For a private single-user system this is more than sufficient.
 """
 
 from __future__ import annotations
@@ -29,20 +30,19 @@ import json
 import time
 import urllib.request
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .config import settings
 
-# ── CoinGecko asset map ────────────────────────────────────────────────────────
-# Maps ticker symbol → CoinGecko coin ID.
-# Extend this dict to support additional assets (e.g. ETH, BTC).
-_COINGECKO_ID: dict[str, str] = {
-    "XRP": "ripple",
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
+# ── Kraken pair map ───────────────────────────────────────────────────────────
+# Maps ticker symbol → Kraken trading pair name (always vs NOK).
+# Kraken uses "XBT" internally for Bitcoin; all other symbols match standard.
+_KRAKEN_PAIR: dict[str, str] = {
+    "XRP": "XRPNOK",
+    "BTC": "XBTNOK",
+    "ETH": "ETHNOK",
 }
 
 _STALE_HOURS = 24   # re-fetch current-year file if older than this
@@ -111,9 +111,9 @@ def fetch_prices_for_year(asset: str, year: int) -> PriceFileInfo:
     Raises ValueError for unsupported assets, RuntimeError on network failure.
     """
     asset = asset.upper()
-    coin_id = _COINGECKO_ID.get(asset)
-    if coin_id is None:
-        supported = ", ".join(sorted(_COINGECKO_ID))
+    pair = _KRAKEN_PAIR.get(asset)
+    if pair is None:
+        supported = ", ".join(sorted(_KRAKEN_PAIR))
         raise ValueError(
             f"Unsupported asset '{asset}'. Supported: {supported}"
         )
@@ -123,7 +123,7 @@ def fetch_prices_for_year(asset: str, year: int) -> PriceFileInfo:
 
     cached = not _needs_fetch(dest, year)
     if not cached:
-        _fetch_and_write(coin_id, asset, year, dest)
+        _fetch_and_write(pair, asset, year, dest)
 
     rows = _count_rows(dest)
     age = _file_age_hours(dest)
@@ -138,16 +138,20 @@ def fetch_prices_for_year(asset: str, year: int) -> PriceFileInfo:
     )
 
 
-def _fetch_and_write(coin_id: str, asset: str, year: int, dest: Path) -> None:
-    """Call CoinGecko and write the result CSV to *dest*."""
+def _fetch_and_write(pair: str, asset: str, year: int, dest: Path) -> None:
+    """Call Kraken OHLC endpoint and write the result CSV to *dest*.
+
+    Uses daily candles (interval=1440 minutes).  Kraken returns up to 720
+    candles per request — enough to cover a full calendar year in one call.
+    """
     tz = datetime.timezone.utc
-    start = int(datetime.datetime(year, 1, 1, tzinfo=tz).timestamp())
-    end   = int(datetime.datetime(year, 12, 31, 23, 59, 59, tzinfo=tz).timestamp())
+    # `since` is the Unix timestamp of 1 Jan of the requested year.
+    # Kraken returns candles whose open timestamp is >= since.
+    since = int(datetime.datetime(year, 1, 1, tzinfo=tz).timestamp())
 
     url = (
-        f"https://api.coingecko.com/api/v3/coins/{coin_id}"
-        f"/market_chart/range"
-        f"?vs_currency=nok&from={start}&to={end}&precision=4"
+        f"https://api.kraken.com/0/public/OHLC"
+        f"?pair={pair}&interval=1440&since={since}"
     )
 
     req = urllib.request.Request(
@@ -161,32 +165,45 @@ def _fetch_and_write(coin_id: str, asset: str, year: int, dest: Path) -> None:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(
-            f"CoinGecko returned HTTP {exc.code} for {coin_id}/NOK {year}. "
-            "You may be rate-limited — wait a minute and retry."
-        ) from exc
     except Exception as exc:
         raise RuntimeError(
-            f"Could not reach CoinGecko: {exc}"
+            f"Could not reach Kraken API: {exc}"
         ) from exc
 
-    prices: list[list] = body.get("prices", [])
-    if not prices:
+    if body.get("error"):
         raise RuntimeError(
-            f"CoinGecko returned no price data for {coin_id}/NOK {year}."
+            f"Kraken API error for {pair}: {body['error']}"
         )
 
-    # Deduplicate to one entry per calendar date (keep first occurrence).
-    seen: set[str] = set()
+    result = body.get("result", {})
+    # result keys = one data key (the pair name Kraken uses) + "last"
+    data_key = next((k for k in result if k != "last"), None)
+    if data_key is None:
+        raise RuntimeError(
+            f"Kraken returned no candle data for pair {pair}."
+        )
+
+    # Candle format: [timestamp, open, high, low, close, vwap, volume, count]
+    candles: list[list] = result[data_key]
+
+    year_start = datetime.datetime(year, 1, 1, tzinfo=tz)
+    year_end   = datetime.datetime(year, 12, 31, 23, 59, 59, tzinfo=tz)
+
     rows: list[tuple[str, str]] = []
-    for ts_ms, price in prices:
-        date_str = datetime.datetime.fromtimestamp(
-            ts_ms / 1000, tz=tz
-        ).strftime("%Y-%m-%d")
-        if date_str not in seen:
-            seen.add(date_str)
-            rows.append((date_str, f"{float(price):.4f}"))
+    for candle in candles:
+        ts    = int(candle[0])
+        close = candle[4]
+        dt    = datetime.datetime.fromtimestamp(ts, tz=tz)
+        if dt < year_start or dt > year_end:
+            continue
+        date_str = dt.strftime("%Y-%m-%d")
+        rows.append((date_str, f"{float(close):.4f}"))
+
+    if not rows:
+        raise RuntimeError(
+            f"Kraken returned no candle data for {pair} in {year}. "
+            "The pair may not have been listed that year."
+        )
 
     rows.sort(key=lambda r: r[0])
 
