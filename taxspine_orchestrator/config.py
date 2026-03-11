@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = _DEFAULT_BASE / "uploads"
     # DATA_DIR stores persistent state: jobs.db and workspace.json
     DATA_DIR: Path = _DEFAULT_BASE / "data"
+    # PRICES_DIR stores cached price CSVs fetched from external APIs
+    PRICES_DIR: Path = _DEFAULT_BASE / "prices"
 
     # ── External CLI binaries ─────────────────────────────────────────────
     # taxspine-xrpl-nor: single-command XRPL → Norway pipeline
@@ -48,6 +50,7 @@ class Settings(BaseSettings):
         self.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         self.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         self.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self.PRICES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

@@ -136,8 +136,12 @@
           </select>
         </div>
         <div id="prices-field" class="hidden">
-          <label class="text-xs text-gray-400 mb-1 block">Price table path</label>
-          <input id="run-prices-path" class="input text-xs" placeholder="/abs/path/to/prices.csv" style="font-family:monospace;">
+          <label class="text-xs text-gray-400 mb-1 block">Price table</label>
+          <div class="flex items-center gap-2 mb-2">
+            <button onclick="fetchPrices()" id="fetch-prices-btn" class="btn-secondary text-xs flex-shrink-0">⬇ Fetch XRP/NOK</button>
+            <span id="fetch-prices-status" class="text-xs text-gray-500"></span>
+          </div>
+          <input id="run-prices-path" class="input text-xs" placeholder="auto-filled by Fetch, or enter path manually" style="font-family:monospace;">
         </div>
         <div class="flex items-center gap-2">
           <input type="checkbox" id="run-trades" class="accent-blue-500 w-4 h-4">
@@ -388,6 +392,40 @@ async function handleCsvFile(file) {
 function togglePricesField() {
   const v = document.getElementById('run-valuation').value;
   document.getElementById('prices-field').classList.toggle('hidden', v !== 'price_table');
+}
+
+async function fetchPrices() {
+  const taxYear = parseInt(document.getElementById('run-tax-year').value);
+  const btn     = document.getElementById('fetch-prices-btn');
+  const status  = document.getElementById('fetch-prices-status');
+
+  btn.disabled = true;
+  status.textContent = 'Fetching…';
+  status.className = 'text-xs text-gray-400';
+
+  try {
+    const r = await fetch(`${API}/prices/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year: taxYear, asset: 'XRP' }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      status.textContent = `✗ ${data.detail || r.statusText}`;
+      status.className = 'text-xs text-red-400';
+      return;
+    }
+    // Auto-fill the path input so the user can just click Run
+    document.getElementById('run-prices-path').value = data.path;
+    const label = data.cached ? 'cached' : 'fresh';
+    status.textContent = `✓ ${data.rows} days (${label}, ${data.age_hours}h old)`;
+    status.className = 'text-xs text-green-400';
+  } catch (err) {
+    status.textContent = `✗ ${err.message || 'Network error'}`;
+    status.className = 'text-xs text-red-400';
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function runReport() {

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from .config import settings
 from .models import Country, Job, JobInput, JobOutput, JobStatus, ValuationMode, WorkspaceConfig
+from .prices import router as prices_router
 from .services import JobService
 from .storage import SqliteJobStore, WorkspaceStore
 
@@ -49,6 +50,10 @@ _UI_DIR = Path(__file__).parent.parent / "ui"
 
 if _UI_DIR.is_dir():
     app.mount("/ui", StaticFiles(directory=str(_UI_DIR), html=True), name="ui")
+
+# ── Routers ───────────────────────────────────────────────────────────────────
+
+app.include_router(prices_router)
 
 
 @app.get("/", include_in_schema=False)
@@ -357,6 +362,7 @@ class WorkspaceRunRequest(BaseModel):
     case_name: Optional[str] = None
     valuation_mode: ValuationMode = ValuationMode.DUMMY
     csv_prices_path: Optional[str] = None
+    include_trades: bool = False
     debug_valuation: bool = False
     dry_run: bool = False
 
@@ -393,6 +399,7 @@ def run_workspace_report(body: WorkspaceRunRequest) -> Job:
         case_name=label,
         valuation_mode=body.valuation_mode,
         csv_prices_path=body.csv_prices_path,
+        include_trades=body.include_trades,
         debug_valuation=body.debug_valuation,
         dry_run=body.dry_run,
     )
