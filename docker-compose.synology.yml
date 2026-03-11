@@ -66,6 +66,9 @@ services:
       TEMP_DIR:   /data/tmp
       UPLOAD_DIR: /data/uploads
       DATA_DIR:   /data/state
+      # Cached price CSVs from CoinGecko — must be on the mounted volume so
+      # they survive Watchtower image updates (avoids re-fetching every restart).
+      PRICES_DIR: /data/prices
 
       # CLI binary names (installed inside the image from tax-nor).
       # Only change these if you have a custom build with different CLI names.
@@ -127,9 +130,8 @@ services:
       WATCHTOWER_POLL_INTERVAL: "300"
       # Remove old image versions after pulling a new one (keeps disk clean).
       WATCHTOWER_CLEANUP: "true"
-      # Send a notification to container logs when an update is applied.
-      WATCHTOWER_NOTIFICATIONS: "shoutrrr"
-      WATCHTOWER_NOTIFICATION_URL: ""   # leave blank — logs only
+      # Log-level notifications only (no external notification service).
+      WATCHTOWER_NO_STARTUP_MESSAGE: "false"
     # Only watch the orchestrator container, not everything on the NAS.
     command: taxspine-orchestrator
     logging:
