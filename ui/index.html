@@ -489,7 +489,7 @@ let selectedJobId = null;
 
 async function loadJobs() {
   try {
-    const r = await fetch(`${API}/jobs?limit=50`);
+    const r = await fetch(`${API}/jobs?limit=200`);
     if (!r.ok) throw new Error();
     const jobs = await r.json();
     renderJobs(jobs);
@@ -499,6 +499,36 @@ async function loadJobs() {
   }
 }
 
+function _jobRowHtml(j) {
+  const created = new Date(j.created_at).toLocaleString();
+  const badge = badgeHtml(j.status);
+  const sel = j.id === selectedJobId ? 'selected' : '';
+  const hasReport = j.output?.report_html_path ? '📄' : '';
+  const label = j.input.case_name || `${j.input.country} ${j.input.tax_year}`;
+  return `
+  <div class="job-row ${sel} p-3 fade-in" onclick="openResultsById('${j.id}')">
+    <div class="flex items-center justify-between gap-3">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          ${badge}
+          <span class="text-white text-sm font-medium truncate">${escHtml(label)}</span>
+          <span class="text-gray-600">${hasReport}</span>
+        </div>
+        <div class="text-xs text-gray-500 mt-1 flex gap-3">
+          <span>${created}</span>
+          <span class="text-gray-700">·</span>
+          <span>${j.input.xrpl_accounts.length} acct${j.input.xrpl_accounts.length !== 1 ? 's' : ''}
+            + ${j.input.csv_files.length} CSV${j.input.csv_files.length !== 1 ? 's' : ''}</span>
+          ${j.input.dry_run ? '<span class="text-yellow-600 font-semibold">DRY RUN</span>' : ''}
+        </div>
+        ${j.output?.error_message
+          ? `<div class="text-xs text-red-400 mt-1 truncate">✗ ${escHtml(j.output.error_message)}</div>` : ''}
+      </div>
+      <span class="text-gray-600 text-sm flex-shrink-0">›</span>
+    </div>
+  </div>`;
+}
+
 function renderJobs(jobs) {
   const el = document.getElementById('jobs-list');
   if (!jobs.length) {
@@ -506,35 +536,42 @@ function renderJobs(jobs) {
     return;
   }
 
-  el.innerHTML = jobs.map(j => {
-    const created = new Date(j.created_at).toLocaleString();
-    const badge = badgeHtml(j.status);
-    const sel = j.id === selectedJobId ? 'selected' : '';
-    const hasReport = j.output?.report_html_path ? '📄' : '';
-    const label = j.input.case_name || `${j.input.country} ${j.input.tax_year}`;
-    return `
-    <div class="job-row ${sel} p-3 fade-in" onclick="openResultsById('${j.id}')">
-      <div class="flex items-center justify-between gap-3">
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2">
-            ${badge}
-            <span class="text-white text-sm font-medium truncate">${escHtml(label)}</span>
-            <span class="text-gray-600">${hasReport}</span>
-          </div>
-          <div class="text-xs text-gray-500 mt-1 flex gap-3">
-            <span>${created}</span>
-            <span class="text-gray-700">·</span>
-            <span>${j.input.xrpl_accounts.length} acct${j.input.xrpl_accounts.length !== 1 ? 's' : ''}
-              + ${j.input.csv_files.length} CSV${j.input.csv_files.length !== 1 ? 's' : ''}</span>
-            ${j.input.dry_run ? '<span class="text-yellow-600 font-semibold">DRY RUN</span>' : ''}
-          </div>
-          ${j.output?.error_message
-            ? `<div class="text-xs text-red-400 mt-1 truncate">✗ ${escHtml(j.output.error_message)}</div>` : ''}
-        </div>
-        <span class="text-gray-600 text-sm flex-shrink-0">›</span>
-      </div>
+  const MAX_VISIBLE = 10;
+  const recent = jobs.slice(0, MAX_VISIBLE);
+  const older  = jobs.slice(MAX_VISIBLE);
+
+  let html = recent.map(_jobRowHtml).join('');
+
+  if (older.length > 0) {
+    // Archived runs: collapsed by default, toggled inline
+    html += `
+    <button
+      id="archive-toggle"
+      class="w-full text-left text-xs text-gray-600 hover:text-gray-400 py-2 px-1 flex items-center gap-1 transition-colors mt-1"
+      onclick="toggleJobArchive()"
+    >
+      <span id="archive-arrow">▸</span>
+      <span id="archive-label">${older.length} older run${older.length !== 1 ? 's' : ''} — click to expand</span>
+    </button>
+    <div id="archive-rows" style="display:none;flex-direction:column;gap:0.5rem;">
+      ${older.map(_jobRowHtml).join('')}
     </div>`;
-  }).join('');
+  }
+
+  el.innerHTML = html;
+}
+
+function toggleJobArchive() {
+  const rows  = document.getElementById('archive-rows');
+  const arrow = document.getElementById('archive-arrow');
+  const label = document.getElementById('archive-label');
+  const open  = rows.style.display === 'flex';
+  rows.style.display = open ? 'none' : 'flex';
+  const n = rows.querySelectorAll('.job-row').length;
+  arrow.textContent = open ? '▸' : '▾';
+  label.textContent = open
+    ? `${n} older run${n !== 1 ? 's' : ''} — click to expand`
+    : `${n} older run${n !== 1 ? 's' : ''} — click to collapse`;
 }
 
 function badgeHtml(status) {
@@ -694,7 +731,7 @@ function closeResults() {
 
 async function fetchJobsList() {
   try {
-    const r = await fetch(`${API}/jobs?limit=50`);
+    const r = await fetch(`${API}/jobs?limit=200`);
     if (r.ok) return await r.json();
   } catch {}
   return [];
