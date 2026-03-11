@@ -1,28 +1,37 @@
 """Price-fetching service for the orchestrator.
 
-Fetches historical daily NOK prices for crypto assets by combining:
-  1. Kraken public OHLC API  — daily close prices in USD (no key required)
-  2. Norges Bank SDMX API    — daily official USD/NOK FX rates (no key required)
+Fetches historical daily NOK prices for all supported crypto assets by
+combining two free, key-less public APIs:
 
-Then multiplies: crypto_USD × USD_NOK = crypto_NOK
+  1. Kraken public OHLC API  — daily close prices in USD
+  2. Norges Bank SDMX API    — daily official USD/NOK FX rates
 
-Why this combination?
----------------------
-- Kraken's public API has no key requirement and covers XRP, BTC, ETH, ADA.
-- Norges Bank (Norwegian central bank) is the official source for FX rates used
-  in Norwegian tax calculations — these are the same rates Skatteetaten uses.
-- Norges Bank only publishes business-day rates; weekend/holiday gaps are filled
-  by carrying the last known rate forward (standard accounting practice).
+Then multiplies: crypto_USD × USD_NOK = crypto_NOK per asset per day.
 
-The CSV format matches what taxspine CLIs expect via --csv-prices:
-    date,asset_id,fiat_currency,price_fiat
-    2025-01-01,XRP,NOK,7.4200
-    ...
+All supported assets are fetched in one call and merged into a single
+``combined_nok_{year}.csv`` file, which is what the taxspine CLI receives
+via ``--csv-prices``.  Individual per-asset CSVs are cached separately so
+re-runs are instant for past years.
+
+Why Norges Bank for FX?
+-----------------------
+Norges Bank (Norwegian central bank) is the official source for FX rates
+referenced in Norwegian tax law.  Using these rates aligns with what
+Skatteetaten expects when checking valuations.  Business-day-only gaps
+are filled by carrying the last known rate forward (standard practice).
 
 Caching policy
 --------------
 - Past years  (year < current year): fetched once, never re-fetched.
 - Current year (year == current year): re-fetched if the file is > 24 h old.
+
+CSV format
+----------
+The combined CSV matches what ``taxspine-*`` CLIs expect via --csv-prices:
+    date,asset_id,fiat_currency,price_fiat
+    2025-01-01,XRP,NOK,7.4200
+    2025-01-01,BTC,NOK,1234567.00
+    ...
 """
 
 from __future__ import annotations
@@ -40,16 +49,18 @@ from pydantic import BaseModel
 from .config import settings
 
 # ── Asset → Kraken USD pair map ───────────────────────────────────────────────
-# Kraken uses "XBT" for Bitcoin; all other symbols match standard tickers.
-# Only USD pairs are listed here — NOK conversion comes from Norges Bank.
+# These are the assets we fetch prices for on every call.
+# Kraken uses "XBT" for Bitcoin; all others match standard tickers.
 _KRAKEN_USD_PAIR: dict[str, str] = {
     "XRP": "XRPUSD",
-    "BTC": "XBTUSD",   # Kraken uses XBT, not BTC
+    "BTC": "XBTUSD",   # Kraken uses XBT internally, but XBTUSD works as altname
     "ETH": "ETHUSD",
     "ADA": "ADAUSD",
 }
 
-_STALE_HOURS = 24   # re-fetch current-year file if older than this
+_ALL_ASSETS: list[str] = list(_KRAKEN_USD_PAIR.keys())  # ["XRP", "BTC", "ETH", "ADA"]
+
+_STALE_HOURS = 24   # re-fetch current-year files if older than this
 
 
 # ── Router ────────────────────────────────────────────────────────────────────
@@ -64,7 +75,6 @@ class FetchPricesRequest(BaseModel):
     """Request body for POST /prices/fetch."""
 
     year: int
-    asset: str = "XRP"
 
 
 class PriceFileInfo(BaseModel):
@@ -75,19 +85,24 @@ class PriceFileInfo(BaseModel):
     path: str          # absolute container path, ready for --csv-prices
     rows: int          # number of daily data rows (excludes header)
     age_hours: float   # hours since last fetch (0.0 if just written)
-    cached: bool       # True if the file already existed before this request
+    cached: bool       # True if no API calls were made (all files were fresh)
 
 
 class FetchPricesResponse(PriceFileInfo):
     """Response body for POST /prices/fetch."""
 
 
-# ── Core fetch logic (no FastAPI dependency) ──────────────────────────────────
+# ── Path helpers ──────────────────────────────────────────────────────────────
 
 
-def _price_csv_path(asset: str, year: int) -> Path:
-    """Return the canonical cache path for *asset*/*year*."""
+def _asset_csv_path(asset: str, year: int) -> Path:
+    """Per-asset cache file: ``xrp_nok_2025.csv``."""
     return settings.PRICES_DIR / f"{asset.lower()}_nok_{year}.csv"
+
+
+def _combined_csv_path(year: int) -> Path:
+    """Merged file passed to the CLI: ``combined_nok_2025.csv``."""
+    return settings.PRICES_DIR / f"combined_nok_{year}.csv"
 
 
 def _file_age_hours(path: Path) -> float:
@@ -104,41 +119,57 @@ def _needs_fetch(path: Path, year: int) -> bool:
     if not path.exists():
         return True
     if year < current_year:
-        return False   # past year — never re-fetch
+        return False   # past year — immutable, never re-fetch
     return _file_age_hours(path) > _STALE_HOURS
 
 
-def fetch_prices_for_year(asset: str, year: int) -> PriceFileInfo:
-    """Fetch (or return cached) daily NOK prices for *asset* in *year*.
+# ── Top-level entry point ─────────────────────────────────────────────────────
 
-    Writes a CSV to PRICES_DIR and returns metadata about the file.
-    Raises ValueError for unsupported assets, RuntimeError on network failure.
+
+def fetch_all_prices_for_year(year: int) -> PriceFileInfo:
+    """Fetch (or return cached) daily NOK prices for all supported assets.
+
+    Fetches XRP, BTC, ETH, ADA from Kraken (USD) × Norges Bank (USD/NOK),
+    writes individual per-asset CSVs (cached), then merges into one combined
+    CSV that the taxspine CLI can consume via ``--csv-prices``.
+
+    Returns metadata about the combined file.
     """
-    asset = asset.upper()
-    pair_usd = _KRAKEN_USD_PAIR.get(asset)
-    if pair_usd is None:
-        supported = ", ".join(sorted(_KRAKEN_USD_PAIR))
-        raise ValueError(
-            f"Unsupported asset '{asset}'. Supported: {supported}"
-        )
-
-    dest = _price_csv_path(asset, year)
     settings.PRICES_DIR.mkdir(parents=True, exist_ok=True)
 
-    cached = not _needs_fetch(dest, year)
-    if not cached:
-        _fetch_and_write(pair_usd, asset, year, dest)
+    any_fetched = False
+    available_paths: list[Path] = []
 
-    rows = _count_rows(dest)
-    age = _file_age_hours(dest)
+    for asset in _ALL_ASSETS:
+        dest = _asset_csv_path(asset, year)
+        if _needs_fetch(dest, year):
+            pair_usd = _KRAKEN_USD_PAIR[asset]
+            try:
+                _fetch_and_write(pair_usd, asset, year, dest)
+                any_fetched = True
+            except RuntimeError:
+                # If one asset fails (e.g. ADA not listed in early years),
+                # continue with the others rather than aborting entirely.
+                continue
+        if dest.exists():
+            available_paths.append(dest)
+
+    if not available_paths:
+        raise RuntimeError(
+            f"Could not fetch price data for any asset in {year}. "
+            "Check network connectivity."
+        )
+
+    combined = _combined_csv_path(year)
+    total_rows = _write_combined_csv(available_paths, combined)
 
     return PriceFileInfo(
-        asset=asset,
+        asset="COMBINED",
         year=year,
-        path=str(dest),
-        rows=rows,
-        age_hours=round(age, 2),
-        cached=cached,
+        path=str(combined),
+        rows=total_rows,
+        age_hours=round(_file_age_hours(combined), 2),
+        cached=not any_fetched,
     )
 
 
@@ -146,13 +177,7 @@ def fetch_prices_for_year(asset: str, year: int) -> PriceFileInfo:
 
 
 def _fetch_kraken_usd_prices(pair: str, year: int) -> dict[str, float]:
-    """Return daily close prices in USD from Kraken for *pair* in *year*.
-
-    Uses daily (1440-min) OHLC candles.  Kraken returns up to 720 candles
-    per call — enough to cover a full year in one request.
-
-    Returns {date_str: close_price_usd}.
-    """
+    """Return {date_str: close_usd} from Kraken daily OHLC for *pair* in *year*."""
     tz = datetime.timezone.utc
     since = int(datetime.datetime(year, 1, 1, tzinfo=tz).timestamp())
 
@@ -200,15 +225,10 @@ def _fetch_kraken_usd_prices(pair: str, year: int) -> dict[str, float]:
 
 
 def _fetch_norges_bank_usd_nok(year: int) -> dict[str, float]:
-    """Return daily official USD/NOK rates from Norges Bank for *year*.
+    """Return {date_str: usd_nok_rate} from Norges Bank for business days in *year*.
 
-    Uses Norges Bank's SDMX JSON API — the same rates published by the
-    Norwegian central bank and used as the reference in Norwegian tax law.
-
-    Only business days are published; weekends and public holidays are absent
-    from the result.  Call ``_fill_calendar_gaps`` to fill those gaps.
-
-    Returns {date_str: rate} where rate is NOK per 1 USD.
+    Uses the official SDMX JSON API.  Only business days are published;
+    call ``_fill_calendar_gaps`` to fill weekends and public holidays.
     """
     start = f"{year}-01-01"
     end   = f"{year}-12-31"
@@ -228,14 +248,10 @@ def _fetch_norges_bank_usd_nok(year: int) -> dict[str, float]:
     except Exception as exc:
         raise RuntimeError(f"Could not reach Norges Bank API: {exc}") from exc
 
-    # Parse SDMX JSON structure.
-    # dates  = data.structure.dimensions.observation[0].values  → [{id: "YYYY-MM-DD"}, ...]
-    # series = data.dataSets[0].series["0:0:0:0"].observations  → {"0": [rate, ...], ...}
     try:
         structure  = body["data"]["structure"]
         time_vals  = structure["dimensions"]["observation"][0]["values"]
         dates      = [v["id"] for v in time_vals]
-
         dataset    = body["data"]["dataSets"][0]
         series_key = next(iter(dataset["series"]))
         obs        = dataset["series"][series_key]["observations"]
@@ -246,23 +262,15 @@ def _fetch_norges_bank_usd_nok(year: int) -> dict[str, float]:
 
     rates: dict[str, float] = {}
     for idx_str, value_list in obs.items():
-        idx  = int(idx_str)
-        rate = float(value_list[0])
-        rates[dates[idx]] = rate
+        rates[dates[int(idx_str)]] = float(value_list[0])
 
     if not rates:
-        raise RuntimeError(
-            f"Norges Bank returned no USD/NOK rates for {year}."
-        )
+        raise RuntimeError(f"Norges Bank returned no USD/NOK rates for {year}.")
     return rates
 
 
 def _fill_calendar_gaps(rates: dict[str, float], year: int) -> dict[str, float]:
-    """Fill weekend/holiday gaps by carrying the last known rate forward.
-
-    Norges Bank publishes business-day rates only.  Standard accounting
-    practice is to use the most recent published rate for non-trading days.
-    """
+    """Fill weekend/public-holiday gaps by carrying the last known rate forward."""
     start   = datetime.date(year, 1, 1)
     end     = datetime.date(year, 12, 31)
     filled: dict[str, float] = {}
@@ -280,27 +288,23 @@ def _fill_calendar_gaps(rates: dict[str, float], year: int) -> dict[str, float]:
     return filled
 
 
-# ── Orchestrated fetch + write ─────────────────────────────────────────────────
-
-
 def _fetch_and_write(pair_usd: str, asset: str, year: int, dest: Path) -> None:
-    """Combine Kraken USD prices + Norges Bank FX → NOK price CSV at *dest*."""
-    usd_prices  = _fetch_kraken_usd_prices(pair_usd, year)
-    raw_fx      = _fetch_norges_bank_usd_nok(year)
-    nok_rates   = _fill_calendar_gaps(raw_fx, year)
+    """Fetch USD prices from Kraken + FX from Norges Bank → write NOK CSV."""
+    usd_prices = _fetch_kraken_usd_prices(pair_usd, year)
+    raw_fx     = _fetch_norges_bank_usd_nok(year)
+    nok_rates  = _fill_calendar_gaps(raw_fx, year)
 
     rows: list[tuple[str, str]] = []
     for date_str, usd_price in sorted(usd_prices.items()):
         nok_rate = nok_rates.get(date_str)
         if nok_rate is None:
-            continue   # no FX rate — skip (only affects early Jan if no prior-year rate)
-        nok_price = usd_price * nok_rate
-        rows.append((date_str, f"{nok_price:.4f}"))
+            continue
+        rows.append((date_str, f"{usd_price * nok_rate:.4f}"))
 
     if not rows:
         raise RuntimeError(
-            f"No NOK prices could be computed for {asset} in {year} "
-            "(no overlap between Kraken and Norges Bank data)."
+            f"No NOK prices computed for {asset} {year}: "
+            "no overlap between Kraken candles and Norges Bank rates."
         )
 
     with dest.open("w", newline="", encoding="utf-8") as f:
@@ -308,6 +312,26 @@ def _fetch_and_write(pair_usd: str, asset: str, year: int, dest: Path) -> None:
         writer.writerow(["date", "asset_id", "fiat_currency", "price_fiat"])
         for date_str, price in rows:
             writer.writerow([date_str, asset, "NOK", price])
+
+
+def _write_combined_csv(source_paths: list[Path], dest: Path) -> int:
+    """Merge per-asset CSVs into a single file.  Returns number of data rows."""
+    total = 0
+    with dest.open("w", newline="", encoding="utf-8") as out:
+        writer = csv.writer(out)
+        writer.writerow(["date", "asset_id", "fiat_currency", "price_fiat"])
+        for path in source_paths:
+            with path.open("r", encoding="utf-8", newline="") as src:
+                reader = csv.DictReader(src)
+                for row in reader:
+                    writer.writerow([
+                        row["date"],
+                        row["asset_id"],
+                        row["fiat_currency"],
+                        row["price_fiat"],
+                    ])
+                    total += 1
+    return total
 
 
 def _count_rows(path: Path) -> int:
@@ -324,17 +348,17 @@ def _count_rows(path: Path) -> int:
 
 @router.post("/fetch", response_model=FetchPricesResponse, tags=["prices"])
 def fetch_prices(body: FetchPricesRequest) -> FetchPricesResponse:
-    """Fetch (or return cached) daily NOK prices for an asset and year.
+    """Fetch (or return cached) daily NOK prices for all supported assets.
 
-    Combines Kraken USD prices with official Norges Bank USD/NOK rates.
-    No API key required for either source.
+    Fetches XRP, BTC, ETH, and ADA using Kraken USD prices × official
+    Norges Bank USD/NOK rates.  No API key required for either source.
 
-    - Writes a CSV to ``PRICES_DIR/{asset}_nok_{year}.csv``.
-    - Past years are fetched once and never re-fetched.
-    - Current year is re-fetched if the cached file is older than 24 hours.
+    Writes individual per-asset CSVs (cached) and merges them into a
+    single ``combined_nok_{year}.csv``.  The returned ``path`` is the
+    combined file — paste it into the "Price table path" field.
 
-    The returned ``path`` is the absolute container path — paste it directly
-    into the "Price table path" field when running a report.
+    Past years are cached indefinitely.  Current year is re-fetched if
+    the cached files are older than 24 hours.
     """
     current_year = datetime.date.today().year
     if body.year < 2013 or body.year > current_year:
@@ -344,9 +368,7 @@ def fetch_prices(body: FetchPricesRequest) -> FetchPricesResponse:
         )
 
     try:
-        info = fetch_prices_for_year(body.asset, body.year)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        info = fetch_all_prices_for_year(body.year)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -360,7 +382,7 @@ def list_prices() -> list[PriceFileInfo]:
     result: list[PriceFileInfo] = []
 
     for csv_path in sorted(settings.PRICES_DIR.glob("*_nok_*.csv")):
-        stem  = csv_path.stem   # e.g. "xrp_nok_2025"
+        stem  = csv_path.stem   # e.g. "xrp_nok_2025" or "combined_nok_2025"
         parts = stem.split("_nok_")
         if len(parts) != 2:
             continue

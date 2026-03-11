@@ -138,7 +138,7 @@
         <div id="prices-field" class="hidden">
           <label class="text-xs text-gray-400 mb-1 block">Price table</label>
           <div class="flex items-center gap-2 mb-2">
-            <button onclick="fetchPrices()" id="fetch-prices-btn" class="btn-secondary text-xs flex-shrink-0">⬇ Fetch XRP/NOK</button>
+            <button onclick="fetchPrices()" id="fetch-prices-btn" class="btn-secondary text-xs flex-shrink-0">⬇ Fetch all prices</button>
             <span id="fetch-prices-status" class="text-xs text-gray-500"></span>
           </div>
           <input id="run-prices-path" class="input text-xs" placeholder="auto-filled by Fetch, or enter path manually" style="font-family:monospace;">
@@ -407,7 +407,7 @@ async function fetchPrices() {
     const r = await fetch(`${API}/prices/fetch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ year: taxYear, asset: 'XRP' }),
+      body: JSON.stringify({ year: taxYear }),
     });
     const data = await r.json();
     if (!r.ok) {
@@ -418,7 +418,7 @@ async function fetchPrices() {
     // Auto-fill the path input so the user can just click Run
     document.getElementById('run-prices-path').value = data.path;
     const label = data.cached ? 'cached' : 'fresh';
-    status.textContent = `✓ ${data.rows} days (${label}, ${data.age_hours}h old)`;
+    status.textContent = `✓ ${data.rows} rows, XRP+BTC+ETH+ADA (${label})`;
     status.className = 'text-xs text-green-400';
   } catch (err) {
     status.textContent = `✗ ${err.message || 'Network error'}`;
