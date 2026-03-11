@@ -118,7 +118,16 @@ class JobOutput(BaseModel):
     gains_csv_path: Optional[str] = None
     wealth_csv_path: Optional[str] = None
     summary_json_path: Optional[str] = None
-    report_html_path: Optional[str] = None  # self-contained HTML tax report
+    report_html_path: Optional[str] = None   # first HTML report (backward compat)
+    report_html_paths: List[str] = Field(    # all HTML reports (one per account/CSV)
+        default_factory=list,
+        description=(
+            "All HTML report paths produced by this job, in execution order. "
+            "Jobs with multiple XRPL accounts or CSV files generate one report "
+            "each.  ``report_html_path`` is kept as a backward-compatible alias "
+            "for the first element of this list."
+        ),
+    )
     log_path: Optional[str] = None
     error_message: Optional[str] = None
 

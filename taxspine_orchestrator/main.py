@@ -213,6 +213,72 @@ def get_job_file(job_id: str, kind: FileKind) -> FileResponse:
     )
 
 
+# ── Multi-report listing / download ──────────────────────────────────────────
+
+
+@app.get("/jobs/{job_id}/reports", tags=["files"])
+def list_job_reports(job_id: str) -> list[dict]:
+    """Return a list of all HTML report files produced by *job_id*.
+
+    Each item contains:
+      - ``index``    — 0-based position, usable in ``GET /jobs/{id}/reports/{index}``
+      - ``filename`` — the bare filename on disk (e.g. ``report_55d6caa0.html``)
+      - ``url``      — relative download URL for this specific report
+
+    Jobs with one XRPL account and two CSV files produce three items.
+    Items are returned in execution order (XRPL accounts first, then CSVs).
+    """
+    job = _job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Prefer the new list; fall back to the legacy single-path field.
+    paths: list[str] = job.output.report_html_paths or (
+        [job.output.report_html_path] if job.output.report_html_path else []
+    )
+    return [
+        {
+            "index": i,
+            "filename": Path(p).name,
+            "url": f"/jobs/{job_id}/reports/{i}",
+        }
+        for i, p in enumerate(paths)
+    ]
+
+
+@app.get("/jobs/{job_id}/reports/{index}", tags=["files"])
+def get_job_report_by_index(job_id: str, index: int) -> FileResponse:
+    """Stream the HTML report at position *index* for *job_id*.
+
+    Returns the file as ``text/html`` with a ``Content-Disposition`` header
+    so browsers offer a sensible filename.
+
+    Raises 404 if the job, index, or file on disk is not found.
+    """
+    job = _job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    paths: list[str] = job.output.report_html_paths or (
+        [job.output.report_html_path] if job.output.report_html_path else []
+    )
+    if index < 0 or index >= len(paths):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No report at index {index} (job has {len(paths)} report(s))",
+        )
+
+    file_path = Path(paths[index])
+    if not file_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Report file not found on disk: {file_path}",
+        )
+
+    filename = f"report-{job_id}-{index}.html"
+    return FileResponse(path=file_path, media_type="text/html", filename=filename)
+
+
 # ── CSV uploads ───────────────────────────────────────────────────────────────
 
 

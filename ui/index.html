@@ -592,24 +592,60 @@ async function openResults(job) {
     const fr = await fetch(`${API}/jobs/${job.id}/files`);
     if (fr.ok) {
       const files = await fr.json();
-      const icons = { gains: '📈', wealth: '💰', summary: '🗂️', report: '📄', log: '📋' };
+      const icons = { gains: '📈', wealth: '💰', summary: '🗂️', log: '📋' };
+
+      // Non-report files (gains, wealth, summary, log buttons)
       for (const [kind, path] of Object.entries(files)) {
+        if (kind === 'report') continue;  // HTML reports handled below
         const btn = document.createElement('a');
         btn.href = `${API}/jobs/${job.id}/files/${kind}`;
         btn.download = '';
         btn.className = 'btn-secondary text-xs flex items-center gap-1';
         btn.innerHTML = `${icons[kind] || '📎'} Download ${kind}`;
         dlEl.appendChild(btn);
+      }
 
-        // Embed HTML report inline
-        if (kind === 'report') {
+      // HTML reports — use the /reports list which supports multiple files
+      try {
+        const rr = await fetch(`${API}/jobs/${job.id}/reports`);
+        if (rr.ok) {
+          const reports = await rr.json();
+          const multi = reports.length > 1;
+          for (const rep of reports) {
+            const btn = document.createElement('a');
+            btn.href = `${API}${rep.url}`;
+            btn.download = '';
+            btn.className = 'btn-secondary text-xs flex items-center gap-1';
+            // For multi-report jobs: "📄 Report 1 — report_55d6caa0.html"
+            // For single-report jobs: "📄 Download report"
+            const label = multi
+              ? `📄 Report ${rep.index + 1} — ${rep.filename}`
+              : '📄 Download report';
+            btn.innerHTML = label;
+            dlEl.appendChild(btn);
+          }
+          // Load first report into iframe
+          if (reports.length > 0) {
+            const iframeWrap = document.getElementById('results-iframe-wrap');
+            const iframe = document.getElementById('results-iframe');
+            iframeWrap.classList.remove('hidden');
+            loadReportInIframe(job.id, iframe, 0);
+          }
+        } else if (files.report) {
+          // Fallback for older job records that only have the legacy field
+          const btn = document.createElement('a');
+          btn.href = `${API}/jobs/${job.id}/files/report`;
+          btn.download = '';
+          btn.className = 'btn-secondary text-xs flex items-center gap-1';
+          btn.innerHTML = '📄 Download report';
+          dlEl.appendChild(btn);
           const iframeWrap = document.getElementById('results-iframe-wrap');
           const iframe = document.getElementById('results-iframe');
           iframeWrap.classList.remove('hidden');
-          // Load report into iframe via fetch to bypass potential CORS on file:// paths
-          loadReportInIframe(job.id, iframe);
+          loadReportInIframe(job.id, iframe, null);
         }
-      }
+      } catch {}
+
       // Always show log if available
       if (files.log) {
         loadLog(job.id);
@@ -621,15 +657,19 @@ async function openResults(job) {
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-async function loadReportInIframe(jobId, iframe) {
+async function loadReportInIframe(jobId, iframe, index = null) {
   try {
-    const r = await fetch(`${API}/jobs/${jobId}/files/report`);
+    // Use the indexed /reports endpoint when available; fall back to legacy /files/report.
+    const url = index !== null
+      ? `${API}/jobs/${jobId}/reports/${index}`
+      : `${API}/jobs/${jobId}/files/report`;
+    const r = await fetch(url);
     if (!r.ok) return;
     const html = await r.text();
     // Write HTML into iframe via blob URL to avoid CSP issues
     const blob = new Blob([html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    iframe.src = url;
+    const blobUrl = URL.createObjectURL(blob);
+    iframe.src = blobUrl;
   } catch {}
 }
 

@@ -155,6 +155,7 @@ class JobService:
             # When multiple accounts are present we run once per account
             # and write separate HTML reports.
             report_html_path: Path | None = None
+            all_html_paths: list[str] = []
 
             if has_xrpl:
                 for idx, account in enumerate(job.input.xrpl_accounts):
@@ -188,9 +189,11 @@ class JobService:
                             output_dir=output_dir,
                         )
 
-                    # Use the first account's report as the primary report.
-                    if report_html_path is None and html_dest.exists():
-                        report_html_path = html_dest
+                            # Track all generated HTML reports.
+                    if html_dest.exists():
+                        all_html_paths.append(str(html_dest))
+                        if report_html_path is None:
+                            report_html_path = html_dest
 
             # ── Step 2: generic-events CSVs → taxspine-nor-report ─────────
             if has_csv:
@@ -225,14 +228,17 @@ class JobService:
                             output_dir=output_dir,
                         )
 
-                    if report_html_path is None and html_dest.exists():
-                        report_html_path = html_dest
+                    if html_dest.exists():
+                        all_html_paths.append(str(html_dest))
+                        if report_html_path is None:
+                            report_html_path = html_dest
 
             # ── Step 3: write log + build output record ───────────────────
             log_path = self._write_log(output_dir, log_lines)
 
             output = JobOutput(
                 report_html_path=str(report_html_path) if report_html_path else None,
+                report_html_paths=all_html_paths,
                 log_path=str(log_path),
             )
             return self.store.update_job(
