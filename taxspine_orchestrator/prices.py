@@ -1,20 +1,23 @@
 """Price-fetching service for the orchestrator.
 
-Fetches historical daily NOK prices for crypto assets from the Kraken
-public REST API and caches them as CSV files in PRICES_DIR.
+Fetches historical daily NOK prices for crypto assets by combining:
+  1. Kraken public OHLC API  — daily close prices in USD (no key required)
+  2. Norges Bank SDMX API    — daily official USD/NOK FX rates (no key required)
+
+Then multiplies: crypto_USD × USD_NOK = crypto_NOK
+
+Why this combination?
+---------------------
+- Kraken's public API has no key requirement and covers XRP, BTC, ETH, ADA.
+- Norges Bank (Norwegian central bank) is the official source for FX rates used
+  in Norwegian tax calculations — these are the same rates Skatteetaten uses.
+- Norges Bank only publishes business-day rates; weekend/holiday gaps are filled
+  by carrying the last known rate forward (standard accounting practice).
 
 The CSV format matches what taxspine CLIs expect via --csv-prices:
     date,asset_id,fiat_currency,price_fiat
     2025-01-01,XRP,NOK,7.4200
     ...
-
-Why Kraken?
------------
-- No API key or account required.
-- Native NOK trading pairs (XRPNOK, XBTNOK, ETHNOK) — prices are what
-  Norwegian users actually transacted at, not a USD→NOK conversion.
-- Reliable public OHLC endpoint with no meaningful rate limits for
-  single-user private systems.
 
 Caching policy
 --------------
@@ -36,13 +39,14 @@ from pydantic import BaseModel
 
 from .config import settings
 
-# ── Kraken pair map ───────────────────────────────────────────────────────────
-# Maps ticker symbol → Kraken trading pair name (always vs NOK).
-# Kraken uses "XBT" internally for Bitcoin; all other symbols match standard.
-_KRAKEN_PAIR: dict[str, str] = {
-    "XRP": "XRPNOK",
-    "BTC": "XBTNOK",
-    "ETH": "ETHNOK",
+# ── Asset → Kraken USD pair map ───────────────────────────────────────────────
+# Kraken uses "XBT" for Bitcoin; all other symbols match standard tickers.
+# Only USD pairs are listed here — NOK conversion comes from Norges Bank.
+_KRAKEN_USD_PAIR: dict[str, str] = {
+    "XRP": "XRPUSD",
+    "BTC": "XBTUSD",   # Kraken uses XBT, not BTC
+    "ETH": "ETHUSD",
+    "ADA": "ADAUSD",
 }
 
 _STALE_HOURS = 24   # re-fetch current-year file if older than this
@@ -111,9 +115,9 @@ def fetch_prices_for_year(asset: str, year: int) -> PriceFileInfo:
     Raises ValueError for unsupported assets, RuntimeError on network failure.
     """
     asset = asset.upper()
-    pair = _KRAKEN_PAIR.get(asset)
-    if pair is None:
-        supported = ", ".join(sorted(_KRAKEN_PAIR))
+    pair_usd = _KRAKEN_USD_PAIR.get(asset)
+    if pair_usd is None:
+        supported = ", ".join(sorted(_KRAKEN_USD_PAIR))
         raise ValueError(
             f"Unsupported asset '{asset}'. Supported: {supported}"
         )
@@ -123,7 +127,7 @@ def fetch_prices_for_year(asset: str, year: int) -> PriceFileInfo:
 
     cached = not _needs_fetch(dest, year)
     if not cached:
-        _fetch_and_write(pair, asset, year, dest)
+        _fetch_and_write(pair_usd, asset, year, dest)
 
     rows = _count_rows(dest)
     age = _file_age_hours(dest)
@@ -138,74 +142,166 @@ def fetch_prices_for_year(asset: str, year: int) -> PriceFileInfo:
     )
 
 
-def _fetch_and_write(pair: str, asset: str, year: int, dest: Path) -> None:
-    """Call Kraken OHLC endpoint and write the result CSV to *dest*.
+# ── Data sources ──────────────────────────────────────────────────────────────
 
-    Uses daily candles (interval=1440 minutes).  Kraken returns up to 720
-    candles per request — enough to cover a full calendar year in one call.
+
+def _fetch_kraken_usd_prices(pair: str, year: int) -> dict[str, float]:
+    """Return daily close prices in USD from Kraken for *pair* in *year*.
+
+    Uses daily (1440-min) OHLC candles.  Kraken returns up to 720 candles
+    per call — enough to cover a full year in one request.
+
+    Returns {date_str: close_price_usd}.
     """
     tz = datetime.timezone.utc
-    # `since` is the Unix timestamp of 1 Jan of the requested year.
-    # Kraken returns candles whose open timestamp is >= since.
     since = int(datetime.datetime(year, 1, 1, tzinfo=tz).timestamp())
 
     url = (
         f"https://api.kraken.com/0/public/OHLC"
         f"?pair={pair}&interval=1440&since={since}"
     )
-
     req = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": "taxspine-orchestrator/1.0",
-            "Accept": "application/json",
-        },
+        headers={"User-Agent": "taxspine-orchestrator/1.0", "Accept": "application/json"},
     )
 
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read())
     except Exception as exc:
-        raise RuntimeError(
-            f"Could not reach Kraken API: {exc}"
-        ) from exc
+        raise RuntimeError(f"Could not reach Kraken API: {exc}") from exc
 
     if body.get("error"):
-        raise RuntimeError(
-            f"Kraken API error for {pair}: {body['error']}"
-        )
+        raise RuntimeError(f"Kraken API error for {pair}: {body['error']}")
 
     result = body.get("result", {})
-    # result keys = one data key (the pair name Kraken uses) + "last"
     data_key = next((k for k in result if k != "last"), None)
     if data_key is None:
-        raise RuntimeError(
-            f"Kraken returned no candle data for pair {pair}."
-        )
-
-    # Candle format: [timestamp, open, high, low, close, vwap, volume, count]
-    candles: list[list] = result[data_key]
+        raise RuntimeError(f"Kraken returned no candle data for {pair}.")
 
     year_start = datetime.datetime(year, 1, 1, tzinfo=tz)
     year_end   = datetime.datetime(year, 12, 31, 23, 59, 59, tzinfo=tz)
 
-    rows: list[tuple[str, str]] = []
-    for candle in candles:
+    prices: dict[str, float] = {}
+    for candle in result[data_key]:
+        # [timestamp, open, high, low, close, vwap, volume, count]
         ts    = int(candle[0])
-        close = candle[4]
+        close = float(candle[4])
         dt    = datetime.datetime.fromtimestamp(ts, tz=tz)
-        if dt < year_start or dt > year_end:
-            continue
-        date_str = dt.strftime("%Y-%m-%d")
-        rows.append((date_str, f"{float(close):.4f}"))
+        if year_start <= dt <= year_end:
+            prices[dt.strftime("%Y-%m-%d")] = close
+
+    if not prices:
+        raise RuntimeError(
+            f"Kraken returned no {pair} candles for {year}. "
+            "The pair may not have been listed that year."
+        )
+    return prices
+
+
+def _fetch_norges_bank_usd_nok(year: int) -> dict[str, float]:
+    """Return daily official USD/NOK rates from Norges Bank for *year*.
+
+    Uses Norges Bank's SDMX JSON API — the same rates published by the
+    Norwegian central bank and used as the reference in Norwegian tax law.
+
+    Only business days are published; weekends and public holidays are absent
+    from the result.  Call ``_fill_calendar_gaps`` to fill those gaps.
+
+    Returns {date_str: rate} where rate is NOK per 1 USD.
+    """
+    start = f"{year}-01-01"
+    end   = f"{year}-12-31"
+
+    url = (
+        "https://data.norges-bank.no/api/data/EXR/B.USD.NOK.SP"
+        f"?format=sdmx-json&startPeriod={start}&endPeriod={end}&locale=en"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "taxspine-orchestrator/1.0", "Accept": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+    except Exception as exc:
+        raise RuntimeError(f"Could not reach Norges Bank API: {exc}") from exc
+
+    # Parse SDMX JSON structure.
+    # dates  = data.structure.dimensions.observation[0].values  → [{id: "YYYY-MM-DD"}, ...]
+    # series = data.dataSets[0].series["0:0:0:0"].observations  → {"0": [rate, ...], ...}
+    try:
+        structure  = body["data"]["structure"]
+        time_vals  = structure["dimensions"]["observation"][0]["values"]
+        dates      = [v["id"] for v in time_vals]
+
+        dataset    = body["data"]["dataSets"][0]
+        series_key = next(iter(dataset["series"]))
+        obs        = dataset["series"][series_key]["observations"]
+    except (KeyError, IndexError, StopIteration) as exc:
+        raise RuntimeError(
+            f"Unexpected Norges Bank response format: {exc}"
+        ) from exc
+
+    rates: dict[str, float] = {}
+    for idx_str, value_list in obs.items():
+        idx  = int(idx_str)
+        rate = float(value_list[0])
+        rates[dates[idx]] = rate
+
+    if not rates:
+        raise RuntimeError(
+            f"Norges Bank returned no USD/NOK rates for {year}."
+        )
+    return rates
+
+
+def _fill_calendar_gaps(rates: dict[str, float], year: int) -> dict[str, float]:
+    """Fill weekend/holiday gaps by carrying the last known rate forward.
+
+    Norges Bank publishes business-day rates only.  Standard accounting
+    practice is to use the most recent published rate for non-trading days.
+    """
+    start   = datetime.date(year, 1, 1)
+    end     = datetime.date(year, 12, 31)
+    filled: dict[str, float] = {}
+    last_rate: float | None = None
+
+    current = start
+    while current <= end:
+        date_str = current.isoformat()
+        if date_str in rates:
+            last_rate = rates[date_str]
+        if last_rate is not None:
+            filled[date_str] = last_rate
+        current += datetime.timedelta(days=1)
+
+    return filled
+
+
+# ── Orchestrated fetch + write ─────────────────────────────────────────────────
+
+
+def _fetch_and_write(pair_usd: str, asset: str, year: int, dest: Path) -> None:
+    """Combine Kraken USD prices + Norges Bank FX → NOK price CSV at *dest*."""
+    usd_prices  = _fetch_kraken_usd_prices(pair_usd, year)
+    raw_fx      = _fetch_norges_bank_usd_nok(year)
+    nok_rates   = _fill_calendar_gaps(raw_fx, year)
+
+    rows: list[tuple[str, str]] = []
+    for date_str, usd_price in sorted(usd_prices.items()):
+        nok_rate = nok_rates.get(date_str)
+        if nok_rate is None:
+            continue   # no FX rate — skip (only affects early Jan if no prior-year rate)
+        nok_price = usd_price * nok_rate
+        rows.append((date_str, f"{nok_price:.4f}"))
 
     if not rows:
         raise RuntimeError(
-            f"Kraken returned no candle data for {pair} in {year}. "
-            "The pair may not have been listed that year."
+            f"No NOK prices could be computed for {asset} in {year} "
+            "(no overlap between Kraken and Norges Bank data)."
         )
-
-    rows.sort(key=lambda r: r[0])
 
     with dest.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -218,7 +314,7 @@ def _count_rows(path: Path) -> int:
     """Return the number of data rows in *path* (header excluded)."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-        return max(0, len(lines) - 1)   # subtract header
+        return max(0, len(lines) - 1)
     except OSError:
         return 0
 
@@ -229,6 +325,9 @@ def _count_rows(path: Path) -> int:
 @router.post("/fetch", response_model=FetchPricesResponse, tags=["prices"])
 def fetch_prices(body: FetchPricesRequest) -> FetchPricesResponse:
     """Fetch (or return cached) daily NOK prices for an asset and year.
+
+    Combines Kraken USD prices with official Norges Bank USD/NOK rates.
+    No API key required for either source.
 
     - Writes a CSV to ``PRICES_DIR/{asset}_nok_{year}.csv``.
     - Past years are fetched once and never re-fetched.
@@ -256,16 +355,12 @@ def fetch_prices(body: FetchPricesRequest) -> FetchPricesResponse:
 
 @router.get("", response_model=list[PriceFileInfo], tags=["prices"])
 def list_prices() -> list[PriceFileInfo]:
-    """List all cached price CSV files in PRICES_DIR.
-
-    Useful for checking what has already been fetched before running a job.
-    """
+    """List all cached price CSV files in PRICES_DIR."""
     settings.PRICES_DIR.mkdir(parents=True, exist_ok=True)
     result: list[PriceFileInfo] = []
 
     for csv_path in sorted(settings.PRICES_DIR.glob("*_nok_*.csv")):
-        # Filename pattern: {asset}_nok_{year}.csv
-        stem = csv_path.stem  # e.g. "xrp_nok_2025"
+        stem  = csv_path.stem   # e.g. "xrp_nok_2025"
         parts = stem.split("_nok_")
         if len(parts) != 2:
             continue
