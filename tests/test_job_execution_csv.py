@@ -2,7 +2,8 @@
 
 Covers:
 - CSV-only jobs (no XRPL accounts): one taxspine-nor-report call per CSV file.
-- Combined XRPL + CSV jobs: taxspine-xrpl-nor calls first, then nor-report calls.
+- Combined XRPL + CSV jobs: single consolidated taxspine-xrpl-nor call with
+  CSV files attached via --generic-events-csv (unified FIFO lot pool).
 - Missing CSV file → FAILED before any subprocess call.
 - No inputs at all → FAILED immediately.
 
@@ -172,8 +173,8 @@ class TestCombinedXrplCsv:
 
     @patch("taxspine_orchestrator.services.subprocess.run")
     def test_combined_completes(self, mock_run, client, csv_dir):
-        # 1 XRPL account + 1 CSV file → 2 subprocess calls.
-        mock_run.side_effect = [_make_ok(), _make_ok()]
+        # 1 XRPL account + 1 CSV file → 1 consolidated subprocess call.
+        mock_run.return_value = _make_ok()
 
         payload = {
             "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
@@ -191,9 +192,14 @@ class TestCombinedXrplCsv:
         assert body["output"]["error_message"] is None
 
     @patch("taxspine_orchestrator.services.subprocess.run")
-    def test_combined_calls_xrpl_nor_then_report(self, mock_run, client, csv_dir):
-        """XRPL accounts are processed first, then CSV files."""
-        mock_run.side_effect = [_make_ok(), _make_ok()]
+    def test_combined_calls_single_xrpl_nor_with_csv(self, mock_run, client, csv_dir):
+        """Mixed workspace: one consolidated xrpl-nor call with CSV attached.
+
+        The old behaviour (separate xrpl-nor + nor-report) is replaced by a
+        single taxspine-xrpl-nor invocation that includes the CSV via
+        --generic-events-csv so both sources share a unified FIFO lot pool.
+        """
+        mock_run.return_value = _make_ok()
 
         csv_path = str(csv_dir / "generic1.csv")
         payload = {
@@ -206,20 +212,21 @@ class TestCombinedXrplCsv:
         job_id = resp.json()["id"]
         client.post(f"/jobs/{job_id}/start")
 
-        # Exactly 2 calls: one xrpl-nor, one nor-report.
-        assert mock_run.call_count == 2
+        # Exactly ONE consolidated call (not two).
+        assert mock_run.call_count == 1
 
-        # First call: taxspine-xrpl-nor (XRPL → Norway pipeline).
         xrpl_cmd = mock_run.call_args_list[0][0][0]
         assert xrpl_cmd[0] == "taxspine-xrpl-nor"
         assert "--account" in xrpl_cmd
         assert "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" in xrpl_cmd
+        assert "--generic-events-csv" in xrpl_cmd
+        assert csv_path in xrpl_cmd
 
-        # Second call: taxspine-nor-report (generic-events CSV).
-        report_cmd = mock_run.call_args_list[1][0][0]
-        assert report_cmd[0] == "taxspine-nor-report"
-        assert "--input" in report_cmd
-        assert csv_path in report_cmd
+        # taxspine-nor-report must NOT be called.
+        assert all(
+            call[0][0][0] != "taxspine-nor-report"
+            for call in mock_run.call_args_list
+        )
 
 
 # ── Missing CSV file ──────────────────────────────────────────────────────────

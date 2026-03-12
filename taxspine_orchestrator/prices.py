@@ -88,8 +88,23 @@ class PriceFileInfo(BaseModel):
     cached: bool       # True if no API calls were made (all files were fresh)
 
 
+class UnsupportedAssetNote(BaseModel):
+    """Advisory note for an asset that could not be priced automatically."""
+
+    asset: str
+    reason: str  # e.g. "Not available on Kraken; source prices manually"
+
+
 class FetchPricesResponse(PriceFileInfo):
-    """Response body for POST /prices/fetch."""
+    """Response body for POST /prices/fetch.
+
+    ``unsupported_assets`` lists assets that were requested (or are known
+    to be used) but cannot be fetched from the automatic sources.  The
+    caller should source these prices manually and merge them into the
+    combined CSV before passing ``--csv-prices`` to the tax CLI.
+    """
+
+    unsupported_assets: list[UnsupportedAssetNote] = []
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
@@ -126,19 +141,24 @@ def _needs_fetch(path: Path, year: int) -> bool:
 # ── Top-level entry point ─────────────────────────────────────────────────────
 
 
-def fetch_all_prices_for_year(year: int) -> PriceFileInfo:
+def fetch_all_prices_for_year(year: int) -> FetchPricesResponse:
     """Fetch (or return cached) daily NOK prices for all supported assets.
 
     Fetches XRP, BTC, ETH, ADA from Kraken (USD) × Norges Bank (USD/NOK),
     writes individual per-asset CSVs (cached), then merges into one combined
     CSV that the taxspine CLI can consume via ``--csv-prices``.
 
-    Returns metadata about the combined file.
+    Returns metadata about the combined file, including ``unsupported_assets``
+    — a list of assets that could not be priced automatically.  RLUSD is
+    always included here because Kraken does not have a direct RLUSD/USD pair;
+    callers should source RLUSD prices manually (e.g. via the RLUSD/USD pair
+    on a DEX) and add them to the price CSV before running the tax CLI.
     """
     settings.PRICES_DIR.mkdir(parents=True, exist_ok=True)
 
     any_fetched = False
     available_paths: list[Path] = []
+    failed_assets: list[str] = []
 
     for asset in _ALL_ASSETS:
         dest = _asset_csv_path(asset, year)
@@ -150,6 +170,7 @@ def fetch_all_prices_for_year(year: int) -> PriceFileInfo:
             except RuntimeError:
                 # If one asset fails (e.g. ADA not listed in early years),
                 # continue with the others rather than aborting entirely.
+                failed_assets.append(asset)
                 continue
         if dest.exists():
             available_paths.append(dest)
@@ -163,13 +184,39 @@ def fetch_all_prices_for_year(year: int) -> PriceFileInfo:
     combined = _combined_csv_path(year)
     total_rows = _write_combined_csv(available_paths, combined)
 
-    return PriceFileInfo(
+    # Build unsupported_assets list.
+    # RLUSD is always unsupported: Kraken has no direct RLUSD/USD pair.
+    # Any assets that failed during this fetch run are also included.
+    unsupported: list[UnsupportedAssetNote] = [
+        UnsupportedAssetNote(
+            asset="RLUSD",
+            reason=(
+                "Not available on Kraken; source prices manually via the "
+                "RLUSD/USD pair on XRPL DEX or another exchange and add rows "
+                "to the combined CSV before running the tax CLI."
+            ),
+        ),
+    ]
+    for failed_asset in failed_assets:
+        unsupported.append(
+            UnsupportedAssetNote(
+                asset=failed_asset,
+                reason=(
+                    f"{failed_asset} could not be fetched from Kraken for {year}. "
+                    "The pair may not have been listed that year; "
+                    "source prices manually."
+                ),
+            )
+        )
+
+    return FetchPricesResponse(
         asset="COMBINED",
         year=year,
         path=str(combined),
         rows=total_rows,
         age_hours=round(_file_age_hours(combined), 2),
         cached=not any_fetched,
+        unsupported_assets=unsupported,
     )
 
 
@@ -372,7 +419,7 @@ def fetch_prices(body: FetchPricesRequest) -> FetchPricesResponse:
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    return FetchPricesResponse(**info.model_dump())
+    return info
 
 
 @router.get("", response_model=list[PriceFileInfo], tags=["prices"])

@@ -7,7 +7,11 @@ Supported job types
 -------------------
 - **XRPL-only** — blockchain-reader exports events, tax CLI processes them.
 - **CSV-only** — generic-events CSVs are passed straight to the tax CLI.
-- **Combined** — both XRPL events and CSVs are merged by the tax CLI.
+- **Combined** — XRPL + CSV files are merged into a SINGLE ``taxspine-xrpl-nor``
+  invocation per account.  The primary account gets all CSV files attached via
+  ``--generic-events-csv``; additional accounts each get their own invocation
+  (CSV files already included with the primary account).  This ensures a unified
+  FIFO lot pool, correct transfer linking, and no double-counting of formue.
 """
 
 from __future__ import annotations
@@ -76,7 +80,12 @@ class JobService:
                         collecting one HTML report per account.
         - CSV-only   — runs ``taxspine-nor-report`` (or UK equivalent)
                         for each generic-events CSV file.
-        - Combined   — XRPL accounts first, then CSV files.
+        - Combined   — runs a SINGLE ``taxspine-xrpl-nor`` invocation for the
+                        primary account with ALL CSV files attached via
+                        ``--generic-events-csv``.  Additional accounts (if any)
+                        each get their own ``taxspine-xrpl-nor`` invocation
+                        without CSV files (CSV events were included with the
+                        primary account).  This keeps a unified FIFO lot pool.
         - Neither    → immediate FAILED.
 
         When ``job.input.dry_run`` is True the pipeline logs which commands
@@ -152,8 +161,15 @@ class JobService:
             # ── Step 1: XRPL accounts → taxspine-xrpl-nor ────────────────
             # taxspine-xrpl-nor handles the full XRPL → Norway pipeline
             # internally (no separate blockchain-reader step required).
-            # When multiple accounts are present we run once per account
-            # and write separate HTML reports.
+            #
+            # Mixed workspace (XRPL + CSV):
+            #   The primary account gets ALL CSV files attached via
+            #   --generic-events-csv so that XRPL and CSV events share a
+            #   single FIFO lot pool.  Additional accounts run separately
+            #   without CSV files (already merged with primary).
+            #
+            # XRPL-only workspace:
+            #   One invocation per account, no CSV files attached.
             report_html_path: Path | None = None
             all_html_paths: list[str] = []
 
@@ -162,10 +178,18 @@ class JobService:
                     suffix = f"_{idx}" if len(job.input.xrpl_accounts) > 1 else ""
                     html_dest = output_dir / f"report{suffix}.html"
 
+                    # Attach CSV files only to the primary account (idx == 0)
+                    # when this is a mixed workspace.  This keeps the FIFO lot
+                    # pool unified and prevents formue double-counting.
+                    csv_files_for_account = (
+                        job.input.csv_files if (has_csv and idx == 0) else []
+                    )
+
                     xrpl_cmd = self._build_xrpl_command(
                         job.input,
                         account=account,
                         html_path=html_dest,
+                        csv_files=csv_files_for_account,
                     )
                     log_lines.append(f"$ {' '.join(str(c) for c in xrpl_cmd)}")
 
@@ -189,14 +213,16 @@ class JobService:
                             output_dir=output_dir,
                         )
 
-                            # Track all generated HTML reports.
+                    # Track all generated HTML reports.
                     if html_dest.exists():
                         all_html_paths.append(str(html_dest))
                         if report_html_path is None:
                             report_html_path = html_dest
 
             # ── Step 2: generic-events CSVs → taxspine-nor-report ─────────
-            if has_csv:
+            # Only run this step for CSV-only workspaces.  When XRPL accounts
+            # are present, CSV files were already merged in Step 1.
+            if has_csv and not has_xrpl:
                 for csv_path_str in job.input.csv_files:
                     csv_stem = Path(csv_path_str).stem
                     html_dest = output_dir / f"report_{csv_stem}.html"
@@ -262,6 +288,7 @@ class JobService:
         *,
         account: str,
         html_path: Path,
+        csv_files: list[str] | None = None,
     ) -> list[str]:
         """Build a ``taxspine-xrpl-nor`` command for a single XRPL account.
 
@@ -270,11 +297,17 @@ class JobService:
         tax pipeline.  No blockchain-reader step is needed.
 
         Real CLI flags (as of Phase 2):
-            --account ADDRESS  (required)
-            --year    YEAR     (required)
-            --csv-prices PATH  (optional; CSV format price table)
-            --debug-valuation  (optional)
-            --html-output PATH (optional; self-contained HTML report)
+            --account              ADDRESS  (required)
+            --year                 YEAR     (required)
+            --generic-events-csv   PATH     (optional; repeatable — one per CSV)
+            --csv-prices           PATH     (optional; CSV format price table)
+            --debug-valuation               (optional)
+            --html-output          PATH     (optional; self-contained HTML report)
+
+        ``csv_files`` is an optional list of generic-events CSV paths to attach
+        via ``--generic-events-csv``.  When a job has both XRPL accounts and CSV
+        files the primary account receives all CSV files so that XRPL and CSV
+        events share a single FIFO lot pool (preventing formue double-counting).
         """
         cmd: list[str] = [
             settings.TAXSPINE_XRPL_NOR_CLI,
@@ -282,6 +315,10 @@ class JobService:
             "--year", str(job_input.tax_year),
             "--html-output", str(html_path),
         ]
+
+        # Attach generic-events CSV files (mixed workspace: primary account only).
+        for csv_path in (csv_files or []):
+            cmd.extend(["--generic-events-csv", csv_path])
 
         if (
             job_input.valuation_mode == ValuationMode.PRICE_TABLE
@@ -396,18 +433,32 @@ class JobService:
         """
         log_lines.append("[DRY RUN] — no subprocesses will be executed.")
 
+        has_csv = bool(job.input.csv_files)
+
         if has_xrpl:
-            for account in job.input.xrpl_accounts:
-                html_path = output_dir / "report.html"
-                cmd = self._build_xrpl_command(job.input, account=account, html_path=html_path)
+            for idx, account in enumerate(job.input.xrpl_accounts):
+                suffix = f"_{idx}" if len(job.input.xrpl_accounts) > 1 else ""
+                html_path = output_dir / f"report{suffix}.html"
+                # Primary account (idx == 0) gets all CSV files in mixed workspace.
+                csv_files_for_account = (
+                    job.input.csv_files if (has_csv and idx == 0) else []
+                )
+                cmd = self._build_xrpl_command(
+                    job.input,
+                    account=account,
+                    html_path=html_path,
+                    csv_files=csv_files_for_account,
+                )
                 log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
 
-        for csv_path_str in job.input.csv_files:
-            html_path = output_dir / f"report_{Path(csv_path_str).stem}.html"
-            cmd = self._build_csv_command(
-                job.input, csv_path=Path(csv_path_str), html_path=html_path,
-            )
-            log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
+        # CSV-only: run taxspine-nor-report per file.
+        if has_csv and not has_xrpl:
+            for csv_path_str in job.input.csv_files:
+                html_path = output_dir / f"report_{Path(csv_path_str).stem}.html"
+                cmd = self._build_csv_command(
+                    job.input, csv_path=Path(csv_path_str), html_path=html_path,
+                )
+                log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
 
         log_path = self._write_log(output_dir, log_lines)
         output = JobOutput(log_path=str(log_path))

@@ -295,9 +295,16 @@ class TestDryRun:
         assert resp.json()["input"]["dry_run"] is False
 
     @patch("taxspine_orchestrator.services.subprocess.run")
-    def test_dry_run_combined_xrpl_csv_logs_both_commands(
+    def test_dry_run_combined_xrpl_csv_logs_consolidated_command(
         self, mock_run, client: TestClient, tmp_path: Path,
     ) -> None:
+        """Mixed workspace dry-run logs a single consolidated xrpl-nor command.
+
+        The old behaviour logged both a taxspine-xrpl-nor command AND a
+        taxspine-nor-report command (one per source).  The new behaviour logs
+        a single taxspine-xrpl-nor command that includes the CSV via
+        --generic-events-csv so both sources share a unified FIFO lot pool.
+        """
         csv_file = tmp_path / "events.csv"
         csv_file.write_text("h\nr\n")
         payload = {
@@ -314,6 +321,13 @@ class TestDryRun:
         log_path = resp.json()["output"]["log_path"]
         log_text = Path(log_path).read_text()
 
+        # Single consolidated command.
         assert "taxspine-xrpl-nor" in log_text
-        assert "--input" in log_text
+        assert "--generic-events-csv" in log_text
+        assert str(csv_file) in log_text
+
+        # Old nor-report call must NOT appear.
+        assert "taxspine-nor-report" not in log_text
+        assert "--input" not in log_text
+
         assert mock_run.call_count == 0
