@@ -109,8 +109,8 @@ class TestCsvOnlyNorway:
         assert cmd[0] == "taxspine-nor-report"
 
     @patch("taxspine_orchestrator.services.subprocess.run")
-    def test_csv_only_uses_input_flag(self, mock_run, client, csv_dir):
-        """The --input flag carries the CSV path; no --xrpl-scenario flag."""
+    def test_csv_only_uses_generic_events_csv_flag(self, mock_run, client, csv_dir):
+        """The --generic-events-csv flag carries the CSV path; no legacy flags."""
         mock_run.return_value = _make_ok()
 
         csv1 = str(csv_dir / "generic1.csv")
@@ -133,16 +133,16 @@ class TestCsvOnlyNorway:
 
         # No legacy flags.
         assert "--xrpl-scenario" not in cmd0
-        assert "--generic-events-csv" not in cmd0
+        assert "--input" not in cmd0  # --input invokes wrong (Firi) parser
 
         # Correct flags present.
-        assert "--input" in cmd0
+        assert "--generic-events-csv" in cmd0
         assert csv1 in cmd0
         assert "--year" in cmd0
         assert "2025" in cmd0
         assert "--html-output" in cmd0
 
-        assert "--input" in cmd1
+        assert "--generic-events-csv" in cmd1
         assert csv2 in cmd1
 
     @patch("taxspine_orchestrator.services.subprocess.run")
@@ -356,8 +356,8 @@ class TestCsvOnlyUK:
         assert cmd[0] == "taxspine-uk-report"
 
     @patch("taxspine_orchestrator.services.subprocess.run")
-    def test_uk_csv_uses_input_flag(self, mock_run, client, csv_dir):
-        """UK CLI uses the same --input flag as the Norway CLI."""
+    def test_uk_csv_uses_generic_events_csv_flag(self, mock_run, client, csv_dir):
+        """UK CLI uses --generic-events-csv (same as Norway CLI)."""
         mock_run.return_value = _make_ok()
 
         csv_path = str(csv_dir / "generic1.csv")
@@ -372,7 +372,8 @@ class TestCsvOnlyUK:
         client.post(f"/jobs/{job_id}/start")
 
         cmd = mock_run.call_args_list[0][0][0]
-        assert "--input" in cmd
+        assert "--generic-events-csv" in cmd
+        assert "--input" not in cmd  # --input invokes wrong (Firi) parser
         assert csv_path in cmd
         assert "--year" in cmd
         assert "2025" in cmd

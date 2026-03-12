@@ -24,13 +24,13 @@ from pathlib import Path
 
 from .config import settings
 from .models import Country, Job, JobInput, JobOutput, JobStatus, ValuationMode
-from .storage import InMemoryJobStore
+from .storage import InMemoryJobStore, SqliteJobStore
 
 
 class JobService:
     """Create, query, and execute tax jobs."""
 
-    def __init__(self, store: InMemoryJobStore) -> None:
+    def __init__(self, store: InMemoryJobStore | SqliteJobStore) -> None:
         self.store = store
 
     # ── CRUD ──────────────────────────────────────────────────────────────
@@ -342,11 +342,16 @@ class JobService:
         """Build a ``taxspine-nor-report`` command for a generic-events CSV.
 
         Real CLI flags (as of Phase 2):
-            --input      PATH  (required; CSV file)
-            --year       YEAR  (required)
-            --csv-prices PATH  (optional; CSV format price table)
-            --debug-valuation  (optional)
-            --html-output PATH (optional; self-contained HTML report)
+            --generic-events-csv  PATH  (required; generic events CSV)
+            --year                YEAR  (required)
+            --csv-prices          PATH  (optional; CSV format price table)
+            --debug-valuation            (optional)
+            --html-output         PATH  (optional; self-contained HTML report)
+
+        Note: ``--generic-events-csv`` is used instead of ``--input`` because
+        uploaded CSV files follow the generic events schema, not the Firi
+        exchange format.  Using ``--input`` would invoke the Firi parser
+        which silently ignores generic-events rows, producing empty output.
         """
         if job_input.country == Country.NORWAY:
             cmd: list[str] = [settings.TAXSPINE_NOR_REPORT_CLI]
@@ -356,7 +361,7 @@ class JobService:
             raise ValueError(f"Unsupported country: {job_input.country}")
 
         cmd.extend([
-            "--input", str(csv_path),
+            "--generic-events-csv", str(csv_path),
             "--year", str(job_input.tax_year),
             "--html-output", str(html_path),
         ])

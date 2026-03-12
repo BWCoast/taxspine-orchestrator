@@ -294,8 +294,13 @@ class TestCsvOnlyWorkspace:
             assert call[0][0][0] == "taxspine-nor-report"
 
     @patch("taxspine_orchestrator.services.subprocess.run")
-    def test_csv_only_no_generic_events_csv_flag(self, mock_run, client, csv_dir):
-        """CSV-only nor-report calls use --input, not --generic-events-csv."""
+    def test_csv_only_uses_generic_events_csv_flag(self, mock_run, client, csv_dir):
+        """CSV-only nor-report calls use --generic-events-csv (not --input).
+
+        The --input flag invokes the Firi CSV parser which silently ignores
+        generic-events rows, producing empty output.  --generic-events-csv
+        uses the correct generic events parser.
+        """
         mock_run.return_value = _make_ok()
 
         csv_path = str(csv_dir / "firi1.csv")
@@ -310,9 +315,9 @@ class TestCsvOnlyWorkspace:
         client.post(f"/jobs/{job_id}/start")
 
         cmd = mock_run.call_args_list[0][0][0]
-        assert "--input" in cmd
+        assert "--generic-events-csv" in cmd
         assert csv_path in cmd
-        assert "--generic-events-csv" not in cmd
+        assert "--input" not in cmd
 
 
 # ── XRPL-only workspace ───────────────────────────────────────────────────────
@@ -432,4 +437,5 @@ class TestDryRunConsolidation:
         would_run_lines = [ln for ln in log_text.splitlines() if "[would run]" in ln]
         assert len(would_run_lines) == 1
         assert "taxspine-nor-report" in would_run_lines[0]
-        assert "--generic-events-csv" not in would_run_lines[0]
+        assert "--generic-events-csv" in would_run_lines[0]
+        assert "--input" not in would_run_lines[0]
