@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# ---------------------------------------------------------------------------
+# XRPL address validation
+# ---------------------------------------------------------------------------
+# Base58-encoded XRPL account addresses start with 'r' and are 25–34
+# characters long (including the leading 'r').  The alphabet excludes 0, O,
+# I, and l to avoid visual ambiguity.
+_XRPL_ADDRESS_RE = re.compile(r'^r[1-9A-HJ-NP-Za-km-z]{24,33}$')
 
 
 # ── Enums ────────────────────────────────────────────────────────────────────
@@ -52,6 +61,17 @@ class JobInput(BaseModel):
 
     xrpl_accounts: List[str] = Field(default_factory=list)
     tax_year: int
+
+    @field_validator("xrpl_accounts", mode="before")
+    @classmethod
+    def validate_xrpl_accounts(cls, v: object) -> object:
+        """Validate every address in the xrpl_accounts list."""
+        if not isinstance(v, list):
+            return v  # let Pydantic produce the type error
+        for addr in v:
+            if isinstance(addr, str) and not _XRPL_ADDRESS_RE.match(addr):
+                raise ValueError(f"Invalid XRPL address: {addr}")
+        return v
     country: Country
     csv_files: List[str] = Field(
         default_factory=list,

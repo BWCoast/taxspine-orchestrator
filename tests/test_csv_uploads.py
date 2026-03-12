@@ -31,7 +31,7 @@ def client() -> TestClient:
 def _create_job(client: TestClient, **overrides: object) -> dict:
     """Helper — create a job and return the response body."""
     payload: dict = {
-        "xrpl_accounts": ["rEXAMPLE1"],
+        "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
         "tax_year": 2025,
         "country": "norway",
         **overrides,

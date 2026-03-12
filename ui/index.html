@@ -198,7 +198,7 @@
       <!-- Inline HTML report -->
       <div id="results-iframe-wrap" class="hidden">
         <p class="text-xs text-gray-500 mb-2">Inline preview:</p>
-        <iframe id="results-iframe" class="w-full rounded-lg border border-gray-700" style="height:600px; background:white;" sandbox="allow-same-origin allow-scripts"></iframe>
+        <iframe id="results-iframe" class="w-full rounded-lg border border-gray-700" style="height:600px; background:white;" sandbox="allow-scripts"></iframe>
       </div>
 
       <!-- Execution log -->
@@ -267,31 +267,60 @@ function renderWorkspace() {
   const al = document.getElementById('accounts-list');
   const ac = document.getElementById('accounts-count');
   ac.textContent = `${workspace.xrpl_accounts.length} registered`;
+  al.innerHTML = '';
   if (!workspace.xrpl_accounts.length) {
     al.innerHTML = '<p class="text-gray-600 text-xs italic">No accounts registered yet.</p>';
   } else {
-    al.innerHTML = workspace.xrpl_accounts.map(a => `
-      <div class="tag">
-        <span class="truncate max-w-[200px]" title="${a}">${a}</span>
-        <span class="remove" onclick="removeAccount('${a}')" title="Remove">×</span>
-      </div>`).join('');
+    for (const a of workspace.xrpl_accounts) {
+      const tag = document.createElement('div');
+      tag.className = 'tag';
+
+      const span = document.createElement('span');
+      span.className = 'truncate max-w-[200px]';
+      span.title = a;
+      span.textContent = a;
+
+      const rm = document.createElement('span');
+      rm.className = 'remove';
+      rm.title = 'Remove';
+      rm.textContent = '×';
+      rm.addEventListener('click', () => removeAccount(a));
+
+      tag.appendChild(span);
+      tag.appendChild(rm);
+      al.appendChild(tag);
+    }
   }
 
   // CSV files
   const cl = document.getElementById('csv-list');
   const cc = document.getElementById('csv-count');
   cc.textContent = `${workspace.csv_files.length} registered`;
+  cl.innerHTML = '';
   if (!workspace.csv_files.length) {
     cl.innerHTML = '<p class="text-gray-600 text-xs italic">No CSV files registered yet.</p>';
   } else {
-    cl.innerHTML = workspace.csv_files.map(p => {
+    for (const p of workspace.csv_files) {
       const name = p.split(/[\\/]/).pop();
-      return `
-      <div class="tag">
-        <span class="truncate max-w-[180px]" title="${p}">${name}</span>
-        <span class="remove" onclick="removeCsv('${p.replace(/\\/g,'\\\\')}')" title="Remove">×</span>
-      </div>`;
-    }).join('');
+
+      const tag = document.createElement('div');
+      tag.className = 'tag';
+
+      const span = document.createElement('span');
+      span.className = 'truncate max-w-[180px]';
+      span.title = p;
+      span.textContent = name;
+
+      const rm = document.createElement('span');
+      rm.className = 'remove';
+      rm.title = 'Remove';
+      rm.textContent = '×';
+      rm.addEventListener('click', () => removeCsv(p));
+
+      tag.appendChild(span);
+      tag.appendChild(rm);
+      cl.appendChild(tag);
+    }
   }
 }
 
@@ -506,7 +535,7 @@ function _jobRowHtml(j) {
   const hasReport = j.output?.report_html_path ? '📄' : '';
   const label = j.input.case_name || `${j.input.country} ${j.input.tax_year}`;
   return `
-  <div class="job-row ${sel} p-3 fade-in" onclick="openResultsById('${j.id}')">
+  <div class="job-row ${sel} p-3 fade-in" onclick="openResultsById('${escHtml(j.id)}')">
     <div class="flex items-center justify-between gap-3">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
@@ -606,11 +635,11 @@ async function openResults(job) {
   const updated = new Date(job.updated_at).toLocaleString();
   document.getElementById('results-meta').innerHTML = `
     <span>${badgeHtml(job.status)}</span>
-    <span>Year: <strong class="text-white">${job.input.tax_year}</strong></span>
-    <span>Country: <strong class="text-white">${job.input.country}</strong></span>
+    <span>Year: <strong class="text-white">${escHtml(job.input.tax_year)}</strong></span>
+    <span>Country: <strong class="text-white">${escHtml(job.input.country)}</strong></span>
     <span>Created: ${created}</span>
     <span>Updated: ${updated}</span>
-    <span class="text-gray-600 text-xs truncate" title="${job.id}">ID: ${job.id.slice(0, 8)}…</span>
+    <span class="text-gray-600 text-xs truncate" title="${escHtml(job.id)}">ID: ${escHtml(job.id.slice(0, 8))}…</span>
   `;
 
   // Error
@@ -656,7 +685,7 @@ async function openResults(job) {
             // For multi-report jobs: "📄 Report 1 — report_55d6caa0.html"
             // For single-report jobs: "📄 Download report"
             const label = multi
-              ? `📄 Report ${rep.index + 1} — ${rep.filename}`
+              ? `📄 Report ${escHtml(String(rep.index + 1))} — ${escHtml(rep.filename)}`
               : '📄 Download report';
             btn.innerHTML = label;
             dlEl.appendChild(btn);
@@ -743,7 +772,8 @@ function escHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 // Enter key on account input

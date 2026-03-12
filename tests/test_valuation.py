@@ -17,13 +17,13 @@ from taxspine_orchestrator.main import app
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 _NORWAY_BASE = {
-    "xrpl_accounts": ["rAccount1"],
+    "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
     "tax_year": 2025,
     "country": "norway",
 }
 
 _UK_BASE = {
-    "xrpl_accounts": ["rUkAccount"],
+    "xrpl_accounts": ["rGWrZyax5eXbi5gs49MRZKmm2zUivkrADN"],
     "tax_year": 2025,
     "country": "uk",
 }

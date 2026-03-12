@@ -7,14 +7,15 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, Query, Security, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.security.api_key import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from .config import settings
-from .models import Country, Job, JobInput, JobOutput, JobStatus, ValuationMode, WorkspaceConfig
+from .models import Country, Job, JobInput, JobOutput, JobStatus, ValuationMode, WorkspaceConfig, _XRPL_ADDRESS_RE
 from .prices import router as prices_router
 from .services import JobService
 from .storage import SqliteJobStore, WorkspaceStore
@@ -23,14 +24,34 @@ from .storage import SqliteJobStore, WorkspaceStore
 
 app = FastAPI(title="Taxspine Orchestrator")
 
-# Allow browser access from any origin (file://, localhost ports, NAS).
+# Allow browser access from configured origins only.
+# Note: allow_credentials=True is intentionally omitted — cookies are not used
+# and combining it with a wildcard origin violates the CORS spec.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Authentication ────────────────────────────────────────────────────────────
+
+_api_key_header = APIKeyHeader(name="X-Orchestrator-Key", auto_error=False)
+
+
+async def _require_key(key: str | None = Security(_api_key_header)) -> None:
+    """Reject requests that are missing or carry the wrong key.
+
+    When ``settings.ORCHESTRATOR_KEY`` is empty (the default) the check is
+    skipped entirely so that local / dev deployments work without any
+    configuration.
+    """
+    expected = settings.ORCHESTRATOR_KEY
+    if expected and key != expected:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing X-Orchestrator-Key header",
+        )
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 
@@ -112,7 +133,7 @@ def health() -> dict:
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 
 
-@app.post("/jobs", response_model=Job, tags=["jobs"])
+@app.post("/jobs", response_model=Job, tags=["jobs"], dependencies=[Depends(_require_key)])
 def create_job(job_input: JobInput) -> Job:
     """Create a new tax job (PENDING)."""
     return _job_service.create_job(job_input)
@@ -145,7 +166,7 @@ def get_job(job_id: str) -> Job:
     return job
 
 
-@app.post("/jobs/{job_id}/start", response_model=Job, tags=["jobs"])
+@app.post("/jobs/{job_id}/start", response_model=Job, tags=["jobs"], dependencies=[Depends(_require_key)])
 def start_job(job_id: str) -> Job:
     """Execute a pending job synchronously and return the final state."""
     job = _job_service.start_job_execution(job_id)
@@ -196,7 +217,16 @@ def get_job_file(job_id: str, kind: FileKind) -> FileResponse:
             detail=f"No {kind.value} file recorded for this job",
         )
 
-    file_path = Path(path_str)
+    resolved = Path(path_str).resolve()
+    try:
+        resolved.relative_to(settings.OUTPUT_DIR.resolve())
+    except ValueError:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: file is outside output directory",
+        )
+
+    file_path = resolved
     if not file_path.is_file():
         raise HTTPException(
             status_code=404,
@@ -268,7 +298,16 @@ def get_job_report_by_index(job_id: str, index: int) -> FileResponse:
             detail=f"No report at index {index} (job has {len(paths)} report(s))",
         )
 
-    file_path = Path(paths[index])
+    resolved = Path(paths[index]).resolve()
+    try:
+        resolved.relative_to(settings.OUTPUT_DIR.resolve())
+    except ValueError:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: file is outside output directory",
+        )
+
+    file_path = resolved
     if not file_path.is_file():
         raise HTTPException(
             status_code=404,
@@ -285,7 +324,7 @@ def get_job_report_by_index(job_id: str, index: int) -> FileResponse:
 _CSV_CONTENT_TYPES = {"text/csv", "application/vnd.ms-excel"}
 
 
-@app.post("/uploads/csv", tags=["uploads"])
+@app.post("/uploads/csv", tags=["uploads"], dependencies=[Depends(_require_key)])
 async def upload_csv(
     file: UploadFile = File(...),
     register: bool = Query(
@@ -339,7 +378,7 @@ class AttachCsvRequest(BaseModel):
     csv_paths: List[str]
 
 
-@app.post("/jobs/{job_id}/attach-csv", response_model=Job, tags=["jobs"])
+@app.post("/jobs/{job_id}/attach-csv", response_model=Job, tags=["jobs"], dependencies=[Depends(_require_key)])
 def attach_csv_to_job(job_id: str, body: AttachCsvRequest) -> Job:
     """Append CSV file paths to a PENDING job's ``csv_files`` list."""
     job = _job_service.get_job(job_id)
@@ -383,17 +422,23 @@ def get_workspace() -> WorkspaceConfig:
 class AddAccountRequest(BaseModel):
     account: str
 
+    @field_validator("account")
+    @classmethod
+    def validate_xrpl_address(cls, v: str) -> str:
+        v = v.strip()
+        if not _XRPL_ADDRESS_RE.match(v):
+            raise ValueError(f"Invalid XRPL address: {v}")
+        return v
 
-@app.post("/workspace/accounts", response_model=WorkspaceConfig, tags=["workspace"])
+
+@app.post("/workspace/accounts", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])
 def add_workspace_account(body: AddAccountRequest) -> WorkspaceConfig:
     """Register an XRPL account address in the workspace."""
-    account = body.account.strip()
-    if not account:
-        raise HTTPException(status_code=400, detail="Account address must not be empty")
+    account = body.account  # already validated and stripped by the validator
     return _workspace_store.add_account(account)
 
 
-@app.delete("/workspace/accounts/{account}", response_model=WorkspaceConfig, tags=["workspace"])
+@app.delete("/workspace/accounts/{account}", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])
 def remove_workspace_account(account: str) -> WorkspaceConfig:
     """Remove an XRPL account address from the workspace."""
     return _workspace_store.remove_account(account)
@@ -403,18 +448,26 @@ class AddCsvRequest(BaseModel):
     path: str
 
 
-@app.post("/workspace/csv", response_model=WorkspaceConfig, tags=["workspace"])
+@app.post("/workspace/csv", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])
 def add_workspace_csv(body: AddCsvRequest) -> WorkspaceConfig:
     """Register a CSV file path in the workspace."""
-    if not Path(body.path).is_file():
+    csv_path = Path(body.path).resolve()
+    try:
+        csv_path.relative_to(settings.UPLOAD_DIR.resolve())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV path must be inside the upload directory",
+        )
+    if not csv_path.is_file():
         raise HTTPException(
             status_code=400,
             detail=f"File not found on disk: {body.path}",
         )
-    return _workspace_store.add_csv(body.path)
+    return _workspace_store.add_csv(str(csv_path))
 
 
-@app.delete("/workspace/csv", response_model=WorkspaceConfig, tags=["workspace"])
+@app.delete("/workspace/csv", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])
 def remove_workspace_csv(body: AddCsvRequest) -> WorkspaceConfig:
     """Remove a CSV file path from the workspace."""
     return _workspace_store.remove_csv(body.path)
@@ -433,7 +486,7 @@ class WorkspaceRunRequest(BaseModel):
     dry_run: bool = False
 
 
-@app.post("/workspace/run", response_model=Job, tags=["workspace"])
+@app.post("/workspace/run", response_model=Job, tags=["workspace"], dependencies=[Depends(_require_key)])
 def run_workspace_report(body: WorkspaceRunRequest) -> Job:
     """Create and immediately execute a job using all workspace accounts and CSVs.
 

@@ -21,14 +21,14 @@ from taxspine_orchestrator.main import app
 
 # Norway job with TWO accounts → two taxspine-xrpl-nor calls.
 _NORWAY_INPUT = {
-    "xrpl_accounts": ["rAccount1", "rAccount2"],
+    "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh", "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"],
     "tax_year": 2025,
     "country": "norway",
 }
 
 # UK job with one account → one taxspine-xrpl-nor call (XRPL→NOR only).
 _UK_INPUT = {
-    "xrpl_accounts": ["rUkAccount"],
+    "xrpl_accounts": ["rGWrZyax5eXbi5gs49MRZKmm2zUivkrADN"],
     "tax_year": 2025,
     "country": "uk",
 }
@@ -106,9 +106,9 @@ class TestSuccessNorway:
 
         # Each call targets its respective account.
         assert "--account" in cmd0
-        assert "rAccount1" in cmd0
+        assert "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" in cmd0
         assert "--account" in cmd1
-        assert "rAccount2" in cmd1
+        assert "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe" in cmd1
 
         # Both carry the correct year flag.
         assert "--year" in cmd0
@@ -155,7 +155,7 @@ class TestSuccessUK:
         cmd = mock_run.call_args_list[0][0][0]
         assert cmd[0] == "taxspine-xrpl-nor"
         assert "--account" in cmd
-        assert "rUkAccount" in cmd
+        assert "rGWrZyax5eXbi5gs49MRZKmm2zUivkrADN" in cmd
         assert "--year" in cmd
         assert "2025" in cmd
 
@@ -179,7 +179,7 @@ class TestFailXrplNor:
 
         assert body["status"] == "failed"
         assert "taxspine-xrpl-nor failed" in body["output"]["error_message"]
-        assert "rAccount1" in body["output"]["error_message"]
+        assert "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" in body["output"]["error_message"]
         assert body["output"]["log_path"] is not None
         # No report artefact since job failed.
         assert body["output"]["report_html_path"] is None
@@ -215,7 +215,7 @@ class TestFailSecondAccount:
 
         assert body["status"] == "failed"
         assert "taxspine-xrpl-nor failed" in body["output"]["error_message"]
-        assert "rAccount2" in body["output"]["error_message"]
+        assert "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe" in body["output"]["error_message"]
         assert body["output"]["log_path"] is not None
         assert body["output"]["report_html_path"] is None
 

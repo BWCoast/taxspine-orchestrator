@@ -18,7 +18,7 @@ from taxspine_orchestrator.models import JobOutput, JobStatus
 
 
 _SAMPLE_INPUT = {
-    "xrpl_accounts": ["rEXAMPLE1"],
+    "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
     "tax_year": 2025,
     "country": "norway",
 }
@@ -249,7 +249,7 @@ class TestDryRun:
         assert "DRY RUN" in log_text
         assert "[would run]" in log_text
         assert "taxspine-xrpl-nor" in log_text
-        assert "rEXAMPLE1" in log_text
+        assert "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" in log_text
 
     @patch("taxspine_orchestrator.services.subprocess.run")
     def test_dry_run_no_inputs_still_fails(
@@ -301,7 +301,7 @@ class TestDryRun:
         csv_file = tmp_path / "events.csv"
         csv_file.write_text("h\nr\n")
         payload = {
-            "xrpl_accounts": ["rEXAMPLE1"],
+            "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
             "tax_year": 2025,
             "country": "norway",
             "csv_files": [str(csv_file)],

@@ -12,7 +12,7 @@ from taxspine_orchestrator.main import app
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 _SAMPLE_INPUT = {
-    "xrpl_accounts": ["rEXAMPLE1", "rEXAMPLE2"],
+    "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh", "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"],
     "tax_year": 2025,
     "country": "norway",
     "csv_files": [],
@@ -54,7 +54,7 @@ class TestCreateJob:
         body = resp.json()
         assert body["status"] == "pending"
         assert body["id"]  # non-empty UUID string
-        assert body["input"]["xrpl_accounts"] == ["rEXAMPLE1", "rEXAMPLE2"]
+        assert body["input"]["xrpl_accounts"] == ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh", "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"]
         assert body["input"]["tax_year"] == 2025
         assert body["input"]["country"] == "norway"
 

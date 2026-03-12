@@ -176,7 +176,7 @@ class TestCombinedXrplCsv:
         mock_run.side_effect = [_make_ok(), _make_ok()]
 
         payload = {
-            "xrpl_accounts": ["rEXAMPLE1"],
+            "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
             "tax_year": 2025,
             "country": "norway",
             "csv_files": [str(csv_dir / "generic1.csv")],
@@ -197,7 +197,7 @@ class TestCombinedXrplCsv:
 
         csv_path = str(csv_dir / "generic1.csv")
         payload = {
-            "xrpl_accounts": ["rEXAMPLE1"],
+            "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
             "tax_year": 2025,
             "country": "norway",
             "csv_files": [csv_path],
@@ -213,7 +213,7 @@ class TestCombinedXrplCsv:
         xrpl_cmd = mock_run.call_args_list[0][0][0]
         assert xrpl_cmd[0] == "taxspine-xrpl-nor"
         assert "--account" in xrpl_cmd
-        assert "rEXAMPLE1" in xrpl_cmd
+        assert "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" in xrpl_cmd
 
         # Second call: taxspine-nor-report (generic-events CSV).
         report_cmd = mock_run.call_args_list[1][0][0]
@@ -253,7 +253,7 @@ class TestMissingCsvFile:
         """Even with valid XRPL accounts, missing CSV → FAILED, no calls."""
         missing = str(tmp_path / "nope.csv")
         payload = {
-            "xrpl_accounts": ["rEXAMPLE1"],
+            "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
             "tax_year": 2025,
             "country": "norway",
             "csv_files": [missing],

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from taxspine_orchestrator.config import settings as _settings
 from taxspine_orchestrator.main import app
 from taxspine_orchestrator.models import JobOutput, JobStatus
 
@@ -27,6 +28,19 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture()
+def output_dir(tmp_path: Path) -> Path:
+    """Return a temporary directory that lives *inside* OUTPUT_DIR so that
+    path-containment checks in the download endpoint are satisfied."""
+    import uuid
+    dest = _settings.OUTPUT_DIR / f"_test_{uuid.uuid4().hex}"
+    dest.mkdir(parents=True, exist_ok=True)
+    yield dest
+    # Cleanup — best-effort; ignore errors on Windows file locks.
+    import shutil
+    shutil.rmtree(dest, ignore_errors=True)
+
+
 def _create_job(
     client: TestClient,
     country: str = "norway",
@@ -35,7 +49,7 @@ def _create_job(
 ) -> dict:
     """Helper — create a job and return the response body."""
     payload: dict = {
-        "xrpl_accounts": ["rEXAMPLE1"],
+        "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
         "tax_year": tax_year,
         "country": country,
     }
@@ -206,9 +220,9 @@ class TestListJobFiles:
 class TestDownloadFile:
     """Tests for ``GET /jobs/{id}/files/{kind}`` (streaming file response)."""
 
-    def test_download_gains_csv(self, client: TestClient, tmp_path: Path) -> None:
+    def test_download_gains_csv(self, client: TestClient, output_dir: Path) -> None:
         job = _create_job(client)
-        dummy = tmp_path / "gains.csv"
+        dummy = output_dir / "gains.csv"
         dummy.write_bytes(b"asset,amount\nXRP,100\n")  # binary to avoid CRLF on Windows
 
         output = JobOutput(gains_csv_path=str(dummy))
@@ -220,9 +234,9 @@ class TestDownloadFile:
         assert resp.content == b"asset,amount\nXRP,100\n"
         assert f"gains-{job['id']}.csv" in resp.headers["content-disposition"]
 
-    def test_download_wealth_csv(self, client: TestClient, tmp_path: Path) -> None:
+    def test_download_wealth_csv(self, client: TestClient, output_dir: Path) -> None:
         job = _create_job(client)
-        dummy = tmp_path / "wealth.csv"
+        dummy = output_dir / "wealth.csv"
         dummy.write_bytes(b"date,value\n2025-01-01,5000\n")  # binary to avoid CRLF on Windows
 
         output = JobOutput(wealth_csv_path=str(dummy))
@@ -234,9 +248,9 @@ class TestDownloadFile:
         assert resp.content == b"date,value\n2025-01-01,5000\n"
         assert f"wealth-{job['id']}.csv" in resp.headers["content-disposition"]
 
-    def test_download_summary_json(self, client: TestClient, tmp_path: Path) -> None:
+    def test_download_summary_json(self, client: TestClient, output_dir: Path) -> None:
         job = _create_job(client)
-        dummy = tmp_path / "summary.json"
+        dummy = output_dir / "summary.json"
         dummy.write_text('{"total_gains": 42}')
 
         output = JobOutput(summary_json_path=str(dummy))
@@ -248,9 +262,9 @@ class TestDownloadFile:
         assert resp.text == '{"total_gains": 42}'
         assert f"summary-{job['id']}.json" in resp.headers["content-disposition"]
 
-    def test_download_log_txt(self, client: TestClient, tmp_path: Path) -> None:
+    def test_download_log_txt(self, client: TestClient, output_dir: Path) -> None:
         job = _create_job(client)
-        dummy = tmp_path / "execution.log"
+        dummy = output_dir / "execution.log"
         dummy.write_bytes(b"$ taxspine-xrpl-nor ...\n  rc=0\n")  # binary to avoid CRLF on Windows
 
         output = JobOutput(log_path=str(dummy))
@@ -264,7 +278,11 @@ class TestDownloadFile:
 
     def test_file_missing_on_disk_returns_404(self, client: TestClient) -> None:
         job = _create_job(client)
-        output = JobOutput(gains_csv_path="/nonexistent/gains.csv")
+        # Path must be inside OUTPUT_DIR to pass the containment check, but
+        # the file itself must not exist so we get a 404 (not 403).
+        from taxspine_orchestrator.config import settings as _s
+        missing_inside = str(_s.OUTPUT_DIR / "nonexistent_gains_xyz.csv")
+        output = JobOutput(gains_csv_path=missing_inside)
         _force_status(job["id"], JobStatus.COMPLETED, output=output)
 
         resp = client.get(f"/jobs/{job['id']}/files/gains")
@@ -288,13 +306,13 @@ class TestDownloadFile:
         resp = client.get(f"/jobs/{job['id']}/files/banana")
         assert resp.status_code == 422
 
-    def test_all_four_kinds_download(self, client: TestClient, tmp_path: Path) -> None:
+    def test_all_four_kinds_download(self, client: TestClient, output_dir: Path) -> None:
         """Verify every valid kind streams the correct file content."""
         job = _create_job(client)
-        gains = tmp_path / "gains.csv"
-        wealth = tmp_path / "wealth.csv"
-        summary = tmp_path / "summary.json"
-        log = tmp_path / "execution.log"
+        gains = output_dir / "gains.csv"
+        wealth = output_dir / "wealth.csv"
+        summary = output_dir / "summary.json"
+        log = output_dir / "execution.log"
         for f in (gains, wealth, summary, log):
             f.write_text(f"content-of-{f.stem}")
 
@@ -327,7 +345,7 @@ class TestCaseName:
         resp = client.post(
             "/jobs",
             json={
-                "xrpl_accounts": ["rEXAMPLE1"],
+                "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
                 "tax_year": 2025,
                 "country": "norway",
                 "csv_files": [],

@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     # PRICES_DIR stores cached price CSVs fetched from external APIs
     PRICES_DIR: Path = _DEFAULT_BASE / "prices"
 
+    # ── Security ──────────────────────────────────────────────────────────
+    # Empty string = auth disabled (dev/local mode).
+    # Set to a non-empty value to require X-Orchestrator-Key on all mutating
+    # endpoints.
+    ORCHESTRATOR_KEY: str = ""
+    # Allowed CORS origins.  Override with a comma-separated env var or
+    # by subclassing Settings.
+    CORS_ORIGINS: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000"]
+
     # ── External CLI binaries ─────────────────────────────────────────────
     # taxspine-xrpl-nor: single-command XRPL → Norway pipeline
     TAXSPINE_XRPL_NOR_CLI: str = "taxspine-xrpl-nor"
