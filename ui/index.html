@@ -135,6 +135,11 @@
             <option value="price_table">Price table CSV</option>
           </select>
         </div>
+        <!-- F-14: warning shown when built-in estimates are selected -->
+        <div id="dummy-valuation-warning" class="rounded border border-yellow-600 bg-yellow-900/30 px-3 py-2 text-xs text-yellow-300" role="alert">
+          <strong>⚠ Not for filing</strong> — Built-in estimates are <em>not</em> accepted by Skatteetaten.
+          Select <strong>Price table CSV</strong> and fetch authoritative NOK prices before generating a report you intend to submit.
+        </div>
         <div id="prices-field" class="hidden">
           <label for="run-prices-path" class="text-xs text-gray-400 mb-1 block">Price table</label>
           <div class="flex items-center gap-2 mb-2">
@@ -233,6 +238,7 @@ const API = (location.protocol === 'file:') ? 'http://localhost:8000' : '';
 // ── Dynamic defaults ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('run-tax-year').value = new Date().getFullYear() - 1;
+  togglePricesField(); // sync warning banner with initial valuation selection
 });
 
 // ── Health check ────────────────────────────────────────────────────────────
@@ -434,6 +440,8 @@ async function handleCsvFile(file) {
 function togglePricesField() {
   const v = document.getElementById('run-valuation').value;
   document.getElementById('prices-field').classList.toggle('hidden', v !== 'price_table');
+  // F-14: show/hide the "not for filing" warning based on valuation mode
+  document.getElementById('dummy-valuation-warning').classList.toggle('hidden', v !== 'dummy');
 }
 
 async function fetchPrices() {

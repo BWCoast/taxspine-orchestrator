@@ -119,7 +119,21 @@ class JobService:
                         log_lines=log_lines,
                         output_dir=output_dir,
                     )
-                if not Path(job.input.csv_prices_path).is_file():
+                # F-11: containment check — price table must resolve inside UPLOAD_DIR
+                prices_path = Path(job.input.csv_prices_path).resolve()
+                try:
+                    prices_path.relative_to(settings.UPLOAD_DIR.resolve())
+                except ValueError:
+                    return self._fail_job(
+                        job_id,
+                        error=(
+                            f"CSV price table path must be inside UPLOAD_DIR "
+                            f"({settings.UPLOAD_DIR}): {job.input.csv_prices_path}"
+                        ),
+                        log_lines=log_lines,
+                        output_dir=output_dir,
+                    )
+                if not prices_path.is_file():
                     return self._fail_job(
                         job_id,
                         error=f"CSV price table not found: {job.input.csv_prices_path}",

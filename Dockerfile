@@ -58,14 +58,18 @@ RUN pip install --no-cache-dir .
 # gets new commits, the SHA changes → Docker cannot reuse the cached layer
 # → pip installs the fresh version.  Defaults to "unknown" for local builds
 # where the SHA is not passed (triggering a fresh install every time locally).
+# TAXNOR_TAG: semver tag to install (default v0.1.0).  Override at build time
+# to deploy a different release:  --build-arg TAXNOR_TAG=v0.2.0
+# TAXNOR_SHA: HEAD commit SHA used only for Docker layer cache-busting.
+ARG TAXNOR_TAG=v0.1.0
 ARG TAXNOR_SHA=unknown
 RUN --mount=type=secret,id=gh_token,required=false \
-    echo "# tax-nor HEAD: ${TAXNOR_SHA}" && \
+    echo "# tax-nor tag: ${TAXNOR_TAG}  HEAD: ${TAXNOR_SHA}" && \
     TOKEN=$(cat /run/secrets/gh_token 2>/dev/null || echo "") && \
     if [ -n "$TOKEN" ]; then \
-        pip install --no-cache-dir "git+https://${TOKEN}@github.com/BWCoast/tax-nor.git"; \
+        pip install --no-cache-dir "git+https://${TOKEN}@github.com/BWCoast/tax-nor.git@${TAXNOR_TAG}"; \
     else \
-        pip install --no-cache-dir "git+https://github.com/BWCoast/tax-nor.git"; \
+        pip install --no-cache-dir "git+https://github.com/BWCoast/tax-nor.git@${TAXNOR_TAG}"; \
     fi
 
 # ── Python deps: blockchain-reader ────────────────────────────────────────────

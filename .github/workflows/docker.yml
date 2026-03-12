@@ -35,7 +35,32 @@ env:
   IMAGE_NAME: ${{ github.repository }}   # → bwcoast/taxspine-orchestrator
 
 jobs:
+  # ── Test suite ──────────────────────────────────────────────────────────────
+  # Run pytest BEFORE the Docker build so a broken test suite never produces
+  # a published image.  The build-and-push job declares `needs: test` to
+  # enforce this ordering.
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install orchestrator + dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest --tb=short -q
+
+  # ── Docker build ─────────────────────────────────────────────────────────────
   build-and-push:
+    needs: test   # ← Docker build only runs when tests are green
     runs-on: ubuntu-latest
 
     permissions:
