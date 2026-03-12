@@ -27,7 +27,7 @@
     .select { background: #111827; border: 1px solid #374151; color: #e2e8f0; padding: 8px 12px; border-radius: 8px; font-size: 14px; outline: none; cursor: pointer; }
     .select:focus { border-color: #3b82f6; }
     .tag { display: inline-flex; align-items: center; gap: 6px; background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-family: monospace; }
-    .tag .remove { color: #64748b; cursor: pointer; font-size: 16px; line-height: 1; }
+    .tag .remove { color: #64748b; cursor: pointer; font-size: 16px; line-height: 1; background: none; border: none; padding: 0; font-family: inherit; }
     .tag .remove:hover { color: #f87171; }
     .spin { animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -118,32 +118,32 @@
 
       <div class="flex flex-col gap-3">
         <div>
-          <label class="text-xs text-gray-400 mb-1 block">Tax Year</label>
-          <input type="number" id="run-tax-year" class="input" value="2024" min="2015" max="2030" step="1">
+          <label for="run-tax-year" class="text-xs text-gray-400 mb-1 block">Tax Year</label>
+          <input type="number" id="run-tax-year" class="input" min="2015" max="2030" step="1">
         </div>
         <div>
-          <label class="text-xs text-gray-400 mb-1 block">Country</label>
+          <label for="run-country" class="text-xs text-gray-400 mb-1 block">Country</label>
           <select id="run-country" class="select w-full">
             <option value="norway">🇳🇴 Norway</option>
             <option value="uk">🇬🇧 United Kingdom</option>
           </select>
         </div>
         <div>
-          <label class="text-xs text-gray-400 mb-1 block">Valuation</label>
+          <label for="run-valuation" class="text-xs text-gray-400 mb-1 block">Valuation</label>
           <select id="run-valuation" class="select w-full" onchange="togglePricesField()">
-            <option value="dummy">Default (built-in)</option>
+            <option value="dummy">Built-in estimates (not for filing)</option>
             <option value="price_table">Price table CSV</option>
           </select>
         </div>
         <div id="prices-field" class="hidden">
-          <label class="text-xs text-gray-400 mb-1 block">Price table</label>
+          <label for="run-prices-path" class="text-xs text-gray-400 mb-1 block">Price table</label>
           <div class="flex items-center gap-2 mb-2">
             <button onclick="fetchPrices()" id="fetch-prices-btn" class="btn-secondary text-xs flex-shrink-0">⬇ Fetch all prices</button>
             <span id="fetch-prices-status" class="text-xs text-gray-500"></span>
           </div>
           <input id="run-prices-path" class="input text-xs" placeholder="auto-filled by Fetch, or enter path manually" style="font-family:monospace;">
         </div>
-        <div class="flex items-center gap-2">
+        <div id="dex-trades-section" class="flex items-center gap-2" style="display:none;">
           <input type="checkbox" id="run-trades" class="accent-blue-500 w-4 h-4">
           <label for="run-trades" class="text-xs text-gray-400 cursor-pointer">Include DEX trades (XRPL OfferCreate swaps)</label>
         </div>
@@ -230,6 +230,11 @@
 // When opened as file://, fall back to localhost:8000.
 const API = (location.protocol === 'file:') ? 'http://localhost:8000' : '';
 
+// ── Dynamic defaults ─────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('run-tax-year').value = new Date().getFullYear() - 1;
+});
+
 // ── Health check ────────────────────────────────────────────────────────────
 async function checkHealth() {
   const dot = document.getElementById('health-dot');
@@ -280,9 +285,10 @@ function renderWorkspace() {
       span.title = a;
       span.textContent = a;
 
-      const rm = document.createElement('span');
+      const rm = document.createElement('button');
+      rm.type = 'button';
       rm.className = 'remove';
-      rm.title = 'Remove';
+      rm.setAttribute('aria-label', `Remove ${a}`);
       rm.textContent = '×';
       rm.addEventListener('click', () => removeAccount(a));
 
@@ -290,6 +296,12 @@ function renderWorkspace() {
       tag.appendChild(rm);
       al.appendChild(tag);
     }
+  }
+
+  // DEX trades checkbox visibility
+  const dexSection = document.getElementById('dex-trades-section');
+  if (dexSection) {
+    dexSection.style.display = workspace.xrpl_accounts.length > 0 ? 'flex' : 'none';
   }
 
   // CSV files
@@ -311,9 +323,10 @@ function renderWorkspace() {
       span.title = p;
       span.textContent = name;
 
-      const rm = document.createElement('span');
+      const rm = document.createElement('button');
+      rm.type = 'button';
       rm.className = 'remove';
-      rm.title = 'Remove';
+      rm.setAttribute('aria-label', `Remove ${name}`);
       rm.textContent = '×';
       rm.addEventListener('click', () => removeCsv(p));
 
@@ -515,6 +528,7 @@ async function runReport() {
 
 // ── Jobs list ─────────────────────────────────────────────────────────────────
 let selectedJobId = null;
+let archiveExpanded = false;
 
 async function loadJobs() {
   try {
@@ -535,7 +549,9 @@ function _jobRowHtml(j) {
   const hasReport = j.output?.report_html_path ? '📄' : '';
   const label = j.input.case_name || `${j.input.country} ${j.input.tax_year}`;
   return `
-  <div class="job-row ${sel} p-3 fade-in" onclick="openResultsById('${escHtml(j.id)}')">
+  <div class="job-row ${sel} p-3 fade-in" role="button" tabindex="0"
+    onclick="openResultsById('${escHtml(j.id)}')"
+    onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openResultsById('${escHtml(j.id)}');}">
     <div class="flex items-center justify-between gap-3">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
@@ -551,7 +567,7 @@ function _jobRowHtml(j) {
           ${j.input.dry_run ? '<span class="text-yellow-600 font-semibold">DRY RUN</span>' : ''}
         </div>
         ${j.output?.error_message
-          ? `<div class="text-xs text-red-400 mt-1 truncate">✗ ${escHtml(j.output.error_message)}</div>` : ''}
+          ? `<details class="mt-1"><summary class="text-xs text-red-400 cursor-pointer">Show error</summary><pre class="text-xs text-red-300 mt-1 whitespace-pre-wrap">${escHtml(j.output.error_message)}</pre></details>` : ''}
       </div>
       <span class="text-gray-600 text-sm flex-shrink-0">›</span>
     </div>
@@ -572,17 +588,22 @@ function renderJobs(jobs) {
   let html = recent.map(_jobRowHtml).join('');
 
   if (older.length > 0) {
-    // Archived runs: collapsed by default, toggled inline
+    // Archived runs: toggled by archiveExpanded (module-scope, survives 30s refresh)
+    const arrowChar = archiveExpanded ? '▾' : '▸';
+    const archiveLabel = archiveExpanded
+      ? `${older.length} older run${older.length !== 1 ? 's' : ''} — click to collapse`
+      : `${older.length} older run${older.length !== 1 ? 's' : ''} — click to expand`;
+    const archiveDisplay = archiveExpanded ? 'flex' : 'none';
     html += `
     <button
       id="archive-toggle"
       class="w-full text-left text-xs text-gray-600 hover:text-gray-400 py-2 px-1 flex items-center gap-1 transition-colors mt-1"
       onclick="toggleJobArchive()"
     >
-      <span id="archive-arrow">▸</span>
-      <span id="archive-label">${older.length} older run${older.length !== 1 ? 's' : ''} — click to expand</span>
+      <span id="archive-arrow">${arrowChar}</span>
+      <span id="archive-label">${archiveLabel}</span>
     </button>
-    <div id="archive-rows" style="display:none;flex-direction:column;gap:0.5rem;">
+    <div id="archive-rows" style="display:${archiveDisplay};flex-direction:column;gap:0.5rem;">
       ${older.map(_jobRowHtml).join('')}
     </div>`;
   }
@@ -591,26 +612,27 @@ function renderJobs(jobs) {
 }
 
 function toggleJobArchive() {
+  archiveExpanded = !archiveExpanded;
   const rows  = document.getElementById('archive-rows');
   const arrow = document.getElementById('archive-arrow');
   const label = document.getElementById('archive-label');
-  const open  = rows.style.display === 'flex';
-  rows.style.display = open ? 'none' : 'flex';
   const n = rows.querySelectorAll('.job-row').length;
-  arrow.textContent = open ? '▸' : '▾';
-  label.textContent = open
-    ? `${n} older run${n !== 1 ? 's' : ''} — click to expand`
-    : `${n} older run${n !== 1 ? 's' : ''} — click to collapse`;
+  rows.style.display = archiveExpanded ? 'flex' : 'none';
+  arrow.textContent = archiveExpanded ? '▾' : '▸';
+  label.textContent = archiveExpanded
+    ? `${n} older run${n !== 1 ? 's' : ''} — click to collapse`
+    : `${n} older run${n !== 1 ? 's' : ''} — click to expand`;
 }
 
 function badgeHtml(status) {
   const map = {
-    pending: 'badge-pending',
-    running: 'badge-running',
-    completed: 'badge-completed',
-    failed: 'badge-failed',
+    pending:   { cls: 'badge-pending',   label: '● PENDING' },
+    running:   { cls: 'badge-running',   label: '▶ RUNNING' },
+    completed: { cls: 'badge-completed', label: '✓ COMPLETED' },
+    failed:    { cls: 'badge-failed',    label: '✗ FAILED' },
   };
-  return `<span class="badge ${map[status] || 'badge-pending'}">${status}</span>`;
+  const entry = map[status] || { cls: 'badge-pending', label: `● ${String(status).toUpperCase()}` };
+  return `<span class="badge ${entry.cls}">${entry.label}</span>`;
 }
 
 // ── Results panel ─────────────────────────────────────────────────────────────
@@ -677,18 +699,38 @@ async function openResults(job) {
         if (rr.ok) {
           const reports = await rr.json();
           const multi = reports.length > 1;
-          for (const rep of reports) {
+          for (let ri = 0; ri < reports.length; ri++) {
+            const rep = reports[ri];
+            // Compute a human label: for XRPL use last 6 chars of address, for CSV use basename
+            let sourceLabel = '';
+            if (multi) {
+              const xrplAcct = job.input.xrpl_accounts && job.input.xrpl_accounts[ri];
+              const csvFile  = job.input.csv_files && job.input.csv_files[ri];
+              if (xrplAcct) {
+                sourceLabel = xrplAcct.slice(-6);
+              } else if (csvFile) {
+                sourceLabel = csvFile.split(/[\\/]/).pop();
+              } else {
+                sourceLabel = rep.filename;
+              }
+            }
+            const reportUrl = `${API}${rep.url}`;
+            // Download anchor
             const btn = document.createElement('a');
-            btn.href = `${API}${rep.url}`;
+            btn.href = reportUrl;
             btn.download = '';
             btn.className = 'btn-secondary text-xs flex items-center gap-1';
-            // For multi-report jobs: "📄 Report 1 — report_55d6caa0.html"
-            // For single-report jobs: "📄 Download report"
             const label = multi
-              ? `📄 Report ${escHtml(String(rep.index + 1))} — ${escHtml(rep.filename)}`
+              ? `📄 Report — ${escHtml(sourceLabel)}`
               : '📄 Download report';
             btn.innerHTML = label;
             dlEl.appendChild(btn);
+            // Open ↗ button
+            const openBtn = document.createElement('button');
+            openBtn.className = 'btn-secondary text-xs';
+            openBtn.textContent = 'Open ↗';
+            openBtn.addEventListener('click', () => openReport(reportUrl));
+            dlEl.appendChild(openBtn);
           }
           // Load first report into iframe
           if (reports.length > 0) {
@@ -730,11 +772,26 @@ async function loadReportInIframe(jobId, iframe, index = null) {
       ? `${API}/jobs/${jobId}/reports/${index}`
       : `${API}/jobs/${jobId}/files/report`;
     const r = await fetch(url);
-    if (!r.ok) return;
+    if (!r.ok) {
+      iframe.style.display = 'none';
+      const errDiv = document.createElement('div');
+      errDiv.className = 'error text-sm text-red-400 p-3';
+      errDiv.textContent = 'Report file not found on disk.';
+      iframe.parentNode.insertBefore(errDiv, iframe);
+      return;
+    }
     const html = await r.text();
     // Write HTML into iframe via blob URL to avoid CSP issues
     const blob = new Blob([html], { type: 'text/html' });
     const blobUrl = URL.createObjectURL(blob);
+    // Check for draft/provisional content and show advisory if found
+    if (html.includes('provisional-banner') || html.includes('DRAFT')) {
+      const iframeWrap = document.getElementById('results-iframe-wrap');
+      const advisory = document.createElement('div');
+      advisory.className = 'text-yellow-400 text-sm bg-yellow-900/30 border border-yellow-700 rounded p-2 mb-2';
+      advisory.textContent = '\u26a0 This is a provisional report \u2014 unresolved items remain. Do not file with Skatteetaten until all warnings are resolved.';
+      iframeWrap.insertBefore(advisory, iframe);
+    }
     iframe.src = blobUrl;
   } catch {}
 }
@@ -767,6 +824,10 @@ async function fetchJobsList() {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+function openReport(url) {
+  window.open(url, '_blank');
+}
+
 function escHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
