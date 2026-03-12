@@ -1,0 +1,67 @@
+# requirements.lock — F-17 pinned transitive dependency snapshot
+# Generated: 2026-03-12  Python 3.11  pip freeze (orchestrator venv)
+# Regenerate with:
+#   pip install -e .[dev] && pip freeze | grep -v taxspine-orchestrator > requirements.lock
+# Do NOT install this file directly in Docker — use pyproject.toml for the build.
+# This file serves as a reference baseline for auditing dependency drift.
+#
+PyYAML==6.0.3
+Pygments==2.19.2
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.12.1
+brotli==1.2.0
+certifi==2026.2.25
+cffi==2.0.0
+charset-normalizer==3.4.5
+click==8.3.1
+colorama==0.4.6
+cssselect2==0.9.0
+defusedxml==0.7.1
+fastapi==0.135.1
+filelock==3.25.2
+fonttools==4.61.1
+fpdf2==2.8.7
+fsspec==2026.2.0
+h11==0.16.0
+hf-xet==1.4.0
+httpcore==1.0.9
+httptools==0.7.1
+httpx==0.28.1
+huggingface_hub==1.6.0
+hypothesis==6.151.9
+idna==3.11
+iniconfig==2.3.0
+markdown-it-py==4.0.0
+mdurl==0.1.2
+packaging==26.0
+pillow==12.1.1
+pluggy==1.6.0
+pycparser==3.0
+pydantic-settings==2.13.1
+pydantic==2.12.5
+pydantic_core==2.41.5
+pydyf==0.12.1
+pyphen==0.17.2
+pytest-asyncio==1.3.0
+pytest==9.0.2
+python-dotenv==1.2.2
+python-multipart==0.0.22
+requests==2.32.5
+rich==14.3.3
+shellingham==1.5.4
+sortedcontainers==2.4.0
+starlette==0.52.1
+tinycss2==1.5.1
+tinyhtml5==2.1.0
+tqdm==4.67.3
+typer==0.24.1
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+urllib3==2.6.3
+uvicorn==0.41.0
+watchfiles==1.1.1
+weasyprint==68.1
+webencodings==0.5.1
+websockets==16.0
+zopfli==0.4.1

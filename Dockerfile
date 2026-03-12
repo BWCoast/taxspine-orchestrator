@@ -15,7 +15,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # syntax=docker/dockerfile:1
-FROM python:3.11-slim
+# F-16: Pin to a specific patch release for reproducible builds.
+# To get the full content-addressable digest (supply-chain pinning), run:
+#   docker pull python:3.11.9-slim
+#   docker inspect --format='{{index .RepoDigests 0}}' python:3.11.9-slim
+# Then replace the FROM line with:
+#   FROM python:3.11.9-slim@sha256:<digest>
+FROM python:3.11.9-slim
 
 # Keeps Python from generating .pyc files and enables unbuffered log output.
 ENV PYTHONDONTWRITEBYTECODE=1 \

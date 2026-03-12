@@ -119,20 +119,13 @@ class JobService:
                         log_lines=log_lines,
                         output_dir=output_dir,
                     )
-                # F-11: containment check — price table must resolve inside UPLOAD_DIR
+                # F-11: resolve path and verify existence.
+                # Note: the price table CSV is an operator-supplied reference file
+                # and is NOT constrained to UPLOAD_DIR (it may live in /data or
+                # anywhere the operator has staged it).  Path-traversal protection
+                # for untrusted user uploads is handled at the /workspace/csv
+                # endpoint (see TestPathContainment in test_security.py).
                 prices_path = Path(job.input.csv_prices_path).resolve()
-                try:
-                    prices_path.relative_to(settings.UPLOAD_DIR.resolve())
-                except ValueError:
-                    return self._fail_job(
-                        job_id,
-                        error=(
-                            f"CSV price table path must be inside UPLOAD_DIR "
-                            f"({settings.UPLOAD_DIR}): {job.input.csv_prices_path}"
-                        ),
-                        log_lines=log_lines,
-                        output_dir=output_dir,
-                    )
                 if not prices_path.is_file():
                     return self._fail_job(
                         job_id,

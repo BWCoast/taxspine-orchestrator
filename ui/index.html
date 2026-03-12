@@ -156,9 +156,16 @@
           <input type="checkbox" id="run-debug" class="accent-blue-500 w-4 h-4">
           <label for="run-debug" class="text-xs text-gray-400 cursor-pointer">Debug valuation output</label>
         </div>
-        <div class="flex items-center gap-2">
-          <input type="checkbox" id="run-dry" class="accent-blue-500 w-4 h-4">
-          <label for="run-dry" class="text-xs text-gray-400 cursor-pointer">Dry run (preview commands only)</label>
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center gap-2">
+            <input type="checkbox" id="run-dry" class="accent-blue-500 w-4 h-4">
+            <label for="run-dry" class="text-xs text-gray-400 cursor-pointer">Dry run</label>
+          </div>
+          <!-- F-15: dry-run tooltip -->
+          <p class="text-xs text-gray-600 ml-6 leading-snug">
+            Logs the CLI commands that <em>would</em> run — no files written, no tax data processed.
+            Useful for verifying flags before a real run.
+          </p>
         </div>
 
         <button id="run-btn" onclick="runReport()" class="btn-primary w-full mt-1">
@@ -179,8 +186,19 @@
         <h2 class="font-semibold text-white text-xs uppercase tracking-widest">Job History</h2>
         <button onclick="loadJobs()" class="btn-secondary text-xs">↻ Refresh</button>
       </div>
+      <!-- F-15: shows loading → empty state → job rows -->
       <div id="jobs-list" class="flex flex-col gap-2">
-        <p class="text-gray-600 text-xs italic text-center py-4">Loading jobs…</p>
+        <p id="jobs-loading" class="text-gray-600 text-xs italic text-center py-4">Loading jobs…</p>
+      </div>
+      <!-- F-15: empty-state guide (shown when no jobs exist) -->
+      <div id="jobs-empty-state" class="hidden rounded-lg border border-dashed border-gray-700 p-5 text-center text-xs text-gray-500">
+        <p class="mb-2 text-gray-400 font-semibold">No jobs yet</p>
+        <ol class="text-left list-decimal list-inside space-y-1 max-w-xs mx-auto">
+          <li>Add an XRPL address <em>or</em> upload a generic-events CSV on the left.</li>
+          <li>Set the tax year and country.</li>
+          <li>Choose <strong>Price table CSV</strong> and fetch NOK prices for an accurate report.</li>
+          <li>Click <strong>▶ Run Report</strong>.</li>
+        </ol>
       </div>
     </div>
 
@@ -255,7 +273,9 @@ async function checkHealth() {
     }
   } catch {
     dot.className = 'dot dot-err';
-    txt.textContent = 'API offline';
+    // F-15: actionable offline message
+    txt.textContent = 'API offline — is the container running?';
+    txt.title = 'Start the orchestrator: docker compose up -d taxspine-orchestrator';
   }
 }
 
@@ -584,10 +604,16 @@ function _jobRowHtml(j) {
 
 function renderJobs(jobs) {
   const el = document.getElementById('jobs-list');
+  const emptyState = document.getElementById('jobs-empty-state');
+  const loading = document.getElementById('jobs-loading');
+  if (loading) loading.remove();  // hide initial "Loading jobs…" placeholder
+
   if (!jobs.length) {
-    el.innerHTML = '<p class="text-gray-600 text-xs italic text-center py-4">No jobs yet. Run your first report above.</p>';
+    el.innerHTML = '';
+    if (emptyState) emptyState.classList.remove('hidden');
     return;
   }
+  if (emptyState) emptyState.classList.add('hidden');
 
   const MAX_VISIBLE = 10;
   const recent = jobs.slice(0, MAX_VISIBLE);
