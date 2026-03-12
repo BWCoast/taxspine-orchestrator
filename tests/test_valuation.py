@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taxspine_orchestrator.main import app
+from tests.conftest import start_and_wait
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -67,8 +68,8 @@ class TestDefaultDummy:
         resp = client.post("/jobs", json=_NORWAY_BASE)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        assert resp.json()["status"] == "completed"
+        body = start_and_wait(client, job_id)
+        assert body["status"] == "completed"
 
         # The only CLI call (taxspine-xrpl-nor) should NOT contain --csv-prices.
         xrpl_cmd = mock_run.call_args_list[0][0][0]
@@ -117,8 +118,7 @@ class TestPriceTableSuccess:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
 
@@ -144,8 +144,7 @@ class TestPriceTableSuccess:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
 
@@ -171,8 +170,7 @@ class TestPriceTableSuccess:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
         # log is always written; gains/wealth/summary CSVs are not produced
@@ -197,8 +195,7 @@ class TestPriceTableMissingPath:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "csv_prices_path" in body["output"]["error_message"]
@@ -215,8 +212,7 @@ class TestPriceTableMissingPath:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "csv_prices_path" in body["output"]["error_message"]
@@ -239,8 +235,7 @@ class TestPriceTableFileNotFound:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "CSV price table not found" in body["output"]["error_message"]
@@ -257,8 +252,7 @@ class TestPriceTableFileNotFound:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["output"]["log_path"] is not None
         assert body["output"]["gains_csv_path"] is None
@@ -283,8 +277,7 @@ class TestDryRunWithPriceTable:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
 
@@ -309,8 +302,8 @@ class TestDryRunWithPriceTable:
         job_id = resp.json()["id"]
 
         with patch("taxspine_orchestrator.services.subprocess.run") as mock_run:
-            resp = client.post(f"/jobs/{job_id}/start")
-            assert resp.json()["status"] == "completed"
+            body = start_and_wait(client, job_id)
+            assert body["status"] == "completed"
             mock_run.assert_not_called()
 
     def test_dry_run_dummy_no_csv_prices_in_log(self, client):
@@ -323,8 +316,7 @@ class TestDryRunWithPriceTable:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
         log_path = Path(body["output"]["log_path"])

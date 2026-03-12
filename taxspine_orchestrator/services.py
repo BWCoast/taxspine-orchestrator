@@ -106,7 +106,6 @@ class JobService:
         # ── Mark RUNNING ──────────────────────────────────────────────────
         self.store.update_status(job_id, JobStatus.RUNNING)
 
-        work_dir = self._job_work_dir(job_id)
         output_dir = self._job_output_dir(job_id)
         log_lines: list[str] = []
 
@@ -143,7 +142,6 @@ class JobService:
                     job_id,
                     job=job,
                     has_xrpl=has_xrpl,
-                    work_dir=work_dir,
                     output_dir=output_dir,
                     log_lines=log_lines,
                 )
@@ -421,7 +419,6 @@ class JobService:
         *,
         job: Job,
         has_xrpl: bool,
-        work_dir: Path,
         output_dir: Path,
         log_lines: list[str],
     ) -> Job | None:

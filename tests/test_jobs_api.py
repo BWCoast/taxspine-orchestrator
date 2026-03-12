@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taxspine_orchestrator.main import app
+from tests.conftest import start_and_wait
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -124,9 +125,8 @@ class TestStartJob:
         create_resp = client.post("/jobs", json=_SAMPLE_INPUT)
         job_id = create_resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "completed"
+        body = start_and_wait(client, job_id)
+        assert body["status"] == "completed"
 
     def test_start_nonexistent_returns_404(self, client: TestClient) -> None:
         resp = client.post("/jobs/does-not-exist/start")
@@ -138,7 +138,7 @@ class TestStartJob:
     ) -> None:
         create_resp = client.post("/jobs", json=_SAMPLE_INPUT)
         job_id = create_resp.json()["id"]
-        client.post(f"/jobs/{job_id}/start")
+        start_and_wait(client, job_id)
 
         resp = client.get(f"/jobs/{job_id}")
         assert resp.json()["status"] == "completed"

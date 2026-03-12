@@ -54,13 +54,17 @@ class InMemoryJobStore:
         jobs.sort(key=lambda j: j.created_at, reverse=True)
         return jobs[offset: offset + limit]
 
-    def update_status(self, job_id: str, status: JobStatus) -> Job | None:
+    def update_status(self, job_id: str, status: JobStatus, *, error_message: str | None = None) -> Job | None:
         job = self._jobs.get(job_id)
         if job is None:
             return None
-        updated = job.model_copy(
-            update={"status": status, "updated_at": datetime.now(timezone.utc)}
-        )
+        fields: dict = {"status": status, "updated_at": datetime.now(timezone.utc)}
+        if status == JobStatus.RUNNING:
+            fields["started_at"] = datetime.now(timezone.utc)
+        if error_message is not None:
+            from .models import JobOutput
+            fields["output"] = job.output.model_copy(update={"error_message": error_message})
+        updated = job.model_copy(update=fields)
         self._jobs[job_id] = updated
         return updated
 
@@ -105,6 +109,9 @@ class SqliteJobStore:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._init_db()
+        recovered = self._recover_interrupted_jobs()
+        if recovered:
+            print(f"[SqliteJobStore] crash-recovery: marked {recovered} RUNNING job(s) as FAILED")
 
     def _init_db(self) -> None:
         with sqlite3.connect(str(self._db_path)) as conn:
@@ -113,6 +120,46 @@ class SqliteJobStore:
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self._db_path), check_same_thread=False)
+
+    def _recover_interrupted_jobs(self) -> int:
+        """Mark any RUNNING jobs as FAILED — they were interrupted by a previous crash.
+
+        Called automatically during __init__ so that jobs stuck in RUNNING
+        (due to a server crash or restart) are immediately visible as FAILED.
+        The stored JSON blob is updated in-place via get+upsert so that the
+        error_message is recorded in the Job output.
+        """
+        # Collect all job IDs that are currently RUNNING.
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id FROM jobs WHERE status = ?",
+                (JobStatus.RUNNING.value,),
+            ).fetchall()
+
+        count = 0
+        for (job_id,) in rows:
+            job = self.get(job_id)
+            if job is None:
+                continue
+            from .models import JobOutput
+            updated_output = job.output.model_copy(
+                update={"error_message": "Interrupted by server restart"}
+            )
+            updated = job.model_copy(
+                update={
+                    "status": JobStatus.FAILED,
+                    "output": updated_output,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            )
+            self._upsert(updated)
+            count += 1
+        return count
+
+    def ping(self) -> None:
+        """Verify the database is reachable — raises on error."""
+        with self._lock, self._connect() as conn:
+            conn.execute("SELECT 1 FROM jobs LIMIT 1")
 
     # ── Write operations ──────────────────────────────────────────────────
 
@@ -141,13 +188,17 @@ class SqliteJobStore:
             )
         return job
 
-    def update_status(self, job_id: str, status: JobStatus) -> Job | None:
+    def update_status(self, job_id: str, status: JobStatus, *, error_message: str | None = None) -> Job | None:
         job = self.get(job_id)
         if job is None:
             return None
-        updated = job.model_copy(
-            update={"status": status, "updated_at": datetime.now(timezone.utc)}
-        )
+        fields: dict = {"status": status, "updated_at": datetime.now(timezone.utc)}
+        if status == JobStatus.RUNNING:
+            fields["started_at"] = datetime.now(timezone.utc)
+        if error_message is not None:
+            from .models import JobOutput
+            fields["output"] = job.output.model_copy(update={"error_message": error_message})
+        updated = job.model_copy(update=fields)
         return self._upsert(updated)
 
     def update_job(self, job_id: str, **fields: Any) -> Job | None:

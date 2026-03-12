@@ -161,6 +161,7 @@ class Job(BaseModel):
     output: JobOutput = Field(default_factory=JobOutput)
     created_at: datetime
     updated_at: datetime
+    started_at: Optional[datetime] = None
 
 
 # ── Workspace ────────────────────────────────────────────────────────────────

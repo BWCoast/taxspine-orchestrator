@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from taxspine_orchestrator.main import app
 from taxspine_orchestrator.models import JobOutput, JobStatus
+from tests.conftest import start_and_wait
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -89,8 +90,7 @@ class TestTimestamps:
         # Small sleep to ensure the timestamps diverge.
         time.sleep(0.01)
 
-        start_resp = client.post(f"/jobs/{body['id']}/start")
-        started_body = start_resp.json()
+        started_body = start_and_wait(client, body["id"])
 
         assert started_body["created_at"] == created_at, "created_at never changes"
         assert started_body["updated_at"] >= original_updated
@@ -200,8 +200,7 @@ class TestDryRun:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
         assert body["output"]["log_path"] is not None
@@ -227,8 +226,7 @@ class TestDryRun:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
         assert body["output"]["log_path"] is not None
@@ -242,8 +240,8 @@ class TestDryRun:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        log_path = resp.json()["output"]["log_path"]
+        body = start_and_wait(client, job_id)
+        log_path = body["output"]["log_path"]
         log_text = Path(log_path).read_text()
 
         assert "DRY RUN" in log_text
@@ -266,8 +264,7 @@ class TestDryRun:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "no inputs" in body["output"]["error_message"].lower()
@@ -283,8 +280,7 @@ class TestDryRun:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
         assert mock_run.call_count == 1
@@ -317,8 +313,8 @@ class TestDryRun:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        log_path = resp.json()["output"]["log_path"]
+        body = start_and_wait(client, job_id)
+        log_path = body["output"]["log_path"]
         log_text = Path(log_path).read_text()
 
         # Single consolidated command.

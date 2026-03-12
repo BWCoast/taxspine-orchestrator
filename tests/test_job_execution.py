@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taxspine_orchestrator.main import app
+from tests.conftest import start_and_wait
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -76,10 +77,8 @@ class TestSuccessNorway:
         resp = client.post("/jobs", json=_NORWAY_INPUT)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
-        assert resp.status_code == 200
         assert body["status"] == "completed"
         # log is always written; report_html_path is None unless the CLI
         # actually creates the file on disk (it doesn't in this mock).
@@ -135,8 +134,7 @@ class TestSuccessUK:
         resp = client.post("/jobs", json=_UK_INPUT)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
         assert body["output"]["log_path"] is not None
@@ -174,8 +172,7 @@ class TestFailXrplNor:
         resp = client.post("/jobs", json=_NORWAY_INPUT)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "taxspine-xrpl-nor failed" in body["output"]["error_message"]
@@ -210,8 +207,7 @@ class TestFailSecondAccount:
         resp = client.post("/jobs", json=_NORWAY_INPUT)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "taxspine-xrpl-nor failed" in body["output"]["error_message"]
@@ -245,8 +241,8 @@ class TestIdempotency:
         job_id = resp.json()["id"]
 
         # First start → completes (2 accounts → 2 CLI calls).
-        client.post(f"/jobs/{job_id}/start")
-        # Second start → returns same completed state, no extra calls.
+        start_and_wait(client, job_id)
+        # Second start → returns same completed state (200), no extra calls.
         resp2 = client.post(f"/jobs/{job_id}/start")
 
         assert resp2.json()["status"] == "completed"
@@ -259,7 +255,8 @@ class TestIdempotency:
         resp = client.post("/jobs", json=_NORWAY_INPUT)
         job_id = resp.json()["id"]
 
-        client.post(f"/jobs/{job_id}/start")
+        start_and_wait(client, job_id)
+        # Second start → returns current (failed) state (200), no extra calls.
         resp2 = client.post(f"/jobs/{job_id}/start")
 
         assert resp2.json()["status"] == "failed"

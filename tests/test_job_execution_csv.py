@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taxspine_orchestrator.main import app
+from tests.conftest import start_and_wait
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -80,8 +81,7 @@ class TestCsvOnlyNorway:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
         # log is always written; gains_csv is not produced by this pipeline.
@@ -158,8 +158,7 @@ class TestCsvOnlyNorway:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "taxspine-nor-report failed" in body["output"]["error_message"]
@@ -185,8 +184,7 @@ class TestCombinedXrplCsv:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
         assert body["output"]["error_message"] is None
@@ -247,8 +245,7 @@ class TestMissingCsvFile:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "CSV file not found" in body["output"]["error_message"]
@@ -268,8 +265,7 @@ class TestMissingCsvFile:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "CSV file not found" in body["output"]["error_message"]
@@ -289,8 +285,7 @@ class TestMissingCsvFile:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "missing.csv" in body["output"]["error_message"]
@@ -314,8 +309,7 @@ class TestNoInputs:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
         assert "no inputs" in body["output"]["error_message"].lower()
@@ -332,8 +326,7 @@ class TestNoInputs:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["output"]["log_path"] is not None
 

@@ -22,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from taxspine_orchestrator.main import app
+from tests.conftest import start_and_wait
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -80,9 +81,9 @@ class TestConsolidatedCliArgs:
         }
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
-        resp = client.post(f"/jobs/{job_id}/start")
+        body = start_and_wait(client, job_id)
 
-        assert resp.json()["status"] == "completed"
+        assert body["status"] == "completed"
         # One consolidated invocation — not two separate ones.
         assert mock_run.call_count == 1
 
@@ -396,8 +397,7 @@ class TestDryRunConsolidation:
         }
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
         log_path = body["output"]["log_path"]
@@ -426,8 +426,7 @@ class TestDryRunConsolidation:
         }
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
-        resp = client.post(f"/jobs/{job_id}/start")
-        body = resp.json()
+        body = start_and_wait(client, job_id)
 
         log_text = open(body["output"]["log_path"], encoding="utf-8").read()
         would_run_lines = [ln for ln in log_text.splitlines() if "[would run]" in ln]

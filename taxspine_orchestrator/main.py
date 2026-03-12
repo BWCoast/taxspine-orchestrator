@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import shutil
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -9,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Security, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
@@ -125,9 +128,30 @@ _KIND_EXTENSION: Dict[FileKind, str] = {
 
 
 @app.get("/health", tags=["meta"])
-def health() -> dict:
-    """Simple liveness probe."""
-    return {"status": "ok"}
+async def health() -> JSONResponse:
+    """Liveness + readiness probe — checks DB, output dir, and CLI binaries."""
+    checks: dict = {}
+
+    # DB reachable
+    try:
+        _job_store.ping()
+        checks["db"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        checks["db"] = f"error: {exc}"
+
+    # OUTPUT_DIR writable
+    out_ok = os.access(settings.OUTPUT_DIR, os.W_OK)
+    checks["output_dir"] = "ok" if out_ok else "error: not writable"
+
+    # CLI binaries present
+    for cli_name in ["taxspine-nor-report", "taxspine-xrpl-nor"]:
+        checks[cli_name] = "ok" if shutil.which(cli_name) else "missing"
+
+    overall_ok = all(v == "ok" for v in checks.values())
+    return JSONResponse(
+        {"status": "ok" if overall_ok else "degraded", **checks},
+        status_code=200 if overall_ok else 503,
+    )
 
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
@@ -166,13 +190,49 @@ def get_job(job_id: str) -> Job:
     return job
 
 
-@app.post("/jobs/{job_id}/start", response_model=Job, tags=["jobs"], dependencies=[Depends(_require_key)])
-def start_job(job_id: str) -> Job:
-    """Execute a pending job synchronously and return the final state."""
-    job = _job_service.start_job_execution(job_id)
+@app.post("/jobs/{job_id}/start", tags=["jobs"], dependencies=[Depends(_require_key)])
+async def start_job(job_id: str) -> JSONResponse:
+    """Accept a pending job for background execution and return 202 immediately.
+
+    The job runs in a thread-pool worker via asyncio.to_thread so the HTTP
+    response is returned before the subprocess completes.  Poll
+    GET /jobs/{job_id} to observe the final status (RUNNING → COMPLETED/FAILED).
+    """
+    job = _job_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    if job.status == JobStatus.RUNNING:
+        raise HTTPException(status_code=409, detail="Job is already running")
+    if job.status != JobStatus.PENDING:
+        # Return current state for COMPLETED/FAILED (idempotent).
+        return JSONResponse(
+            {"status": job.status.value, "job_id": job_id},
+            status_code=200,
+        )
+    asyncio.create_task(asyncio.to_thread(_job_service.start_job_execution, job_id))
+    return JSONResponse({"status": "accepted", "job_id": job_id}, status_code=202)
+
+
+@app.post("/jobs/{job_id}/cancel", tags=["jobs"], dependencies=[Depends(_require_key)])
+async def cancel_job(job_id: str) -> dict:
+    """Cancel a PENDING or RUNNING job by marking it FAILED.
+
+    Note: if the job is already executing in a background thread the subprocess
+    cannot be killed immediately.  The DB status is set to FAILED right away,
+    but the background thread may still complete and overwrite the status with
+    COMPLETED/FAILED depending on subprocess outcome.  This is a known
+    limitation and acceptable for the current implementation.
+    """
+    job = _job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel a job with status {job.status.value}",
+        )
+    _job_store.update_status(job_id, JobStatus.FAILED, error_message="Cancelled by user")
+    return {"status": "cancelled", "job_id": job_id}
 
 
 # ── File listing / download ───────────────────────────────────────────────────
