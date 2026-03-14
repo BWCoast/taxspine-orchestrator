@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .models import Country, Job, JobStatus, WorkspaceConfig
+from .models import Country, CsvFileSpec, Job, JobStatus, WorkspaceConfig
 
 
 # ── In-memory store (development / testing) ──────────────────────────────────
@@ -315,23 +315,24 @@ class WorkspaceStore:
             self._save_locked(cfg)
             return cfg
 
-    def add_csv(self, path: str) -> WorkspaceConfig:
-        """Register a CSV file path (no-op if already present)."""
+    def add_csv(self, spec: CsvFileSpec) -> WorkspaceConfig:
+        """Register a CSV file spec (no-op if a file with the same path is already present)."""
         with self._lock:
             cfg = self._load_locked()
-            if path not in cfg.csv_files:
+            existing_paths = {f.path for f in cfg.csv_files}
+            if spec.path not in existing_paths:
                 cfg = cfg.model_copy(
-                    update={"csv_files": [*cfg.csv_files, path]}
+                    update={"csv_files": [*cfg.csv_files, spec]}
                 )
                 self._save_locked(cfg)
             return cfg
 
     def remove_csv(self, path: str) -> WorkspaceConfig:
-        """Remove a CSV file path."""
+        """Remove a CSV file by path."""
         with self._lock:
             cfg = self._load_locked()
             cfg = cfg.model_copy(
-                update={"csv_files": [p for p in cfg.csv_files if p != path]}
+                update={"csv_files": [f for f in cfg.csv_files if f.path != path]}
             )
             self._save_locked(cfg)
             return cfg

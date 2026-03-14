@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
 from .config import settings
-from .models import Country, Job, JobInput, JobOutput, JobStatus, ValuationMode, WorkspaceConfig, _XRPL_ADDRESS_RE
+from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, ValuationMode, WorkspaceConfig, _XRPL_ADDRESS_RE
 from .prices import router as prices_router
 from .services import JobService
 from .storage import SqliteJobStore, WorkspaceStore
@@ -391,6 +391,13 @@ async def upload_csv(
         default=True,
         description="Automatically register the uploaded CSV in the workspace.",
     ),
+    source_type: str = Query(
+        default="generic_events",
+        description=(
+            "Exchange format of the uploaded CSV.  "
+            "One of: generic_events, coinbase_csv, firi_csv."
+        ),
+    ),
 ) -> dict:
     """Accept a single CSV file via multipart upload.
 
@@ -400,12 +407,38 @@ async def upload_csv(
 
     The returned ``path`` is an absolute path suitable for use in
     ``JobInput.csv_files``.
+
+    **Excel files (.xlsx / .xls) are not accepted.**  Please open your file
+    in Excel or LibreOffice Calc and save it as CSV (.csv) before uploading.
     """
+    original_name = file.filename or ""
+
+    # Reject Excel files before reading any bytes.
+    if Path(original_name).suffix.lower() in {".xlsx", ".xls"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Excel files are not supported (received '{original_name}'). "
+                "Please open the file in Excel or LibreOffice Calc and save it "
+                "as CSV (.csv) before uploading."
+            ),
+        )
+
     content_type = file.content_type or ""
     if content_type.startswith("image/"):
         raise HTTPException(
             status_code=400,
             detail=f"Expected a CSV file but received content-type '{content_type}'",
+        )
+
+    # Validate source_type.
+    try:
+        source_type_enum = CsvSourceType(source_type)
+    except ValueError:
+        valid = ", ".join(v.value for v in CsvSourceType)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown source_type '{source_type}'. Valid values: {valid}",
         )
 
     upload_id = str(uuid4())
@@ -417,14 +450,16 @@ async def upload_csv(
             out.write(chunk)
 
     path_str = str(dest)
+    spec = CsvFileSpec(path=path_str, source_type=source_type_enum)
 
     if register:
-        _workspace_store.add_csv(path_str)
+        _workspace_store.add_csv(spec)
 
     return {
         "id": upload_id,
         "path": path_str,
-        "original_filename": file.filename,
+        "source_type": source_type_enum.value,
+        "original_filename": original_name,
         "registered": register,
     }
 
@@ -433,14 +468,14 @@ async def upload_csv(
 
 
 class AttachCsvRequest(BaseModel):
-    """Request body for attaching uploaded CSV paths to an existing job."""
+    """Request body for attaching uploaded CSV files to an existing job."""
 
-    csv_paths: List[str]
+    csv_files: List[CsvFileSpec]
 
 
 @app.post("/jobs/{job_id}/attach-csv", response_model=Job, tags=["jobs"], dependencies=[Depends(_require_key)])
 def attach_csv_to_job(job_id: str, body: AttachCsvRequest) -> Job:
-    """Append CSV file paths to a PENDING job's ``csv_files`` list."""
+    """Append CSV file specs to a PENDING job's ``csv_files`` list."""
     job = _job_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -451,19 +486,19 @@ def attach_csv_to_job(job_id: str, body: AttachCsvRequest) -> Job:
             detail="Cannot attach CSV files to a non-pending job",
         )
 
-    for csv_path in body.csv_paths:
-        if not Path(csv_path).is_file():
+    for spec in body.csv_files:
+        if not Path(spec.path).is_file():
             raise HTTPException(
                 status_code=400,
-                detail=f"CSV file not found: {csv_path}",
+                detail=f"CSV file not found: {spec.path}",
             )
 
-    existing = set(job.input.csv_files)
+    existing_paths = {f.path for f in job.input.csv_files}
     new_csv_files = list(job.input.csv_files)
-    for csv_path in body.csv_paths:
-        if csv_path not in existing:
-            new_csv_files.append(csv_path)
-            existing.add(csv_path)
+    for spec in body.csv_files:
+        if spec.path not in existing_paths:
+            new_csv_files.append(spec)
+            existing_paths.add(spec.path)
 
     updated_input = job.input.model_copy(update={"csv_files": new_csv_files})
     updated = _job_store.update_job(job_id, input=updated_input)
@@ -506,6 +541,7 @@ def remove_workspace_account(account: str) -> WorkspaceConfig:
 
 class AddCsvRequest(BaseModel):
     path: str
+    source_type: str = "generic_events"
 
 
 @app.post("/workspace/csv", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])
@@ -524,7 +560,15 @@ def add_workspace_csv(body: AddCsvRequest) -> WorkspaceConfig:
             status_code=400,
             detail=f"File not found on disk: {body.path}",
         )
-    return _workspace_store.add_csv(str(csv_path))
+    try:
+        source_type_enum = CsvSourceType(body.source_type)
+    except ValueError:
+        valid = ", ".join(v.value for v in CsvSourceType)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown source_type '{body.source_type}'. Valid values: {valid}",
+        )
+    return _workspace_store.add_csv(CsvFileSpec(path=str(csv_path), source_type=source_type_enum))
 
 
 @app.delete("/workspace/csv", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])

@@ -21,6 +21,21 @@ _XRPL_ADDRESS_RE = re.compile(r'^r[1-9A-HJ-NP-Za-km-z]{24,33}$')
 # ── Enums ────────────────────────────────────────────────────────────────────
 
 
+class CsvSourceType(str, Enum):
+    """Exchange format of an uploaded CSV file.
+
+    Determines which taxspine CLI flag is used to process the file:
+
+    - ``GENERIC_EVENTS`` — ``--generic-events-csv PATH`` (spine's own schema)
+    - ``COINBASE_CSV``   — ``--coinbase-csv PATH`` (Coinbase RAWTX export)
+    - ``FIRI_CSV``       — ``--input PATH --source-type firi_csv``
+    """
+
+    GENERIC_EVENTS = "generic_events"
+    COINBASE_CSV = "coinbase_csv"
+    FIRI_CSV = "firi_csv"
+
+
 class Country(str, Enum):
     """Supported tax jurisdictions."""
 
@@ -48,6 +63,33 @@ class JobStatus(str, Enum):
     FAILED = "failed"
 
 
+# ── CSV file spec ────────────────────────────────────────────────────────────
+
+
+class CsvFileSpec(BaseModel):
+    """A CSV file path together with its exchange source type.
+
+    Bare string paths (from older API calls or workspace JSON) are coerced
+    automatically to ``CsvFileSpec(path=..., source_type=GENERIC_EVENTS)``.
+    """
+
+    path: str
+    source_type: CsvSourceType = CsvSourceType.GENERIC_EVENTS
+
+
+def _coerce_csv_file_list(v: object) -> list:
+    """Pydantic ``mode='before'`` validator: coerce ``List[str | dict]`` to ``List[CsvFileSpec]``."""
+    if not isinstance(v, list):
+        return v  # let Pydantic produce the type error
+    result = []
+    for item in v:
+        if isinstance(item, str):
+            result.append({"path": item, "source_type": CsvSourceType.GENERIC_EVENTS})
+        else:
+            result.append(item)
+    return result
+
+
 # ── Request / response models ────────────────────────────────────────────────
 
 
@@ -73,15 +115,19 @@ class JobInput(BaseModel):
                 raise ValueError(f"Invalid XRPL address: {addr}")
         return v
     country: Country
-    csv_files: List[str] = Field(
+    csv_files: List[CsvFileSpec] = Field(
         default_factory=list,
         description=(
-            "Paths to generic-events CSV files (already in the canonical "
-            "schema understood by the taxspine CLIs).  These are passed "
-            "as --generic-events-csv flags and are not parsed or validated "
-            "by the orchestrator."
+            "CSV files to include in this job, each with an exchange source type. "
+            "Bare string paths (legacy) are automatically coerced to CsvFileSpec "
+            "with source_type=GENERIC_EVENTS."
         ),
     )
+
+    @field_validator("csv_files", mode="before")
+    @classmethod
+    def coerce_csv_files(cls, v: object) -> object:
+        return _coerce_csv_file_list(v)
     case_name: Optional[str] = Field(
         default=None,
         description=(
@@ -178,7 +224,12 @@ class WorkspaceConfig(BaseModel):
         default_factory=list,
         description="XRPL account addresses registered for tracking.",
     )
-    csv_files: List[str] = Field(
+    csv_files: List[CsvFileSpec] = Field(
         default_factory=list,
-        description="Absolute paths to registered generic-events CSV files.",
+        description="CSV files registered for tracking, each with a source type.",
     )
+
+    @field_validator("csv_files", mode="before")
+    @classmethod
+    def coerce_csv_files(cls, v: object) -> object:
+        return _coerce_csv_file_list(v)

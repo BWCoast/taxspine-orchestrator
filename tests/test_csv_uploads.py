@@ -132,12 +132,12 @@ class TestAttachCsv:
 
         resp = client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": [csv_path]},
+            json={"csv_files": [{"path": csv_path}]},
         )
 
         assert resp.status_code == 200
         body = resp.json()
-        assert csv_path in body["input"]["csv_files"]
+        assert any(f["path"] == csv_path for f in body["input"]["csv_files"])
 
     def test_attach_does_not_duplicate(self, client: TestClient) -> None:
         """Attaching the same path twice should not produce duplicates."""
@@ -152,16 +152,16 @@ class TestAttachCsv:
         # Attach the same path twice.
         client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": [csv_path]},
+            json={"csv_files": [{"path": csv_path}]},
         )
         resp = client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": [csv_path]},
+            json={"csv_files": [{"path": csv_path}]},
         )
 
         assert resp.status_code == 200
         csv_files = resp.json()["input"]["csv_files"]
-        assert csv_files.count(csv_path) == 1
+        assert sum(1 for f in csv_files if f["path"] == csv_path) == 1
 
     def test_attach_preserves_existing_csv_files(self, client: TestClient) -> None:
         """csv_files supplied at creation time should be preserved."""
@@ -179,17 +179,17 @@ class TestAttachCsv:
 
         # Create job with first CSV already included.
         job = _create_job(client, csv_files=[path_a])
-        assert path_a in job["input"]["csv_files"]
+        assert any(f["path"] == path_a for f in job["input"]["csv_files"])
 
         # Attach the second CSV.
         resp = client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": [path_b]},
+            json={"csv_files": [{"path": path_b}]},
         )
         assert resp.status_code == 200
         csv_files = resp.json()["input"]["csv_files"]
-        assert path_a in csv_files
-        assert path_b in csv_files
+        assert any(f["path"] == path_a for f in csv_files)
+        assert any(f["path"] == path_b for f in csv_files)
 
     def test_attach_updates_updated_at(self, client: TestClient) -> None:
         job = _create_job(client)
@@ -203,7 +203,7 @@ class TestAttachCsv:
 
         resp = client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": [csv_path]},
+            json={"csv_files": [{"path": csv_path}]},
         )
         assert resp.status_code == 200
         assert resp.json()["updated_at"] >= original_updated_at
@@ -211,7 +211,7 @@ class TestAttachCsv:
     def test_attach_nonexistent_job_returns_404(self, client: TestClient) -> None:
         resp = client.post(
             "/jobs/does-not-exist/attach-csv",
-            json={"csv_paths": ["/tmp/any.csv"]},
+            json={"csv_files": [{"path": "/tmp/any.csv"}]},
         )
         assert resp.status_code == 404
 
@@ -227,7 +227,7 @@ class TestAttachCsv:
 
         resp = client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": [csv_path]},
+            json={"csv_files": [{"path": csv_path}]},
         )
         assert resp.status_code == 400
         assert "non-pending" in resp.json()["detail"].lower()
@@ -238,7 +238,7 @@ class TestAttachCsv:
 
         resp = client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": ["/tmp/any.csv"]},
+            json={"csv_files": [{"path": "/tmp/any.csv"}]},
         )
         assert resp.status_code == 400
         assert "non-pending" in resp.json()["detail"].lower()
@@ -249,7 +249,7 @@ class TestAttachCsv:
 
         resp = client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": ["/tmp/any.csv"]},
+            json={"csv_files": [{"path": "/tmp/any.csv"}]},
         )
         assert resp.status_code == 400
 
@@ -258,7 +258,7 @@ class TestAttachCsv:
 
         resp = client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": ["/nonexistent/path/data.csv"]},
+            json={"csv_files": [{"path": "/nonexistent/path/data.csv"}]},
         )
         assert resp.status_code == 400
         assert "/nonexistent/path/data.csv" in resp.json()["detail"]
@@ -276,11 +276,13 @@ class TestAttachCsv:
 
         resp = client.post(
             f"/jobs/{job['id']}/attach-csv",
-            json={"csv_paths": [good_path, bad_path]},
+            json={"csv_files": [{"path": good_path}, {"path": bad_path}]},
         )
         assert resp.status_code == 400
         assert bad_path in resp.json()["detail"]
 
         # Verify the good path was NOT attached (all-or-nothing).
         get_resp = client.get(f"/jobs/{job['id']}")
-        assert good_path not in get_resp.json()["input"]["csv_files"]
+        assert all(
+            f["path"] != good_path for f in get_resp.json()["input"]["csv_files"]
+        )

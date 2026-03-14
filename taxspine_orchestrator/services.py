@@ -16,6 +16,7 @@ Supported job types
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 import uuid
@@ -23,8 +24,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import settings
-from .models import Country, Job, JobInput, JobOutput, JobStatus, ValuationMode
+from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, ValuationMode
 from .storage import InMemoryJobStore, SqliteJobStore
+
+_log = logging.getLogger(__name__)
 
 
 class JobService:
@@ -154,11 +157,11 @@ class JobService:
                 )
 
             # ── Guard: verify CSV files exist ─────────────────────────────
-            for csv_path_str in job.input.csv_files:
-                if not Path(csv_path_str).is_file():
+            for spec in job.input.csv_files:
+                if not Path(spec.path).is_file():
                     return self._fail_job(
                         job_id,
-                        error=f"CSV file not found: {csv_path_str}",
+                        error=f"CSV file not found: {spec.path}",
                         log_lines=log_lines,
                         output_dir=output_dir,
                     )
@@ -224,17 +227,17 @@ class JobService:
                         if report_html_path is None:
                             report_html_path = html_dest
 
-            # ── Step 2: generic-events CSVs → taxspine-nor-report ─────────
+            # ── Step 2: CSVs → taxspine-nor-report ────────────────────────
             # Only run this step for CSV-only workspaces.  When XRPL accounts
-            # are present, CSV files were already merged in Step 1.
+            # are present, generic-events CSV files were already merged in Step 1.
             if has_csv and not has_xrpl:
-                for csv_path_str in job.input.csv_files:
-                    csv_stem = Path(csv_path_str).stem
+                for spec in job.input.csv_files:
+                    csv_stem = Path(spec.path).stem
                     html_dest = output_dir / f"report_{csv_stem}.html"
 
                     csv_cmd = self._build_csv_command(
                         job.input,
-                        csv_path=Path(csv_path_str),
+                        csv_spec=spec,
                         html_path=html_dest,
                     )
                     log_lines.append(f"$ {' '.join(str(c) for c in csv_cmd)}")
@@ -252,7 +255,7 @@ class JobService:
                         return self._fail_job(
                             job_id,
                             error=(
-                                f"taxspine-nor-report failed for {csv_path_str} "
+                                f"taxspine-nor-report failed for {spec.path} "
                                 f"(rc={csv_result.returncode})"
                             ),
                             log_lines=log_lines,
@@ -293,7 +296,7 @@ class JobService:
         *,
         account: str,
         html_path: Path,
-        csv_files: list[str] | None = None,
+        csv_files: list[CsvFileSpec] | None = None,
     ) -> list[str]:
         """Build a ``taxspine-xrpl-nor`` command for a single XRPL account.
 
@@ -309,10 +312,10 @@ class JobService:
             --debug-valuation               (optional)
             --html-output          PATH     (optional; self-contained HTML report)
 
-        ``csv_files`` is an optional list of generic-events CSV paths to attach
-        via ``--generic-events-csv``.  When a job has both XRPL accounts and CSV
-        files the primary account receives all CSV files so that XRPL and CSV
-        events share a single FIFO lot pool (preventing formue double-counting).
+        ``csv_files`` is an optional list of CSV file specs to attach.
+        Only GENERIC_EVENTS files are supported by taxspine-xrpl-nor.
+        Non-generic files are skipped with a warning (they must be run via
+        taxspine-nor-report instead).
         """
         cmd: list[str] = [
             settings.TAXSPINE_XRPL_NOR_CLI,
@@ -322,8 +325,19 @@ class JobService:
         ]
 
         # Attach generic-events CSV files (mixed workspace: primary account only).
-        for csv_path in (csv_files or []):
-            cmd.extend(["--generic-events-csv", csv_path])
+        # taxspine-xrpl-nor only supports --generic-events-csv; non-generic formats
+        # (Coinbase, Firi) must be processed by taxspine-nor-report separately.
+        for spec in (csv_files or []):
+            if spec.source_type == CsvSourceType.GENERIC_EVENTS:
+                cmd.extend(["--generic-events-csv", spec.path])
+            else:
+                _log.warning(
+                    "Skipping %s file %r in XRPL job — "
+                    "taxspine-xrpl-nor only supports generic-events CSVs. "
+                    "Run a CSV-only job with this file to process it.",
+                    spec.source_type.value,
+                    spec.path,
+                )
 
         if (
             job_input.valuation_mode == ValuationMode.PRICE_TABLE
@@ -343,22 +357,22 @@ class JobService:
     def _build_csv_command(
         job_input: JobInput,
         *,
-        csv_path: Path,
+        csv_spec: CsvFileSpec,
         html_path: Path,
     ) -> list[str]:
-        """Build a ``taxspine-nor-report`` command for a generic-events CSV.
+        """Build a ``taxspine-nor-report`` command for a CSV file.
 
-        Real CLI flags (as of Phase 2):
-            --generic-events-csv  PATH  (required; generic events CSV)
+        Routes to the correct CLI flag based on ``csv_spec.source_type``:
+
+        - GENERIC_EVENTS → ``--generic-events-csv PATH``
+        - COINBASE_CSV   → ``--coinbase-csv PATH``
+        - FIRI_CSV       → ``--input PATH --source-type firi_csv``
+
+        Common flags:
             --year                YEAR  (required)
             --csv-prices          PATH  (optional; CSV format price table)
-            --debug-valuation            (optional)
+            --debug-valuation           (optional)
             --html-output         PATH  (optional; self-contained HTML report)
-
-        Note: ``--generic-events-csv`` is used instead of ``--input`` because
-        uploaded CSV files follow the generic events schema, not the Firi
-        exchange format.  Using ``--input`` would invoke the Firi parser
-        which silently ignores generic-events rows, producing empty output.
         """
         if job_input.country == Country.NORWAY:
             cmd: list[str] = [settings.TAXSPINE_NOR_REPORT_CLI]
@@ -367,11 +381,16 @@ class JobService:
         else:
             raise ValueError(f"Unsupported country: {job_input.country}")
 
-        cmd.extend([
-            "--generic-events-csv", str(csv_path),
-            "--year", str(job_input.tax_year),
-            "--html-output", str(html_path),
-        ])
+        if csv_spec.source_type == CsvSourceType.GENERIC_EVENTS:
+            cmd.extend(["--generic-events-csv", csv_spec.path])
+        elif csv_spec.source_type == CsvSourceType.COINBASE_CSV:
+            cmd.extend(["--coinbase-csv", csv_spec.path])
+        elif csv_spec.source_type == CsvSourceType.FIRI_CSV:
+            cmd.extend(["--input", csv_spec.path, "--source-type", "firi_csv"])
+        else:
+            raise ValueError(f"Unsupported source_type: {csv_spec.source_type}")
+
+        cmd.extend(["--year", str(job_input.tax_year), "--html-output", str(html_path)])
 
         if (
             job_input.valuation_mode == ValuationMode.PRICE_TABLE
@@ -462,10 +481,10 @@ class JobService:
 
         # CSV-only: run taxspine-nor-report per file.
         if has_csv and not has_xrpl:
-            for csv_path_str in job.input.csv_files:
-                html_path = output_dir / f"report_{Path(csv_path_str).stem}.html"
+            for spec in job.input.csv_files:
+                html_path = output_dir / f"report_{Path(spec.path).stem}.html"
                 cmd = self._build_csv_command(
-                    job.input, csv_path=Path(csv_path_str), html_path=html_path,
+                    job.input, csv_spec=spec, html_path=html_path,
                 )
                 log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
 

@@ -103,6 +103,15 @@
       </div>
 
       <!-- Upload CSV -->
+      <div class="mb-2">
+        <label for="csv-source-type" class="text-xs text-gray-400 mb-1 block">Format</label>
+        <select id="csv-source-type" class="select w-full text-xs">
+          <option value="generic_events">Generic Events (taxspine schema)</option>
+          <option value="coinbase_csv">Coinbase (RAWTX export)</option>
+          <option value="firi_csv">Firi</option>
+        </select>
+        <p class="mt-1 text-xs text-gray-600">⚠ Excel files (.xlsx/.xls) are not supported — save as CSV first.</p>
+      </div>
       <label class="block cursor-pointer">
         <div id="drop-zone" class="border-2 border-dashed border-gray-700 rounded-lg px-4 py-3 text-center hover:border-blue-600 transition-colors">
           <p class="text-gray-500 text-xs">Drop CSV here or <span class="text-blue-500">click to upload</span></p>
@@ -330,7 +339,7 @@ function renderWorkspace() {
     dexSection.style.display = workspace.xrpl_accounts.length > 0 ? 'flex' : 'none';
   }
 
-  // CSV files
+  // CSV files — each entry is a CsvFileSpec {path, source_type}
   const cl = document.getElementById('csv-list');
   const cc = document.getElementById('csv-count');
   cc.textContent = `${workspace.csv_files.length} registered`;
@@ -338,25 +347,41 @@ function renderWorkspace() {
   if (!workspace.csv_files.length) {
     cl.innerHTML = '<p class="text-gray-600 text-xs italic">No CSV files registered yet.</p>';
   } else {
-    for (const p of workspace.csv_files) {
-      const name = p.split(/[\\/]/).pop();
+    const SOURCE_LABELS = {
+      coinbase_csv: 'Coinbase',
+      firi_csv: 'Firi',
+      generic_events: '',
+    };
+    for (const spec of workspace.csv_files) {
+      const filePath = spec.path || spec;  // backward compat if server sends bare string
+      const name = filePath.split(/[\\/]/).pop();
+      const typeLabel = SOURCE_LABELS[spec.source_type] || spec.source_type || '';
 
       const tag = document.createElement('div');
       tag.className = 'tag';
 
       const span = document.createElement('span');
-      span.className = 'truncate max-w-[180px]';
-      span.title = p;
+      span.className = 'truncate max-w-[160px]';
+      span.title = filePath;
       span.textContent = name;
+
+      if (typeLabel) {
+        const badge = document.createElement('span');
+        badge.className = 'ml-1 text-[10px] text-gray-400 font-mono';
+        badge.textContent = typeLabel;
+        tag.appendChild(span);
+        tag.appendChild(badge);
+      } else {
+        tag.appendChild(span);
+      }
 
       const rm = document.createElement('button');
       rm.type = 'button';
       rm.className = 'remove';
       rm.setAttribute('aria-label', `Remove ${name}`);
       rm.textContent = '×';
-      rm.addEventListener('click', () => removeCsv(p));
+      rm.addEventListener('click', () => removeCsv(filePath));
 
-      tag.appendChild(span);
       tag.appendChild(rm);
       cl.appendChild(tag);
     }
@@ -429,15 +454,24 @@ async function uploadCsv(input) {
 
 async function handleCsvFile(file) {
   const statusEl = document.getElementById('upload-status');
+
+  // Client-side Excel check before uploading.
+  if (/\.(xlsx|xls)$/i.test(file.name)) {
+    statusEl.textContent = `Excel files are not supported. Please open "${file.name}" in Excel or LibreOffice and save as CSV (.csv) first.`;
+    statusEl.className = 'mt-2 text-xs text-red-400';
+    statusEl.classList.remove('hidden');
+    return;
+  }
+
   statusEl.textContent = `Uploading ${file.name}…`;
   statusEl.className = 'mt-2 text-xs text-blue-400';
   statusEl.classList.remove('hidden');
 
+  const sourceType = document.getElementById('csv-source-type')?.value || 'generic_events';
   const fd = new FormData();
   fd.append('file', file);
   try {
-    // register=true (default) → auto-adds to workspace
-    const r = await fetch(`${API}/uploads/csv?register=true`, { method: 'POST', body: fd });
+    const r = await fetch(`${API}/uploads/csv?register=true&source_type=${encodeURIComponent(sourceType)}`, { method: 'POST', body: fd });
     if (!r.ok) {
       const err = await r.json();
       statusEl.textContent = `Error: ${err.detail || r.statusText}`;
@@ -445,7 +479,8 @@ async function handleCsvFile(file) {
       return;
     }
     const data = await r.json();
-    statusEl.textContent = `✓ Uploaded and registered: ${file.name}`;
+    const label = data.source_type && data.source_type !== 'generic_events' ? ` (${data.source_type})` : '';
+    statusEl.textContent = `✓ Uploaded and registered: ${file.name}${label}`;
     statusEl.className = 'mt-2 text-xs text-green-400';
     // Refresh workspace display
     await loadWorkspace();
@@ -743,7 +778,8 @@ async function openResults(job) {
               if (xrplAcct) {
                 sourceLabel = xrplAcct.slice(-6);
               } else if (csvFile) {
-                sourceLabel = csvFile.split(/[\\/]/).pop();
+                const csvPath = typeof csvFile === 'string' ? csvFile : (csvFile.path || '');
+                sourceLabel = csvPath.split(/[\\/]/).pop();
               } else {
                 sourceLabel = rep.filename;
               }
