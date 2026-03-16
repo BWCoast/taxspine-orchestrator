@@ -199,11 +199,14 @@ class JobService:
             all_html_paths: list[str] = []
             rf1159_json_path: Path | None = None
             all_rf1159_json_paths: list[str] = []
+            review_json_path: Path | None = None
+            all_review_json_paths: list[str] = []
 
             if has_xrpl:
                 for idx, account in enumerate(job.input.xrpl_accounts):
                     suffix = f"_{idx}" if len(job.input.xrpl_accounts) > 1 else ""
                     html_dest = output_dir / f"report{suffix}.html"
+                    review_dest = output_dir / f"review{suffix}.json"
 
                     # Attach CSV files only to the primary account (idx == 0)
                     # when this is a mixed workspace.  This keeps the FIFO lot
@@ -217,6 +220,7 @@ class JobService:
                         account=account,
                         html_path=html_dest,
                         csv_files=csv_files_for_account,
+                        review_json_path=review_dest,
                     )
                     log_lines.append(f"$ {' '.join(str(c) for c in xrpl_cmd)}")
 
@@ -246,6 +250,11 @@ class JobService:
                         if report_html_path is None:
                             report_html_path = html_dest
 
+                    if review_dest.exists():
+                        all_review_json_paths.append(str(review_dest))
+                        if review_json_path is None:
+                            review_json_path = review_dest
+
             # ── Step 2: CSVs → taxspine-nor-report / taxspine-nor-multi ───
             # Only run this step for CSV-only workspaces.  When XRPL accounts
             # are present, generic-events CSV files were already merged in Step 1.
@@ -257,11 +266,13 @@ class JobService:
                     # Single combined invocation — all CSV sources in one shot.
                     html_dest = output_dir / "report_combined.html"
                     rf1159_dest_nm = output_dir / "rf1159.json"
+                    review_dest_nm = output_dir / "review.json"
                     nor_multi_cmd = self._build_nor_multi_command(
                         job.input,
                         csv_specs=job.input.csv_files,
                         html_path=html_dest,
                         rf1159_json_path=rf1159_dest_nm,
+                        review_json_path=review_dest_nm,
                     )
                     log_lines.append(f"$ {' '.join(str(c) for c in nor_multi_cmd)}")
 
@@ -293,20 +304,27 @@ class JobService:
                         all_rf1159_json_paths.append(str(rf1159_dest_nm))
                         rf1159_json_path = rf1159_dest_nm
 
+                    if review_dest_nm.exists():
+                        all_review_json_paths.append(str(review_dest_nm))
+                        review_json_path = review_dest_nm
+
                 else:
                     # Per-file mode (default): one taxspine-nor-report per CSV.
                     for spec in job.input.csv_files:
                         csv_stem = Path(spec.path).stem
                         html_dest = output_dir / f"report_{csv_stem}.html"
                         rf1159_dest_pf: Path | None = None
+                        review_dest_pf: Path | None = None
                         if job.input.country == Country.NORWAY:
                             rf1159_dest_pf = output_dir / f"rf1159_{csv_stem}.json"
+                            review_dest_pf = output_dir / f"review_{csv_stem}.json"
 
                         csv_cmd = self._build_csv_command(
                             job.input,
                             csv_spec=spec,
                             html_path=html_dest,
                             rf1159_json_path=rf1159_dest_pf,
+                            review_json_path=review_dest_pf,
                         )
                         log_lines.append(f"$ {' '.join(str(c) for c in csv_cmd)}")
 
@@ -340,6 +358,11 @@ class JobService:
                             if rf1159_json_path is None:
                                 rf1159_json_path = rf1159_dest_pf
 
+                        if review_dest_pf is not None and review_dest_pf.exists():
+                            all_review_json_paths.append(str(review_dest_pf))
+                            if review_json_path is None:
+                                review_json_path = review_dest_pf
+
             # ── Step 3: write log + build output record ───────────────────
             log_path = self._write_log(output_dir, log_lines)
 
@@ -348,6 +371,8 @@ class JobService:
                 report_html_paths=all_html_paths,
                 rf1159_json_path=str(rf1159_json_path) if rf1159_json_path else None,
                 rf1159_json_paths=all_rf1159_json_paths,
+                review_json_path=str(review_json_path) if review_json_path else None,
+                review_json_paths=all_review_json_paths,
                 log_path=str(log_path),
             )
             return self.store.update_job(
@@ -372,6 +397,7 @@ class JobService:
         account: str,
         html_path: Path,
         csv_files: list[CsvFileSpec] | None = None,
+        review_json_path: Path | None = None,
     ) -> list[str]:
         """Build a ``taxspine-xrpl-nor`` command for a single XRPL account.
 
@@ -429,6 +455,9 @@ class JobService:
         cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
         cmd.extend(["--dedup-store", str(JobService._dedup_store_path(f"xrpl_{account}"))])
 
+        if review_json_path is not None:
+            cmd.extend(["--review-json", str(review_json_path)])
+
         return cmd
 
     @staticmethod
@@ -438,6 +467,7 @@ class JobService:
         csv_spec: CsvFileSpec,
         html_path: Path,
         rf1159_json_path: Path | None = None,
+        review_json_path: Path | None = None,
     ) -> list[str]:
         """Build a ``taxspine-nor-report`` command for a CSV file.
 
@@ -492,6 +522,8 @@ class JobService:
             ])
             if rf1159_json_path is not None:
                 cmd.extend(["--rf1159-json", str(rf1159_json_path)])
+            if review_json_path is not None:
+                cmd.extend(["--review-json", str(review_json_path)])
 
         return cmd
 
@@ -509,6 +541,7 @@ class JobService:
         csv_specs: list[CsvFileSpec],
         html_path: Path,
         rf1159_json_path: Path | None = None,
+        review_json_path: Path | None = None,
     ) -> list[str]:
         """Build a ``taxspine-nor-multi`` command for all CSV files at once.
 
@@ -553,6 +586,9 @@ class JobService:
 
         if rf1159_json_path is not None:
             cmd.extend(["--rf1159-json", str(rf1159_json_path)])
+
+        if review_json_path is not None:
+            cmd.extend(["--review-json", str(review_json_path)])
 
         return cmd
 
@@ -638,6 +674,7 @@ class JobService:
             for idx, account in enumerate(job.input.xrpl_accounts):
                 suffix = f"_{idx}" if len(job.input.xrpl_accounts) > 1 else ""
                 html_path = output_dir / f"report{suffix}.html"
+                review_path = output_dir / f"review{suffix}.json"
                 # Primary account (idx == 0) gets all CSV files in mixed workspace.
                 csv_files_for_account = (
                     job.input.csv_files if (has_csv and idx == 0) else []
@@ -647,6 +684,7 @@ class JobService:
                     account=account,
                     html_path=html_path,
                     csv_files=csv_files_for_account,
+                    review_json_path=review_path,
                 )
                 log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
 
@@ -662,6 +700,7 @@ class JobService:
                     csv_specs=job.input.csv_files,
                     html_path=html_path,
                     rf1159_json_path=output_dir / "rf1159.json",
+                    review_json_path=output_dir / "review.json",
                 )
                 log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
             else:
@@ -669,13 +708,16 @@ class JobService:
                     csv_stem = Path(spec.path).stem
                     html_path = output_dir / f"report_{csv_stem}.html"
                     rf1159_dest: Path | None = None
+                    review_dest: Path | None = None
                     if job.input.country == Country.NORWAY:
                         rf1159_dest = output_dir / f"rf1159_{csv_stem}.json"
+                        review_dest = output_dir / f"review_{csv_stem}.json"
                     cmd = self._build_csv_command(
                         job.input,
                         csv_spec=spec,
                         html_path=html_path,
                         rf1159_json_path=rf1159_dest,
+                        review_json_path=review_dest,
                     )
                     log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
 

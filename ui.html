@@ -270,6 +270,30 @@
     .job-status-text { font-size: 0.9rem; }
     .job-status-text .label { font-weight: 600; }
     .job-status-text .sub   { color: #94a3b8; font-size: 0.8rem; margin-top: 2px; font-family: monospace; }
+
+    /* ── Review badge ── */
+    .review-badge {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 12px 16px; border-radius: 10px; margin-top: 12px;
+      font-size: 0.88rem; line-height: 1.5;
+    }
+    .review-badge.clean {
+      background: rgba(134,239,172,0.08); border: 1px solid rgba(134,239,172,0.25);
+      color: #86efac;
+    }
+    .review-badge.warn {
+      background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.25);
+      color: #fcd34d;
+    }
+    .review-badge.unlinked {
+      background: rgba(251,146,60,0.08); border: 1px solid rgba(251,146,60,0.25);
+      color: #fdba74;
+    }
+    .review-badge .rb-icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 1px; }
+    .review-badge .rb-body { flex: 1; }
+    .review-badge .rb-title { font-weight: 600; }
+    .review-badge .rb-list  { margin: 6px 0 0 0; padding-left: 18px; color: inherit; opacity: 0.9; }
+    .review-badge .rb-list li { margin-bottom: 3px; }
   </style>
 </head>
 <body>
@@ -378,6 +402,7 @@
 
     <!-- Downloads (shown when complete) -->
     <div id="downloads" style="display:none;">
+      <div id="review-badge-wrap"></div>
       <div class="download-row" id="dl-row"></div>
       <div id="report-frame-wrap">
         <iframe id="report-frame" title="Tax Report"></iframe>
@@ -746,6 +771,9 @@ async function loadResults(jobId, failedJob = false) {
 
     dlArea.style.display = 'block';
 
+    // Load review badge (Norway jobs only — silently skipped for UK/no data)
+    loadReviewBadge(jobId);
+
     // Embed the HTML report in an iframe
     if (hasReport && !failedJob) {
       const frameWrap = document.getElementById('report-frame-wrap');
@@ -764,6 +792,42 @@ async function loadResults(jobId, failedJob = false) {
   } catch (err) {
     console.warn('Could not load file list:', err.message);
   }
+}
+
+async function loadReviewBadge(jobId) {
+  const wrap = document.getElementById('review-badge-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  try {
+    const r = await apiFetch('GET', `/jobs/${jobId}/review`);
+    let cls, icon, title;
+    if (r.clean) {
+      cls = 'clean'; icon = '✅'; title = 'Review clean — no warnings';
+    } else if (r.has_unlinked_transfers) {
+      cls = 'unlinked'; icon = '🔗';
+      title = `${r.warning_count} warning(s) · unlinked transfers detected`;
+    } else {
+      cls = 'warn'; icon = '⚠️';
+      title = `${r.warning_count} warning(s)`;
+    }
+    const listHtml = r.warnings.length
+      ? `<ul class="rb-list">${r.warnings.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul>`
+      : '';
+    wrap.innerHTML = `
+      <div class="review-badge ${cls}">
+        <span class="rb-icon">${icon}</span>
+        <div class="rb-body">
+          <div class="rb-title">${title}</div>
+          ${listHtml}
+        </div>
+      </div>`;
+  } catch (_) {
+    // No review data — silently omit badge (UK jobs, old jobs, etc.)
+  }
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 async function downloadKind(jobId, kind, label) {

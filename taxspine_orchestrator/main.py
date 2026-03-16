@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import os
 import shutil
 from enum import Enum
@@ -101,6 +102,7 @@ class FileKind(str, Enum):
     SUMMARY = "summary"
     REPORT = "report"     # self-contained HTML tax report
     RF1159 = "rf1159"     # RF-1159 (Altinn) JSON export — Norway jobs only
+    REVIEW = "review"     # machine-readable NorwayReviewSummary JSON — Norway only
     LOG = "log"
 
 
@@ -110,6 +112,7 @@ _KIND_TO_FIELD: Dict[FileKind, str] = {
     FileKind.SUMMARY: "summary_json_path",
     FileKind.REPORT: "report_html_path",
     FileKind.RF1159: "rf1159_json_path",
+    FileKind.REVIEW: "review_json_path",
     FileKind.LOG: "log_path",
 }
 
@@ -119,6 +122,7 @@ _KIND_MEDIA_TYPE: Dict[FileKind, str] = {
     FileKind.SUMMARY: "application/json",
     FileKind.REPORT: "text/html",
     FileKind.RF1159: "application/json",
+    FileKind.REVIEW: "application/json",
     FileKind.LOG: "text/plain",
 }
 
@@ -128,6 +132,7 @@ _KIND_EXTENSION: Dict[FileKind, str] = {
     FileKind.SUMMARY: "json",
     FileKind.REPORT: "html",
     FileKind.RF1159: "json",
+    FileKind.REVIEW: "json",
     FileKind.LOG: "txt",
 }
 
@@ -384,6 +389,69 @@ def get_job_report_by_index(job_id: str, index: int) -> FileResponse:
 
     filename = f"report-{job_id}-{index}.html"
     return FileResponse(path=file_path, media_type="text/html", filename=filename)
+
+
+# ── Review summary ────────────────────────────────────────────────────────────
+
+
+@app.get("/jobs/{job_id}/review", tags=["jobs"])
+def get_job_review(job_id: str) -> dict:
+    """Return an aggregated review summary for a completed Norway job.
+
+    Reads all ``review_json_paths`` files for *job_id* and merges them into a
+    single response.  Useful for surfacing warnings and transfer-link issues
+    without downloading the full HTML report.
+
+    Response fields:
+
+    - ``has_unlinked_transfers`` — True if any invocation detected unlinked transfers
+    - ``warning_count``          — total number of warnings across all invocations
+    - ``warnings``               — flat list of warning strings
+    - ``clean``                  — True when no warnings and no unlinked transfers
+    - ``source_count``           — number of review JSON files successfully read
+
+    Raises 404 when the job is not found or no review data is available.
+    """
+    job = _job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    paths: list[str] = job.output.review_json_paths or (
+        [job.output.review_json_path] if job.output.review_json_path else []
+    )
+    if not paths:
+        raise HTTPException(
+            status_code=404,
+            detail="No review data available for this job (not a Norway job, or job not yet complete)",
+        )
+
+    all_warnings: list[str] = []
+    has_unlinked = False
+    loaded = 0
+
+    for p in paths:
+        try:
+            data = _json.loads(Path(p).read_text(encoding="utf-8"))
+            all_warnings.extend(data.get("warnings", []))
+            if data.get("has_unlinked_transfers"):
+                has_unlinked = True
+            loaded += 1
+        except (OSError, ValueError):
+            pass
+
+    if loaded == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="Review files not found on disk",
+        )
+
+    return {
+        "has_unlinked_transfers": has_unlinked,
+        "warning_count": len(all_warnings),
+        "warnings": all_warnings,
+        "clean": len(all_warnings) == 0 and not has_unlinked,
+        "source_count": loaded,
+    }
 
 
 # ── CSV uploads ───────────────────────────────────────────────────────────────

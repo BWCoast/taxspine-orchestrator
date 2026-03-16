@@ -229,6 +229,16 @@ class JobOutput(BaseModel):
             "backward-compatible alias for the first element."
         ),
     )
+    # Review JSON (Norway jobs only — machine-readable NorwayReviewSummary).
+    review_json_path: Optional[str] = None   # first/only review JSON (compat)
+    review_json_paths: List[str] = Field(    # all review JSON paths (one per invocation)
+        default_factory=list,
+        description=(
+            "Review summary JSON paths, one per Norway CLI invocation. "
+            "Contains has_unlinked_transfers, warning_count, warnings, clean. "
+            "``review_json_path`` is a backward-compatible alias for the first element."
+        ),
+    )
     log_path: Optional[str] = None
     error_message: Optional[str] = None
 
