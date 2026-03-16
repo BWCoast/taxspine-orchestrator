@@ -452,12 +452,6 @@ class JobService:
         if job_input.debug_valuation:
             cmd.append("--debug-valuation")
 
-        cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
-        cmd.extend(["--dedup-store", str(JobService._dedup_store_path(f"xrpl_{account}"))])
-
-        if review_json_path is not None:
-            cmd.extend(["--review-json", str(review_json_path)])
-
         return cmd
 
     @staticmethod
@@ -511,19 +505,8 @@ class JobService:
             cmd.append("--debug-valuation")
 
         if job_input.country == Country.NORWAY:
-            cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
-            # Dedup store: one SQLite DB per source type keeps all uploads of
-            # the same exchange format in a shared namespace (e.g. all Firi CSVs
-            # share "firi_csv.db" so January + February Firi exports dedup
-            # against each other automatically).
-            cmd.extend([
-                "--dedup-store",
-                str(JobService._dedup_store_path(csv_spec.source_type.value)),
-            ])
             if rf1159_json_path is not None:
                 cmd.extend(["--rf1159-json", str(rf1159_json_path)])
-            if review_json_path is not None:
-                cmd.extend(["--review-json", str(review_json_path)])
 
         return cmd
 
@@ -581,14 +564,8 @@ class JobService:
         if job_input.debug_valuation:
             cmd.append("--debug-valuation")
 
-        cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
-        cmd.extend(["--dedup-store", str(JobService._dedup_store_path("nor_multi"))])
-
         if rf1159_json_path is not None:
             cmd.extend(["--rf1159-json", str(rf1159_json_path)])
-
-        if review_json_path is not None:
-            cmd.extend(["--review-json", str(review_json_path)])
 
         return cmd
 

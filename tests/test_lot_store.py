@@ -1,15 +1,12 @@
-"""Tests for lot store integration in the orchestrator.
+"""Tests for lot store settings in the orchestrator.
 
 Covers:
 - Settings.LOT_STORE_DB exists and is within DATA_DIR by default.
-- _build_xrpl_command includes --lot-store PATH.
-- _build_csv_command includes --lot-store PATH for Norway, not for UK.
-- _build_nor_multi_command includes --lot-store PATH.
-- Dry-run XRPL job: [would run] log includes --lot-store.
-- Dry-run CSV-only Norway per-file: [would run] log includes --lot-store.
-- Dry-run CSV-only Norway nor_multi: [would run] log includes --lot-store.
-- Dry-run CSV-only UK: [would run] log does NOT include --lot-store.
 - LOT_STORE_DB can be overridden via env / Settings constructor.
+- _build_xrpl_command does NOT pass --lot-store (CLI doesn't support it).
+- _build_csv_command does NOT pass --lot-store for either Norway or UK.
+- _build_nor_multi_command does NOT pass --lot-store.
+- Dry-run logs confirm the flag is absent in all modes.
 """
 
 from __future__ import annotations
@@ -98,6 +95,8 @@ class TestSettingsLotStoreDb:
 
 
 class TestBuildXrplCommandLotStore:
+    """taxspine-xrpl-nor does not accept --lot-store; must not appear in command."""
+
     def _cmd(self, html_path: Path, **kwargs) -> list[str]:
         ji = _make_ji_norway(**kwargs)
         return JobService._build_xrpl_command(
@@ -107,20 +106,9 @@ class TestBuildXrplCommandLotStore:
             csv_files=[],
         )
 
-    def test_lot_store_flag_present(self, tmp_path):
+    def test_lot_store_flag_absent(self, tmp_path):
         cmd = self._cmd(tmp_path / "out.html")
-        assert "--lot-store" in cmd
-
-    def test_lot_store_value_is_path_string(self, tmp_path):
-        cmd = self._cmd(tmp_path / "out.html")
-        idx = cmd.index("--lot-store")
-        lot_path = cmd[idx + 1]
-        assert lot_path.endswith("lots.db")
-
-    def test_lot_store_path_matches_settings(self, tmp_path):
-        cmd = self._cmd(tmp_path / "out.html")
-        idx = cmd.index("--lot-store")
-        assert cmd[idx + 1] == str(settings.LOT_STORE_DB)
+        assert "--lot-store" not in cmd
 
 
 # ── TestBuildCsvCommandLotStore ───────────────────────────────────────────────
@@ -135,16 +123,11 @@ class TestBuildCsvCommandLotStore:
         ji = _make_ji_uk()
         return JobService._build_csv_command(ji, csv_spec=spec, html_path=html_path)
 
-    def test_norway_csv_includes_lot_store(self, tmp_path):
+    def test_norway_csv_does_not_include_lot_store(self, tmp_path):
+        """taxspine-nor-report does not accept --lot-store."""
         spec = CsvFileSpec(path="/data/events.csv", source_type=CsvSourceType.GENERIC_EVENTS)
         cmd = self._cmd_norway(tmp_path / "out.html", spec)
-        assert "--lot-store" in cmd
-
-    def test_norway_csv_lot_store_value(self, tmp_path):
-        spec = CsvFileSpec(path="/data/events.csv", source_type=CsvSourceType.GENERIC_EVENTS)
-        cmd = self._cmd_norway(tmp_path / "out.html", spec)
-        idx = cmd.index("--lot-store")
-        assert cmd[idx + 1] == str(settings.LOT_STORE_DB)
+        assert "--lot-store" not in cmd
 
     def test_uk_csv_does_not_include_lot_store(self, tmp_path):
         spec = CsvFileSpec(path="/data/events.csv", source_type=CsvSourceType.GENERIC_EVENTS)
@@ -156,26 +139,24 @@ class TestBuildCsvCommandLotStore:
 
 
 class TestBuildNorMultiCommandLotStore:
+    """taxspine-nor-multi does not accept --lot-store; must not appear in command."""
+
     def _cmd(self, html_path: Path) -> list[str]:
         ji = _make_ji_norway()
         specs = _specs((CsvSourceType.GENERIC_EVENTS, "/data/events.csv"))
         return JobService._build_nor_multi_command(ji, csv_specs=specs, html_path=html_path)
 
-    def test_lot_store_flag_present(self, tmp_path):
+    def test_lot_store_flag_absent(self, tmp_path):
         cmd = self._cmd(tmp_path / "out.html")
-        assert "--lot-store" in cmd
-
-    def test_lot_store_value(self, tmp_path):
-        cmd = self._cmd(tmp_path / "out.html")
-        idx = cmd.index("--lot-store")
-        assert cmd[idx + 1] == str(settings.LOT_STORE_DB)
+        assert "--lot-store" not in cmd
 
 
 # ── TestDryRunLotStore ────────────────────────────────────────────────────────
 
 
 class TestDryRunLotStore:
-    def test_xrpl_dry_run_log_contains_lot_store(self, client, tmp_path):
+    def test_xrpl_dry_run_log_does_not_contain_lot_store(self, client, tmp_path):
+        """taxspine-xrpl-nor doesn't accept --lot-store; must be absent from log."""
         with patch("taxspine_orchestrator.services.Path.is_file", return_value=True):
             resp = client.post("/jobs", json={
                 "xrpl_accounts": ["rN7n3473SaZBCG4dFL83w7PB5FBBfvXMUT"],
@@ -187,9 +168,10 @@ class TestDryRunLotStore:
         job_id = resp.json()["id"]
         job = start_and_wait(client, job_id)
         log = Path(job["output"]["log_path"]).read_text(encoding="utf-8")
-        assert "--lot-store" in log
+        assert "--lot-store" not in log
 
-    def test_csv_norway_dry_run_log_contains_lot_store(self, client, tmp_path):
+    def test_csv_norway_dry_run_log_does_not_contain_lot_store(self, client, tmp_path):
+        """taxspine-nor-report doesn't accept --lot-store; must be absent from log."""
         csv_file = tmp_path / "events.csv"
         csv_file.write_text("header\nrow\n", encoding="utf-8")
         with patch("taxspine_orchestrator.services.Path.is_file", return_value=True):
@@ -203,9 +185,10 @@ class TestDryRunLotStore:
         job_id = resp.json()["id"]
         job = start_and_wait(client, job_id)
         log = Path(job["output"]["log_path"]).read_text(encoding="utf-8")
-        assert "--lot-store" in log
+        assert "--lot-store" not in log
 
-    def test_csv_norway_nor_multi_dry_run_log_contains_lot_store(self, client, tmp_path):
+    def test_csv_norway_nor_multi_dry_run_log_does_not_contain_lot_store(self, client, tmp_path):
+        """taxspine-nor-multi doesn't accept --lot-store; must be absent from log."""
         csv_file = tmp_path / "events.csv"
         csv_file.write_text("header\nrow\n", encoding="utf-8")
         with patch("taxspine_orchestrator.services.Path.is_file", return_value=True):
@@ -220,7 +203,7 @@ class TestDryRunLotStore:
         job_id = resp.json()["id"]
         job = start_and_wait(client, job_id)
         log = Path(job["output"]["log_path"]).read_text(encoding="utf-8")
-        assert "--lot-store" in log
+        assert "--lot-store" not in log
 
     def test_csv_uk_dry_run_log_does_not_contain_lot_store(self, client, tmp_path):
         csv_file = tmp_path / "events.csv"

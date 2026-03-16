@@ -324,10 +324,11 @@ class TestReviewJsonPaths:
 
 
 class TestCommandBuilderReviewFlag:
-    """--review-json appears in command builders when review_json_path is provided."""
+    """--review-json is NOT passed to taxspine-nor-report or taxspine-nor-multi
+    (neither CLI supports the flag in the current installed version)."""
 
-    def test_build_csv_command_includes_review_json(self, tmp_path: Path) -> None:
-        """_build_csv_command with Norway + review_json_path → --review-json in cmd."""
+    def test_build_csv_command_does_not_include_review_json(self, tmp_path: Path) -> None:
+        """taxspine-nor-report does not accept --review-json; flag must be absent."""
         ji = JobInput(tax_year=2025, country=Country.NORWAY)
         spec = CsvFileSpec(path="/data/events.csv", source_type=CsvSourceType.GENERIC_EVENTS)
         html_path = tmp_path / "report.html"
@@ -339,12 +340,10 @@ class TestCommandBuilderReviewFlag:
             html_path=html_path,
             review_json_path=review_path,
         )
-        assert "--review-json" in cmd
-        idx = cmd.index("--review-json")
-        assert cmd[idx + 1] == str(review_path)
+        assert "--review-json" not in cmd
 
-    def test_build_nor_multi_command_includes_review_json(self, tmp_path: Path) -> None:
-        """_build_nor_multi_command with review_json_path → --review-json in cmd."""
+    def test_build_nor_multi_command_does_not_include_review_json(self, tmp_path: Path) -> None:
+        """taxspine-nor-multi does not accept --review-json; flag must be absent."""
         ji = JobInput(tax_year=2025, country=Country.NORWAY)
         specs = [CsvFileSpec(path="/data/events.csv", source_type=CsvSourceType.GENERIC_EVENTS)]
         html_path = tmp_path / "report.html"
@@ -356,6 +355,4 @@ class TestCommandBuilderReviewFlag:
             html_path=html_path,
             review_json_path=review_path,
         )
-        assert "--review-json" in cmd
-        idx = cmd.index("--review-json")
-        assert cmd[idx + 1] == str(review_path)
+        assert "--review-json" not in cmd
