@@ -252,6 +252,25 @@ async def cancel_job(job_id: str) -> dict:
     return {"status": "cancelled", "job_id": job_id}
 
 
+@app.delete("/jobs/{job_id}", tags=["jobs"], dependencies=[Depends(_require_key)])
+def delete_job(job_id: str) -> dict:
+    """Permanently remove a job record from the store.
+
+    Running jobs cannot be deleted — cancel first.  The job's output files on
+    disk are NOT removed; only the DB record is deleted.
+    """
+    job = _job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status == JobStatus.RUNNING:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a running job — cancel it first",
+        )
+    _job_store.delete(job_id)
+    return {"deleted": True, "id": job_id}
+
+
 # ── File listing / download ───────────────────────────────────────────────────
 
 

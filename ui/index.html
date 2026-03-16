@@ -731,14 +731,17 @@ async function runReport() {
 
 // ── Jobs list ─────────────────────────────────────────────────────────────────
 let selectedJobId = null;
-let archiveExpanded = false;
+let _visibleJobCount = 5;       // how many rows currently shown
+const _INITIAL_VISIBLE = 5;
+const _LOAD_MORE_STEP  = 10;
+let _cachedJobs = [];           // last fetched job list
 
 async function loadJobs() {
   try {
-    const r = await fetch(`${API}/jobs?limit=200`);
+    const r = await fetch(`${API}/jobs?limit=500`);
     if (!r.ok) throw new Error();
-    const jobs = await r.json();
-    renderJobs(jobs);
+    _cachedJobs = await r.json();
+    renderJobs(_cachedJobs);
   } catch {
     document.getElementById('jobs-list').innerHTML =
       '<p class="text-red-400 text-xs text-center py-4">Could not load jobs — is the server running?</p>';
@@ -751,6 +754,11 @@ function _jobRowHtml(j) {
   const sel = j.id === selectedJobId ? 'selected' : '';
   const hasReport = j.output?.report_html_path ? '📄' : '';
   const label = j.input.case_name || `${j.input.country} ${j.input.tax_year}`;
+  const canDelete = j.status !== 'running';
+  const deleteBtn = canDelete
+    ? `<button class="btn-danger flex-shrink-0" style="padding:3px 8px;font-size:11px;"
+        onclick="event.stopPropagation();deleteJob('${escHtml(j.id)}')" title="Delete job">✕</button>`
+    : '';
   return `
   <div class="job-row ${sel} p-3 fade-in" role="button" tabindex="0"
     onclick="openResultsById('${escHtml(j.id)}')"
@@ -772,7 +780,10 @@ function _jobRowHtml(j) {
         ${j.output?.error_message
           ? `<details class="mt-1"><summary class="text-xs text-red-400 cursor-pointer">Show error</summary><pre class="text-xs text-red-300 mt-1 whitespace-pre-wrap">${escHtml(j.output.error_message)}</pre></details>` : ''}
       </div>
-      <span class="text-gray-600 text-sm flex-shrink-0">›</span>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        ${deleteBtn}
+        <span class="text-gray-600 text-sm">›</span>
+      </div>
     </div>
   </div>`;
 }
@@ -790,47 +801,31 @@ function renderJobs(jobs) {
   }
   if (emptyState) emptyState.classList.add('hidden');
 
-  const MAX_VISIBLE = 10;
-  const recent = jobs.slice(0, MAX_VISIBLE);
-  const older  = jobs.slice(MAX_VISIBLE);
+  // Clamp visible count to available jobs (keeps expansion stable after delete)
+  _visibleJobCount = Math.min(_visibleJobCount, Math.max(_INITIAL_VISIBLE, _visibleJobCount));
+  const visible  = jobs.slice(0, _visibleJobCount);
+  const remaining = jobs.length - visible.length;
 
-  let html = recent.map(_jobRowHtml).join('');
+  let html = visible.map(_jobRowHtml).join('');
 
-  if (older.length > 0) {
-    // Archived runs: toggled by archiveExpanded (module-scope, survives 30s refresh)
-    const arrowChar = archiveExpanded ? '▾' : '▸';
-    const archiveLabel = archiveExpanded
-      ? `${older.length} older run${older.length !== 1 ? 's' : ''} — click to collapse`
-      : `${older.length} older run${older.length !== 1 ? 's' : ''} — click to expand`;
-    const archiveDisplay = archiveExpanded ? 'flex' : 'none';
+  if (remaining > 0) {
+    const next = Math.min(_LOAD_MORE_STEP, remaining);
     html += `
     <button
-      id="archive-toggle"
-      class="w-full text-left text-xs text-gray-600 hover:text-gray-400 py-2 px-1 flex items-center gap-1 transition-colors mt-1"
-      onclick="toggleJobArchive()"
+      id="load-more-btn"
+      class="w-full text-xs text-gray-500 hover:text-gray-300 py-2 px-1 flex items-center justify-center gap-1 transition-colors mt-1 border border-dashed border-gray-700 rounded-lg hover:border-gray-500"
+      onclick="loadMoreJobs()"
     >
-      <span id="archive-arrow">${arrowChar}</span>
-      <span id="archive-label">${archiveLabel}</span>
-    </button>
-    <div id="archive-rows" style="display:${archiveDisplay};flex-direction:column;gap:0.5rem;">
-      ${older.map(_jobRowHtml).join('')}
-    </div>`;
+      ↓ Load ${next} more <span class="text-gray-600">(${remaining} remaining)</span>
+    </button>`;
   }
 
   el.innerHTML = html;
 }
 
-function toggleJobArchive() {
-  archiveExpanded = !archiveExpanded;
-  const rows  = document.getElementById('archive-rows');
-  const arrow = document.getElementById('archive-arrow');
-  const label = document.getElementById('archive-label');
-  const n = rows.querySelectorAll('.job-row').length;
-  rows.style.display = archiveExpanded ? 'flex' : 'none';
-  arrow.textContent = archiveExpanded ? '▾' : '▸';
-  label.textContent = archiveExpanded
-    ? `${n} older run${n !== 1 ? 's' : ''} — click to collapse`
-    : `${n} older run${n !== 1 ? 's' : ''} — click to expand`;
+function loadMoreJobs() {
+  _visibleJobCount += _LOAD_MORE_STEP;
+  renderJobs(_cachedJobs);
 }
 
 function badgeHtml(status) {
@@ -856,7 +851,7 @@ async function openResultsById(jobId) {
 
 async function openResults(job) {
   selectedJobId = job.id;
-  renderJobs(await fetchJobsList());
+  renderJobs(_cachedJobs.length ? _cachedJobs : await fetchJobsList());
 
   const panel = document.getElementById('results-panel');
   panel.classList.remove('hidden');
@@ -1030,10 +1025,34 @@ function closeResults() {
 
 async function fetchJobsList() {
   try {
-    const r = await fetch(`${API}/jobs?limit=200`);
-    if (r.ok) return await r.json();
+    const r = await fetch(`${API}/jobs?limit=500`);
+    if (r.ok) {
+      _cachedJobs = await r.json();
+      return _cachedJobs;
+    }
   } catch {}
   return [];
+}
+
+async function deleteJob(jobId) {
+  if (!confirm('Delete this job record? Output files on disk are kept.')) return;
+  try {
+    const r = await fetch(`${API}/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alert(`Could not delete job: ${err.detail || r.statusText}`);
+      return;
+    }
+    // Remove from local cache and re-render without a round-trip
+    _cachedJobs = _cachedJobs.filter(j => j.id !== jobId);
+    if (selectedJobId === jobId) {
+      selectedJobId = null;
+      document.getElementById('results-panel').classList.add('hidden');
+    }
+    renderJobs(_cachedJobs);
+  } catch {
+    alert('Delete failed — is the server running?');
+  }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────

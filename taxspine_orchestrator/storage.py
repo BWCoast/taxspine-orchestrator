@@ -77,6 +77,13 @@ class InMemoryJobStore:
         self._jobs[job_id] = updated
         return updated
 
+    def delete(self, job_id: str) -> bool:
+        """Remove a single job.  Returns True if it existed, False otherwise."""
+        if job_id in self._jobs:
+            del self._jobs[job_id]
+            return True
+        return False
+
     def clear(self) -> None:
         """Delete all jobs — used by tests to reset state between runs."""
         self._jobs.clear()
@@ -249,6 +256,12 @@ class SqliteJobStore:
             rows = conn.execute(sql, params).fetchall()
 
         return [Job.model_validate_json(r[0]) for r in rows]
+
+    def delete(self, job_id: str) -> bool:
+        """Remove a single job.  Returns True if it existed, False otherwise."""
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            return cursor.rowcount > 0
 
     def clear(self) -> None:
         """Delete all jobs — used by tests to reset state between runs."""
