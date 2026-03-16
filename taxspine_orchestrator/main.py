@@ -712,3 +712,121 @@ def run_workspace_report(body: WorkspaceRunRequest) -> Job:
     if result is None:
         raise HTTPException(status_code=500, detail="Job execution returned None")
     return result
+
+
+# ── Alerts ────────────────────────────────────────────────────────────────────
+
+
+_ALERTS_SCAN_LIMIT = 20   # how many recent jobs to inspect for review alerts
+
+
+@app.get("/alerts", tags=["meta"])
+async def get_alerts(
+    limit: int = Query(
+        default=_ALERTS_SCAN_LIMIT,
+        ge=1,
+        le=100,
+        description="Number of recent completed/failed jobs to scan for review alerts.",
+    ),
+) -> list[dict]:
+    """Return a list of actionable alerts across the system.
+
+    Aggregates alerts from two sources:
+
+    1. **Review alerts** — completed Norway jobs whose review JSON indicates
+       warnings or unlinked transfers.  Each non-clean job produces one alert.
+    2. **Health alerts** — checks from ``GET /health`` that are not ``"ok"``
+       (missing CLIs, unwritable output dir, DB errors).
+
+    Each alert item has:
+
+    - ``severity``  — ``"error"`` | ``"warn"`` | ``"info"``
+    - ``category``  — ``"review"`` | ``"health"``
+    - ``message``   — short human-readable summary
+    - ``job_id``    — present for review alerts; ``null`` for health alerts
+    - ``detail``    — list of warning strings (review) or empty list (health)
+
+    The response is sorted: ``"error"`` first, then ``"warn"``, then ``"info"``.
+    Returns HTTP 200 with an empty list when no alerts are present.
+    """
+    alerts: list[dict] = []
+
+    # ── 1. Health alerts ────────────────────────────────────────────────────
+    health_checks: dict = {}
+
+    try:
+        _job_store.ping()
+        health_checks["db"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        health_checks["db"] = f"error: {exc}"
+
+    out_ok = os.access(settings.OUTPUT_DIR, os.W_OK)
+    health_checks["output_dir"] = "ok" if out_ok else "error: not writable"
+
+    for cli_name in ["taxspine-nor-report", "taxspine-xrpl-nor"]:
+        health_checks[cli_name] = "ok" if shutil.which(cli_name) else "missing"
+
+    for check_name, check_val in health_checks.items():
+        if check_val != "ok":
+            severity = "error" if check_val.startswith("error") else "warn"
+            alerts.append({
+                "severity": severity,
+                "category": "health",
+                "message": f"{check_name}: {check_val}",
+                "job_id": None,
+                "detail": [],
+            })
+
+    # ── 2. Review alerts (recent completed + failed jobs) ───────────────────
+    recent_jobs = _job_store.list(limit=limit)
+
+    for job in recent_jobs:
+        if job.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+            continue
+
+        paths: list[str] = job.output.review_json_paths or (
+            [job.output.review_json_path] if job.output.review_json_path else []
+        )
+        if not paths:
+            continue
+
+        all_warnings: list[str] = []
+        has_unlinked = False
+        loaded = 0
+
+        for p in paths:
+            try:
+                data = _json.loads(Path(p).read_text(encoding="utf-8"))
+                all_warnings.extend(data.get("warnings", []))
+                if data.get("has_unlinked_transfers"):
+                    has_unlinked = True
+                loaded += 1
+            except (OSError, ValueError):
+                pass
+
+        if loaded == 0:
+            continue
+
+        if all_warnings or has_unlinked:
+            label = job.input.case_name or job.id
+            if has_unlinked and all_warnings:
+                msg = f"Job '{label}' - {len(all_warnings)} warning(s) + unlinked transfers"
+            elif has_unlinked:
+                msg = f"Job '{label}' - unlinked transfers detected"
+            else:
+                msg = f"Job '{label}' - {len(all_warnings)} warning(s)"
+
+            severity = "error" if has_unlinked else "warn"
+            alerts.append({
+                "severity": severity,
+                "category": "review",
+                "message": msg,
+                "job_id": job.id,
+                "detail": all_warnings,
+            })
+
+    # ── Sort: error → warn → info ───────────────────────────────────────────
+    _order = {"error": 0, "warn": 1, "info": 2}
+    alerts.sort(key=lambda a: _order.get(a["severity"], 9))
+
+    return alerts

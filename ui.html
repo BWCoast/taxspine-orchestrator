@@ -255,6 +255,45 @@
     .tc-empty { color: #64748b; font-size: 0.85rem; text-align: center; padding: 24px 0; }
     .tc-loading { color: #6366f1; font-size: 0.82rem; padding: 8px 0; }
 
+    /* ── Alerts ── */
+    .alerts-header-count {
+      display: inline-block; margin-left: 8px;
+      padding: 2px 9px; border-radius: 12px; font-size: 0.75rem; font-weight: 700;
+      vertical-align: middle;
+    }
+    .alerts-header-count.none  { background: rgba(34,197,94,0.15);  color: #86efac; }
+    .alerts-header-count.some  { background: rgba(239,68,68,0.18);   color: #fca5a5; }
+    .alert-item {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 12px 14px; border-radius: 10px; margin-bottom: 10px;
+      font-size: 0.87rem; line-height: 1.5;
+    }
+    .alert-item:last-child { margin-bottom: 0; }
+    .alert-item.sev-error {
+      background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25); color: #fca5a5;
+    }
+    .alert-item.sev-warn {
+      background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.22); color: #fcd34d;
+    }
+    .alert-item.sev-info {
+      background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.25); color: #a5b4fc;
+    }
+    .alert-icon { font-size: 1.15rem; flex-shrink: 0; margin-top: 1px; }
+    .alert-body { flex: 1; }
+    .alert-msg  { font-weight: 600; }
+    .alert-cat  { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; margin-top: 2px; }
+    .alert-detail { margin: 6px 0 0 0; padding-left: 16px; opacity: 0.85; }
+    .alert-detail li { margin-bottom: 2px; }
+    .alert-job-link {
+      display: inline-block; margin-top: 4px; font-size: 0.75rem;
+      color: inherit; opacity: 0.6; text-decoration: underline; cursor: pointer;
+    }
+    .alert-job-link:hover { opacity: 1; }
+    .alerts-all-clear {
+      text-align: center; padding: 24px 0;
+      color: #86efac; font-size: 0.88rem;
+    }
+
     /* ── Progress ── */
     .progress-ring {
       width: 36px; height: 36px;
@@ -410,7 +449,18 @@
     </div>
   </div>
 
-  <!-- ── Card 4: Tax Center ── -->
+  <!-- ── Card 4: Alerts ── -->
+  <div class="card" id="alerts-card">
+    <h3>
+      🚨 Alerts
+      <span class="alerts-header-count none" id="alerts-count">…</span>
+      <button class="tc-refresh" style="float:right;margin-top:-2px" onclick="loadAlerts()">↻ Refresh</button>
+    </h3>
+    <span class="tc-loading" id="alerts-loading" style="display:none">Loading…</span>
+    <div id="alerts-list"></div>
+  </div>
+
+  <!-- ── Card 5: Tax Center ── -->
   <div class="card" id="tax-center-card">
     <h3>🏛 Tax Center <span style="font-weight:400;font-size:0.82rem;color:#64748b;">holdings · carry-forward lots · ingestion health</span></h3>
 
@@ -729,12 +779,14 @@ async function pollJob(jobId) {
     if (status === 'completed') {
       stopPolling();
       await loadResults(jobId);
+      loadAlerts();   // refresh alerts — new review data may have appeared
     } else if (status === 'failed') {
       stopPolling();
       const errMsg = job.output?.error_message || 'Pipeline failed — check log';
       updateStatus('failed', `${jobId} — ${errMsg}`);
       // Still try to show log download
       await loadResults(jobId, true);
+      loadAlerts();   // refresh alerts — review data may exist even on failure
     }
   } catch (err) {
     console.warn('Poll error:', err.message);
@@ -874,6 +926,70 @@ function showBanner(el, type, msg) {
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Alerts ────────────────────────────────────────────────────────────────────
+
+const _ALERT_ICONS = { error: '🔴', warn: '⚠️', info: 'ℹ️' };
+
+async function loadAlerts() {
+  const loading  = document.getElementById('alerts-loading');
+  const list     = document.getElementById('alerts-list');
+  const countBadge = document.getElementById('alerts-count');
+  loading.style.display = '';
+  list.innerHTML = '';
+
+  try {
+    const alerts = await apiFetch('GET', '/alerts');
+
+    if (!alerts || alerts.length === 0) {
+      countBadge.className = 'alerts-header-count none';
+      countBadge.textContent = 'all clear';
+      list.innerHTML = '<div class="alerts-all-clear">✅ No alerts — system is healthy</div>';
+      return;
+    }
+
+    countBadge.className = 'alerts-header-count some';
+    countBadge.textContent = `${alerts.length} alert${alerts.length === 1 ? '' : 's'}`;
+
+    list.innerHTML = alerts.map(a => {
+      const icon     = _ALERT_ICONS[a.severity] || 'ℹ️';
+      const sevClass = `sev-${a.severity}`;
+      const catLabel = a.category === 'review' ? 'Review' : 'System health';
+
+      const detailHtml = a.detail && a.detail.length
+        ? `<ul class="alert-detail">${a.detail.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul>`
+        : '';
+
+      const jobLinkHtml = a.job_id
+        ? `<span class="alert-job-link" onclick="scrollToJob('${escHtml(a.job_id)}')" title="Job ${escHtml(a.job_id)}">→ job ${escHtml(a.job_id.slice(0, 8))}…</span>`
+        : '';
+
+      return `<div class="alert-item ${sevClass}">
+        <span class="alert-icon">${icon}</span>
+        <div class="alert-body">
+          <div class="alert-msg">${escHtml(a.message)}</div>
+          <div class="alert-cat">${catLabel}</div>
+          ${detailHtml}
+          ${jobLinkHtml}
+        </div>
+      </div>`;
+    }).join('');
+
+  } catch (err) {
+    countBadge.className = 'alerts-header-count some';
+    countBadge.textContent = '?';
+    list.innerHTML = `<div class="tc-empty">Could not load alerts: ${escHtml(err.message)}</div>`;
+  } finally {
+    loading.style.display = 'none';
+  }
+}
+
+function scrollToJob(jobId) {
+  // If this is the currently visible job, just scroll to the results card.
+  if (jobId === _currentJobId) {
+    document.getElementById('results-card')?.scrollIntoView({ behavior: 'smooth' });
+  }
 }
 
 // ── Tax Center ────────────────────────────────────────────────────────────────
@@ -1091,6 +1207,8 @@ document.addEventListener('DOMContentLoaded', () => {
   addWallet();               // seed one empty wallet row
   checkHealth();
   setInterval(checkHealth, 20_000);
+  loadAlerts();              // populate Alerts on page load
+  setInterval(loadAlerts, 60_000);  // refresh alerts every 60 s
   loadTaxCenter();           // populate Tax Center on page load
 });
 </script>
