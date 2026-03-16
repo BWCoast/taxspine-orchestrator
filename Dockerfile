@@ -106,7 +106,9 @@ COPY scripts/    ./scripts/
 ENV OUTPUT_DIR=/data/output \
     TEMP_DIR=/data/tmp \
     UPLOAD_DIR=/data/uploads \
-    DATA_DIR=/data/state
+    DATA_DIR=/data/state \
+    LOT_STORE_DB=/data/state/lots.db \
+    DEDUP_DIR=/data/state/dedup
 
 # ── Port ─────────────────────────────────────────────────────────────────────
 EXPOSE 8000

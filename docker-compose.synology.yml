@@ -68,7 +68,13 @@ services:
       DATA_DIR:   /data/state
       # Cached price CSVs from CoinGecko — must be on the mounted volume so
       # they survive Watchtower image updates (avoids re-fetching every restart).
-      PRICES_DIR: /data/prices
+      PRICES_DIR:   /data/prices
+      # LOT_STORE_DB: SQLite database for FIFO lot carry-forward across tax years.
+      # Must be inside the mounted volume so lots persist across image updates.
+      LOT_STORE_DB: /data/state/lots.db
+      # DEDUP_DIR: per-source SQLite deduplication databases (one .db file per source).
+      # Must be inside the mounted volume so dedup history persists across image updates.
+      DEDUP_DIR:    /data/state/dedup
 
       # CLI binary names (installed inside the image from tax-nor).
       # Only change these if you have a custom build with different CLI names.

@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     DATA_DIR: Path = _DEFAULT_BASE / "data"
     # PRICES_DIR stores cached price CSVs fetched from external APIs
     PRICES_DIR: Path = _DEFAULT_BASE / "prices"
+    # LOT_STORE_DB stores FIFO lots for year-over-year carry-forward
+    LOT_STORE_DB: Path = _DEFAULT_BASE / "data" / "lots.db"
+    # DEDUP_DIR stores per-source SQLite deduplication databases.
+    # Each source type (generic_events, coinbase_csv, firi_csv, xrpl_{account})
+    # gets its own .db file under this directory to prevent duplicate events
+    # when the same CSV is re-uploaded or XRPL data is re-fetched.
+    DEDUP_DIR: Path = _DEFAULT_BASE / "data" / "dedup"
 
     # ── Security ──────────────────────────────────────────────────────────
     # Empty string = auth disabled (dev/local mode).
@@ -47,8 +54,10 @@ class Settings(BaseSettings):
     # ── External CLI binaries ─────────────────────────────────────────────
     # taxspine-xrpl-nor: single-command XRPL → Norway pipeline
     TAXSPINE_XRPL_NOR_CLI: str = "taxspine-xrpl-nor"
-    # taxspine-nor-report: generic-events CSV → Norway pipeline
+    # taxspine-nor-report: generic-events CSV → Norway pipeline (single file)
     TAXSPINE_NOR_REPORT_CLI: str = "taxspine-nor-report"
+    # taxspine-nor-multi: multi-source Norway pipeline (all CSVs in one invocation)
+    TAXSPINE_NOR_MULTI_CLI: str = "taxspine-nor-multi"
     TAXSPINE_UK_REPORT_CLI: str = "taxspine-uk-report"
     # blockchain-reader: kept for reference; not called by default pipeline
     BLOCKCHAIN_READER_CLI: str = "blockchain-reader"
@@ -60,6 +69,7 @@ class Settings(BaseSettings):
         self.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         self.DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.PRICES_DIR.mkdir(parents=True, exist_ok=True)
+        self.DEDUP_DIR.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

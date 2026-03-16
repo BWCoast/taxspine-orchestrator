@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import settings
-from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, ValuationMode
+from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, PipelineMode, ValuationMode
 from .storage import InMemoryJobStore, SqliteJobStore
 
 _log = logging.getLogger(__name__)
@@ -116,12 +116,29 @@ class JobService:
             # ── Guard: valuation_mode consistency ────────────────────────
             if job.input.valuation_mode == ValuationMode.PRICE_TABLE:
                 if job.input.csv_prices_path is None:
-                    return self._fail_job(
-                        job_id,
-                        error="valuation_mode=price_table requires csv_prices_path",
-                        log_lines=log_lines,
-                        output_dir=output_dir,
-                    )
+                    # Auto-resolve: look for the cached combined NOK price CSV
+                    # written by POST /prices/fetch (combined_nok_{year}.csv).
+                    auto_path = settings.PRICES_DIR / f"combined_nok_{job.input.tax_year}.csv"
+                    if auto_path.is_file():
+                        log_lines.append(
+                            f"[prices] auto-resolved price table: {auto_path}"
+                        )
+                        job = job.model_copy(
+                            update={"input": job.input.model_copy(
+                                update={"csv_prices_path": str(auto_path)}
+                            )}
+                        )
+                    else:
+                        return self._fail_job(
+                            job_id,
+                            error=(
+                                f"valuation_mode=price_table requires csv_prices_path "
+                                f"(or a cached price file at {auto_path}; "
+                                f"call POST /prices/fetch to download prices automatically)"
+                            ),
+                            log_lines=log_lines,
+                            output_dir=output_dir,
+                        )
                 # F-11: resolve path and verify existence.
                 # Note: the price table CSV is an operator-supplied reference file
                 # and is NOT constrained to UPLOAD_DIR (it may live in /data or
@@ -180,6 +197,8 @@ class JobService:
             #   One invocation per account, no CSV files attached.
             report_html_path: Path | None = None
             all_html_paths: list[str] = []
+            rf1159_json_path: Path | None = None
+            all_rf1159_json_paths: list[str] = []
 
             if has_xrpl:
                 for idx, account in enumerate(job.input.xrpl_accounts):
@@ -227,36 +246,40 @@ class JobService:
                         if report_html_path is None:
                             report_html_path = html_dest
 
-            # ── Step 2: CSVs → taxspine-nor-report ────────────────────────
+            # ── Step 2: CSVs → taxspine-nor-report / taxspine-nor-multi ───
             # Only run this step for CSV-only workspaces.  When XRPL accounts
             # are present, generic-events CSV files were already merged in Step 1.
             if has_csv and not has_xrpl:
-                for spec in job.input.csv_files:
-                    csv_stem = Path(spec.path).stem
-                    html_dest = output_dir / f"report_{csv_stem}.html"
-
-                    csv_cmd = self._build_csv_command(
+                if (
+                    job.input.pipeline_mode == PipelineMode.NOR_MULTI
+                    and job.input.country == Country.NORWAY
+                ):
+                    # Single combined invocation — all CSV sources in one shot.
+                    html_dest = output_dir / "report_combined.html"
+                    rf1159_dest_nm = output_dir / "rf1159.json"
+                    nor_multi_cmd = self._build_nor_multi_command(
                         job.input,
-                        csv_spec=spec,
+                        csv_specs=job.input.csv_files,
                         html_path=html_dest,
+                        rf1159_json_path=rf1159_dest_nm,
                     )
-                    log_lines.append(f"$ {' '.join(str(c) for c in csv_cmd)}")
+                    log_lines.append(f"$ {' '.join(str(c) for c in nor_multi_cmd)}")
 
-                    csv_result = subprocess.run(
-                        csv_cmd, capture_output=True, text=True, check=False,
+                    nor_multi_result = subprocess.run(
+                        nor_multi_cmd, capture_output=True, text=True, check=False,
                     )
-                    log_lines.append(f"  rc={csv_result.returncode}")
-                    if csv_result.stdout:
-                        log_lines.append(f"  stdout:\n{csv_result.stdout.rstrip()}")
-                    if csv_result.stderr:
-                        log_lines.append(f"  stderr:\n{csv_result.stderr.rstrip()}")
+                    log_lines.append(f"  rc={nor_multi_result.returncode}")
+                    if nor_multi_result.stdout:
+                        log_lines.append(f"  stdout:\n{nor_multi_result.stdout.rstrip()}")
+                    if nor_multi_result.stderr:
+                        log_lines.append(f"  stderr:\n{nor_multi_result.stderr.rstrip()}")
 
-                    if csv_result.returncode != 0:
+                    if nor_multi_result.returncode != 0:
                         return self._fail_job(
                             job_id,
                             error=(
-                                f"taxspine-nor-report failed for {spec.path} "
-                                f"(rc={csv_result.returncode})"
+                                f"taxspine-nor-multi failed "
+                                f"(rc={nor_multi_result.returncode})"
                             ),
                             log_lines=log_lines,
                             output_dir=output_dir,
@@ -264,8 +287,58 @@ class JobService:
 
                     if html_dest.exists():
                         all_html_paths.append(str(html_dest))
-                        if report_html_path is None:
-                            report_html_path = html_dest
+                        report_html_path = html_dest
+
+                    if rf1159_dest_nm.exists():
+                        all_rf1159_json_paths.append(str(rf1159_dest_nm))
+                        rf1159_json_path = rf1159_dest_nm
+
+                else:
+                    # Per-file mode (default): one taxspine-nor-report per CSV.
+                    for spec in job.input.csv_files:
+                        csv_stem = Path(spec.path).stem
+                        html_dest = output_dir / f"report_{csv_stem}.html"
+                        rf1159_dest_pf: Path | None = None
+                        if job.input.country == Country.NORWAY:
+                            rf1159_dest_pf = output_dir / f"rf1159_{csv_stem}.json"
+
+                        csv_cmd = self._build_csv_command(
+                            job.input,
+                            csv_spec=spec,
+                            html_path=html_dest,
+                            rf1159_json_path=rf1159_dest_pf,
+                        )
+                        log_lines.append(f"$ {' '.join(str(c) for c in csv_cmd)}")
+
+                        csv_result = subprocess.run(
+                            csv_cmd, capture_output=True, text=True, check=False,
+                        )
+                        log_lines.append(f"  rc={csv_result.returncode}")
+                        if csv_result.stdout:
+                            log_lines.append(f"  stdout:\n{csv_result.stdout.rstrip()}")
+                        if csv_result.stderr:
+                            log_lines.append(f"  stderr:\n{csv_result.stderr.rstrip()}")
+
+                        if csv_result.returncode != 0:
+                            return self._fail_job(
+                                job_id,
+                                error=(
+                                    f"taxspine-nor-report failed for {spec.path} "
+                                    f"(rc={csv_result.returncode})"
+                                ),
+                                log_lines=log_lines,
+                                output_dir=output_dir,
+                            )
+
+                        if html_dest.exists():
+                            all_html_paths.append(str(html_dest))
+                            if report_html_path is None:
+                                report_html_path = html_dest
+
+                        if rf1159_dest_pf is not None and rf1159_dest_pf.exists():
+                            all_rf1159_json_paths.append(str(rf1159_dest_pf))
+                            if rf1159_json_path is None:
+                                rf1159_json_path = rf1159_dest_pf
 
             # ── Step 3: write log + build output record ───────────────────
             log_path = self._write_log(output_dir, log_lines)
@@ -273,6 +346,8 @@ class JobService:
             output = JobOutput(
                 report_html_path=str(report_html_path) if report_html_path else None,
                 report_html_paths=all_html_paths,
+                rf1159_json_path=str(rf1159_json_path) if rf1159_json_path else None,
+                rf1159_json_paths=all_rf1159_json_paths,
                 log_path=str(log_path),
             )
             return self.store.update_job(
@@ -351,6 +426,9 @@ class JobService:
         if job_input.debug_valuation:
             cmd.append("--debug-valuation")
 
+        cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
+        cmd.extend(["--dedup-store", str(JobService._dedup_store_path(f"xrpl_{account}"))])
+
         return cmd
 
     @staticmethod
@@ -359,6 +437,7 @@ class JobService:
         *,
         csv_spec: CsvFileSpec,
         html_path: Path,
+        rf1159_json_path: Path | None = None,
     ) -> list[str]:
         """Build a ``taxspine-nor-report`` command for a CSV file.
 
@@ -401,7 +480,99 @@ class JobService:
         if job_input.debug_valuation:
             cmd.append("--debug-valuation")
 
+        if job_input.country == Country.NORWAY:
+            cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
+            # Dedup store: one SQLite DB per source type keeps all uploads of
+            # the same exchange format in a shared namespace (e.g. all Firi CSVs
+            # share "firi_csv.db" so January + February Firi exports dedup
+            # against each other automatically).
+            cmd.extend([
+                "--dedup-store",
+                str(JobService._dedup_store_path(csv_spec.source_type.value)),
+            ])
+            if rf1159_json_path is not None:
+                cmd.extend(["--rf1159-json", str(rf1159_json_path)])
+
         return cmd
+
+    # Mapping from CsvSourceType to the --source TYPE name used by taxspine-nor-multi.
+    _NOR_MULTI_SOURCE_TYPE: dict[CsvSourceType, str] = {
+        CsvSourceType.GENERIC_EVENTS: "generic_events",
+        CsvSourceType.COINBASE_CSV: "coinbase",
+        CsvSourceType.FIRI_CSV: "firi",
+    }
+
+    @staticmethod
+    def _build_nor_multi_command(
+        job_input: JobInput,
+        *,
+        csv_specs: list[CsvFileSpec],
+        html_path: Path,
+        rf1159_json_path: Path | None = None,
+    ) -> list[str]:
+        """Build a ``taxspine-nor-multi`` command for all CSV files at once.
+
+        taxspine-nor-multi accepts repeated ``--source TYPE:PATH`` arguments,
+        builds a unified FIFO lot pool across all sources, and emits a single
+        combined HTML report.
+
+        Real CLI flags:
+            --source    TYPE:PATH  (repeatable; one per CSV file)
+            --year      YEAR       (required)
+            --html-output PATH     (optional; self-contained HTML report)
+            --csv-prices  PATH     (optional; CSV format price table)
+            --debug-valuation      (optional)
+
+        Source TYPE values:
+            ``generic_events`` — spine's own generic-events CSV schema
+            ``coinbase``        — Coinbase RAWTX export
+            ``firi``            — Firi CSV export
+        """
+        cmd: list[str] = [
+            settings.TAXSPINE_NOR_MULTI_CLI,
+            "--year", str(job_input.tax_year),
+            "--html-output", str(html_path),
+        ]
+
+        source_type_map = JobService._NOR_MULTI_SOURCE_TYPE
+        for spec in csv_specs:
+            type_name = source_type_map.get(spec.source_type, spec.source_type.value)
+            cmd.extend(["--source", f"{type_name}:{spec.path}"])
+
+        if (
+            job_input.valuation_mode == ValuationMode.PRICE_TABLE
+            and job_input.csv_prices_path is not None
+        ):
+            cmd.extend(["--csv-prices", job_input.csv_prices_path])
+
+        if job_input.debug_valuation:
+            cmd.append("--debug-valuation")
+
+        cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
+        cmd.extend(["--dedup-store", str(JobService._dedup_store_path("nor_multi"))])
+
+        if rf1159_json_path is not None:
+            cmd.extend(["--rf1159-json", str(rf1159_json_path)])
+
+        return cmd
+
+    @staticmethod
+    def _dedup_store_path(source_slug: str) -> Path:
+        """Return the per-source dedup store path inside DEDUP_DIR.
+
+        Each source slug maps to a dedicated SQLite file so different exchange
+        formats never share key namespaces:
+          - ``xrpl_{account}``  → one file per XRPL account address
+          - ``generic_events``  → one file for all generic-events CSVs
+          - ``coinbase_csv``    → one file for all Coinbase CSV uploads
+          - ``firi_csv``        → one file for all Firi CSV uploads
+          - ``nor_multi``       → one file for multi-source nor_multi runs
+
+        The directory is created lazily by ``ensure_dirs()`` at startup.
+        """
+        # Sanitise the slug to a filesystem-safe name (replace path separators).
+        safe = source_slug.replace("/", "_").replace("\\", "_")
+        return settings.DEDUP_DIR / f"{safe}.db"
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -479,14 +650,34 @@ class JobService:
                 )
                 log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
 
-        # CSV-only: run taxspine-nor-report per file.
+        # CSV-only: nor_multi = single combined call; per_file = one per CSV.
         if has_csv and not has_xrpl:
-            for spec in job.input.csv_files:
-                html_path = output_dir / f"report_{Path(spec.path).stem}.html"
-                cmd = self._build_csv_command(
-                    job.input, csv_spec=spec, html_path=html_path,
+            if (
+                job.input.pipeline_mode == PipelineMode.NOR_MULTI
+                and job.input.country == Country.NORWAY
+            ):
+                html_path = output_dir / "report_combined.html"
+                cmd = self._build_nor_multi_command(
+                    job.input,
+                    csv_specs=job.input.csv_files,
+                    html_path=html_path,
+                    rf1159_json_path=output_dir / "rf1159.json",
                 )
                 log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
+            else:
+                for spec in job.input.csv_files:
+                    csv_stem = Path(spec.path).stem
+                    html_path = output_dir / f"report_{csv_stem}.html"
+                    rf1159_dest: Path | None = None
+                    if job.input.country == Country.NORWAY:
+                        rf1159_dest = output_dir / f"rf1159_{csv_stem}.json"
+                    cmd = self._build_csv_command(
+                        job.input,
+                        csv_spec=spec,
+                        html_path=html_path,
+                        rf1159_json_path=rf1159_dest,
+                    )
+                    log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
 
         log_path = self._write_log(output_dir, log_lines)
         output = JobOutput(log_path=str(log_path))

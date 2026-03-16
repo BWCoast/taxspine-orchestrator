@@ -54,6 +54,20 @@ class ValuationMode(str, Enum):
     PRICE_TABLE = "price_table"
 
 
+class PipelineMode(str, Enum):
+    """How CSV-only Norway jobs are executed.
+
+    - ``PER_FILE``  — run ``taxspine-nor-report`` once per CSV file (default,
+                      backward-compatible).  Each file gets its own HTML report.
+    - ``NOR_MULTI`` — run ``taxspine-nor-multi`` once with all CSV files via
+                      ``--source TYPE:PATH`` args.  Produces a single combined
+                      HTML report and a unified FIFO lot pool across all sources.
+    """
+
+    PER_FILE = "per_file"
+    NOR_MULTI = "nor_multi"
+
+
 class JobStatus(str, Enum):
     """Lifecycle states of a tax job."""
 
@@ -176,6 +190,16 @@ class JobInput(BaseModel):
             "jobs."
         ),
     )
+    pipeline_mode: PipelineMode = Field(
+        default=PipelineMode.PER_FILE,
+        description=(
+            "CSV-only Norway execution strategy.  'per_file' (default) runs "
+            "taxspine-nor-report once per CSV file.  'nor_multi' runs a single "
+            "taxspine-nor-multi invocation with all CSV files, producing a "
+            "unified FIFO lot pool and a single combined HTML report.  "
+            "Has no effect on XRPL jobs or UK jobs."
+        ),
+    )
 
 
 class JobOutput(BaseModel):
@@ -192,6 +216,17 @@ class JobOutput(BaseModel):
             "Jobs with multiple XRPL accounts or CSV files generate one report "
             "each.  ``report_html_path`` is kept as a backward-compatible alias "
             "for the first element of this list."
+        ),
+    )
+    # RF-1159 JSON export (Norway jobs only; not produced by XRPL-only jobs).
+    rf1159_json_path: Optional[str] = None   # first/only RF-1159 JSON (compat)
+    rf1159_json_paths: List[str] = Field(    # all RF-1159 JSON paths (one per invocation)
+        default_factory=list,
+        description=(
+            "RF-1159 (Altinn) export JSON paths, one per Norway CLI invocation. "
+            "NOR_MULTI mode produces a single combined path; PER_FILE mode "
+            "produces one per CSV file.  ``rf1159_json_path`` is a "
+            "backward-compatible alias for the first element."
         ),
     )
     log_path: Optional[str] = None

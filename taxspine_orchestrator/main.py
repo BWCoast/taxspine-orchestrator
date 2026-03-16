@@ -18,6 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
 from .config import settings
+from .dedup import router as dedup_router
+from .lots import router as lots_router
 from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, ValuationMode, WorkspaceConfig, _XRPL_ADDRESS_RE
 from .prices import router as prices_router
 from .services import JobService
@@ -78,6 +80,8 @@ if _UI_DIR.is_dir():
 # ── Routers ───────────────────────────────────────────────────────────────────
 
 app.include_router(prices_router)
+app.include_router(dedup_router)
+app.include_router(lots_router)
 
 
 @app.get("/", include_in_schema=False)
@@ -95,7 +99,8 @@ class FileKind(str, Enum):
     GAINS = "gains"
     WEALTH = "wealth"
     SUMMARY = "summary"
-    REPORT = "report"   # self-contained HTML tax report
+    REPORT = "report"     # self-contained HTML tax report
+    RF1159 = "rf1159"     # RF-1159 (Altinn) JSON export — Norway jobs only
     LOG = "log"
 
 
@@ -104,6 +109,7 @@ _KIND_TO_FIELD: Dict[FileKind, str] = {
     FileKind.WEALTH: "wealth_csv_path",
     FileKind.SUMMARY: "summary_json_path",
     FileKind.REPORT: "report_html_path",
+    FileKind.RF1159: "rf1159_json_path",
     FileKind.LOG: "log_path",
 }
 
@@ -112,6 +118,7 @@ _KIND_MEDIA_TYPE: Dict[FileKind, str] = {
     FileKind.WEALTH: "text/csv",
     FileKind.SUMMARY: "application/json",
     FileKind.REPORT: "text/html",
+    FileKind.RF1159: "application/json",
     FileKind.LOG: "text/plain",
 }
 
@@ -120,6 +127,7 @@ _KIND_EXTENSION: Dict[FileKind, str] = {
     FileKind.WEALTH: "csv",
     FileKind.SUMMARY: "json",
     FileKind.REPORT: "html",
+    FileKind.RF1159: "json",
     FileKind.LOG: "txt",
 }
 
