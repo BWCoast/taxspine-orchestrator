@@ -301,7 +301,10 @@
     <!-- Results panel (shown when a job is selected) -->
     <div id="results-panel" class="hidden card p-5 fade-in">
       <div class="flex items-center justify-between mb-4">
-        <h2 class="font-semibold text-white text-xs uppercase tracking-widest">Report</h2>
+        <div class="flex items-center gap-2">
+          <h2 class="font-semibold text-white text-xs uppercase tracking-widest">Report</h2>
+          <span id="results-polling-badge" class="hidden text-xs text-yellow-400 animate-pulse">● live</span>
+        </div>
         <button onclick="closeResults()" class="text-gray-600 hover:text-gray-300 text-lg leading-none">✕</button>
       </div>
 
@@ -783,6 +786,8 @@ let _visibleJobCount = 5;       // how many rows currently shown
 const _INITIAL_VISIBLE = 5;
 const _LOAD_MORE_STEP  = 10;
 let _cachedJobs = [];           // last fetched job list
+let _pollTimer   = null;        // setInterval handle for running-job auto-refresh
+const _POLL_INTERVAL_MS = 3000; // poll every 3 seconds while a job is RUNNING
 
 async function loadJobs() {
   try {
@@ -927,6 +932,13 @@ async function openResults(job) {
   selectedJobId = job.id;
   if (!_cachedJobs.length) await fetchJobsList();
   renderJobs(_filteredJobs());
+
+  // Auto-refresh: poll while job is running; stop when it reaches a terminal state
+  if (job.status === 'running') {
+    _startPolling(job.id);
+  } else {
+    _stopPolling();
+  }
 
   const panel = document.getElementById('results-panel');
   panel.classList.remove('hidden');
@@ -1092,10 +1104,40 @@ async function loadLog(jobId) {
 }
 
 function closeResults() {
+  _stopPolling();
   document.getElementById('results-panel').classList.add('hidden');
   document.getElementById('results-iframe-wrap').classList.add('hidden');
   document.getElementById('results-log-wrap').classList.add('hidden');
   selectedJobId = null;
+}
+
+function _stopPolling() {
+  if (_pollTimer !== null) {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
+  }
+  document.getElementById('results-polling-badge')?.classList.add('hidden');
+}
+
+function _startPolling(jobId) {
+  _stopPolling(); // clear any previous timer
+  document.getElementById('results-polling-badge')?.classList.remove('hidden');
+  _pollTimer = setInterval(async () => {
+    // Stop if the panel was closed or switched to a different job
+    if (selectedJobId !== jobId) { _stopPolling(); return; }
+    try {
+      const r = await fetch(`${API}/jobs/${encodeURIComponent(jobId)}`);
+      if (!r.ok) { _stopPolling(); return; }
+      const job = await r.json();
+      // Update cache entry
+      _cachedJobs = _cachedJobs.map(j => j.id === jobId ? job : j);
+      renderJobs(_filteredJobs());
+      if (job.status !== 'running') {
+        _stopPolling();
+        openResults(job); // re-render panel with final state + outputs
+      }
+    } catch { _stopPolling(); }
+  }, _POLL_INTERVAL_MS);
 }
 
 async function fetchJobsList() {

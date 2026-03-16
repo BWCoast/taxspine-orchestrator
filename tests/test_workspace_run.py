@@ -1,4 +1,4 @@
-"""Tests for POST /workspace/run.
+"""Tests for POST /workspace/run and WorkspaceStore.clear().
 
 Covers:
 - 400 when workspace has no accounts or CSVs.
@@ -13,6 +13,9 @@ Covers:
 - Job returned has status completed (synchronous execution path).
 - Job returned has correct input.xrpl_accounts from workspace.
 - Job returned has correct input.csv_files from workspace.
+- WorkspaceStore.clear() resets accounts and csv_files to empty.
+- WorkspaceStore.clear() is idempotent on an already-empty store.
+- WorkspaceStore.clear() returns an empty WorkspaceConfig.
 """
 
 from __future__ import annotations
@@ -280,3 +283,69 @@ class TestWorkspaceRunExecution:
         mock_run.return_value = _make_ok()
         client_with_account.post("/workspace/run", json={**_BASE_RUN, "dry_run": True})
         mock_run.assert_not_called()
+
+
+# ── TestWorkspaceStoreClear ───────────────────────────────────────────────────
+
+
+class TestWorkspaceStoreClear:
+    """WorkspaceStore.clear() must fully reset workspace state."""
+
+    def _store(self, tmp_path: Path):
+        from taxspine_orchestrator.storage import WorkspaceStore
+        return WorkspaceStore(tmp_path / "workspace.json")
+
+    def test_clear_removes_all_accounts(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path)
+        store.add_account(_XRPL_ACCOUNT)
+        store.clear()
+        assert store.load().xrpl_accounts == []
+
+    def test_clear_removes_all_csv_files(self, tmp_path: Path) -> None:
+        from taxspine_orchestrator.models import CsvFileSpec, CsvSourceType
+        store = self._store(tmp_path)
+        spec = CsvFileSpec(path="/tmp/events.csv", source_type=CsvSourceType.GENERIC_EVENTS)
+        store.add_csv(spec)
+        store.clear()
+        assert store.load().csv_files == []
+
+    def test_clear_removes_both_accounts_and_csv(self, tmp_path: Path) -> None:
+        from taxspine_orchestrator.models import CsvFileSpec, CsvSourceType
+        store = self._store(tmp_path)
+        store.add_account(_XRPL_ACCOUNT)
+        store.add_csv(CsvFileSpec(path="/tmp/e.csv", source_type=CsvSourceType.GENERIC_EVENTS))
+        store.clear()
+        cfg = store.load()
+        assert cfg.xrpl_accounts == [] and cfg.csv_files == []
+
+    def test_clear_returns_empty_config(self, tmp_path: Path) -> None:
+        from taxspine_orchestrator.models import WorkspaceConfig
+        store = self._store(tmp_path)
+        store.add_account(_XRPL_ACCOUNT)
+        result = store.clear()
+        assert isinstance(result, WorkspaceConfig)
+        assert result.xrpl_accounts == []
+        assert result.csv_files == []
+
+    def test_clear_idempotent_on_empty_store(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path)
+        store.clear()  # already empty
+        store.clear()  # second clear must not raise
+        assert store.load().xrpl_accounts == []
+
+    def test_clear_persists_to_disk(self, tmp_path: Path) -> None:
+        """State is empty even after re-loading from the file."""
+        store = self._store(tmp_path)
+        store.add_account(_XRPL_ACCOUNT)
+        store.clear()
+        # Re-open the store from the same file
+        store2 = self._store(tmp_path)
+        assert store2.load().xrpl_accounts == []
+
+    def test_clear_allows_subsequent_additions(self, tmp_path: Path) -> None:
+        """After clear(), new accounts can be added normally."""
+        store = self._store(tmp_path)
+        store.add_account(_XRPL_ACCOUNT)
+        store.clear()
+        store.add_account(_XRPL_ACCOUNT)
+        assert _XRPL_ACCOUNT in store.load().xrpl_accounts
