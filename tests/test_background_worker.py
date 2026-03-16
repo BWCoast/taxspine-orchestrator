@@ -261,8 +261,8 @@ class TestHealthCheck:
         assert body["taxspine-nor-report"] == "ok"
         assert body["taxspine-xrpl-nor"] == "ok"
 
-    def test_health_returns_503_when_output_dir_missing(self, client: TestClient) -> None:
-        """When OUTPUT_DIR is not writable, /health returns 503 with degraded status."""
+    def test_health_returns_degraded_when_output_dir_missing(self, client: TestClient) -> None:
+        """When OUTPUT_DIR is not writable, /health returns 200 with degraded status in body."""
         import shutil
 
         def _mock_which(name: str):
@@ -276,7 +276,7 @@ class TestHealthCheck:
         ):
             resp = client.get("/health")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "degraded"
         assert "not writable" in body["output_dir"]
@@ -293,19 +293,19 @@ class TestHealthCheck:
         assert "taxspine-nor-report" in body
         assert "taxspine-xrpl-nor" in body
 
-    def test_health_returns_503_when_cli_missing(self, client: TestClient) -> None:
-        """When CLI binaries are not on PATH, health returns 503."""
+    def test_health_returns_degraded_when_cli_missing(self, client: TestClient) -> None:
+        """When CLI binaries are not on PATH, /health returns 200 with degraded status in body."""
         with patch("taxspine_orchestrator.main.shutil.which", return_value=None):
             resp = client.get("/health")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "degraded"
         assert body["taxspine-nor-report"] == "missing"
         assert body["taxspine-xrpl-nor"] == "missing"
 
-    def test_health_db_error_returns_503(self, client: TestClient) -> None:
-        """If the DB ping fails, health returns 503."""
+    def test_health_db_error_returns_degraded(self, client: TestClient) -> None:
+        """If the DB ping fails, /health returns 200 with degraded status in body."""
         from taxspine_orchestrator import main as _m
 
         def _bad_ping() -> None:
@@ -317,7 +317,7 @@ class TestHealthCheck:
         ):
             resp = client.get("/health")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "degraded"
         assert "error" in body["db"]

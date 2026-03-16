@@ -161,9 +161,13 @@ async def health() -> JSONResponse:
         checks[cli_name] = "ok" if shutil.which(cli_name) else "missing"
 
     overall_ok = all(v == "ok" for v in checks.values())
+    # Always return HTTP 200 — this is a liveness probe; the process is alive
+    # and can respond regardless of CLI binary availability.  Callers that need
+    # readiness information should inspect the "status" field in the body
+    # ("ok" vs "degraded") rather than the HTTP status code.
     return JSONResponse(
         {"status": "ok" if overall_ok else "degraded", **checks},
-        status_code=200 if overall_ok else 503,
+        status_code=200,
     )
 
 
