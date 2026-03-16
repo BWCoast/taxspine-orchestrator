@@ -32,9 +32,27 @@
 
 services:
   orchestrator:
-    # Pull pre-built image from GitHub Container Registry.
-    # GitHub Actions builds and pushes this automatically on every push to main.
-    image: ghcr.io/bwcoast/taxspine-orchestrator:latest
+    # ── INFRA-16: image tag pinned to a specific SHA build ─────────────────
+    # DO NOT use :latest — combined with Watchtower auto-deploy, a broken or
+    # malicious :latest push would be live within 5 minutes with no gating.
+    #
+    # HOW TO UPDATE to a new release:
+    #   1. Push to the main branch (GitHub Actions builds and pushes the image).
+    #   2. In the GitHub Actions run summary, copy the sha- tag shown under
+    #      "Deploy this build".  It looks like:  sha-a1b2c3d
+    #   3. Replace the tag below with that sha- value.
+    #   4. Commit the change to this file (the commit becomes your deployment record).
+    #   5. Pull the new image on the NAS and restart the container:
+    #        Container Manager → Project → taxspine → Action → Stop
+    #        Container Manager → Image → Pull (enter the new sha- tag)
+    #        Container Manager → Project → taxspine → Action → Build
+    #
+    # The sha- tag is produced by docker/metadata-action in docker.yml and
+    # matches the short Git commit SHA that built the image.
+    # ─────────────────────────────────────────────────────────────────────────
+    image: ghcr.io/bwcoast/taxspine-orchestrator:sha-0000000
+    # ↑ Replace sha-0000000 with the sha- tag from the GitHub Actions summary.
+    # Example: ghcr.io/bwcoast/taxspine-orchestrator:sha-a1b2c3d
 
     container_name: taxspine-orchestrator
     restart: unless-stopped
@@ -116,27 +134,38 @@ services:
     # Cloudflare Tunnel: point the tunnel at localhost:8000 on the NAS.
     # No additional Docker network config required.
 
-  # ── Watchtower — automatic image updates ─────────────────────────────────────
-  # Watchtower polls ghcr.io every 5 minutes.  When GitHub Actions pushes a new
-  # taxspine-orchestrator image, Watchtower pulls it and restarts the container
-  # automatically.  No SSH, no manual steps needed after a git push.
+  # ── Watchtower — manual-only image update trigger ────────────────────────────
+  # INFRA-16: Watchtower auto-polling has been DISABLED.
   #
-  # It only watches the taxspine-orchestrator container (via the 'command' arg).
-  # Other containers on the NAS are left untouched.
+  # Rationale: the image is now pinned to a sha- tag (see above).  Auto-polling
+  # a pinned tag is a no-op and gives a false sense of safety.  More importantly,
+  # enabling auto-poll on :latest would mean a malicious or broken registry push
+  # auto-deploys to production within 5 minutes.
+  #
+  # Deployment process (replaces auto-poll):
+  #   1. Update the image tag in this file to the new sha- tag.
+  #   2. Commit and push the change (creates an auditable deployment record).
+  #   3. On the NAS: Container Manager → Project → taxspine → Action → Build
+  #      (Container Manager will pull the new tag and restart the container).
+  #
+  # Watchtower is kept here in run-once mode (--run-once) so it can still be
+  # triggered manually via:
+  #   docker run containrrr/watchtower --run-once taxspine-orchestrator
+  # if a one-shot update is needed without editing the Compose file.
   watchtower:
     image: containrrr/watchtower
     container_name: taxspine-watchtower
-    restart: unless-stopped
+    # Do not auto-restart — run-once exits after a single pass.
+    restart: "no"
     volumes:
       # Needs the Docker socket to manage containers.
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       TZ: Europe/Oslo
-      # How often to check for new images (seconds). 300 = every 5 minutes.
-      WATCHTOWER_POLL_INTERVAL: "300"
+      # INFRA-16: polling disabled; Watchtower exits after one check.
+      WATCHTOWER_RUN_ONCE: "true"
       # Remove old image versions after pulling a new one (keeps disk clean).
       WATCHTOWER_CLEANUP: "true"
-      # Log-level notifications only (no external notification service).
       WATCHTOWER_NO_STARTUP_MESSAGE: "false"
     # Only watch the orchestrator container, not everything on the NAS.
     command: taxspine-orchestrator

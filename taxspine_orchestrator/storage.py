@@ -77,6 +77,35 @@ class InMemoryJobStore:
         self._jobs[job_id] = updated
         return updated
 
+    def transition_status(
+        self,
+        job_id: str,
+        from_status: JobStatus,
+        to_status: JobStatus,
+    ) -> "Job | None":
+        """Atomically transition a job from ``from_status`` to ``to_status`` (CAS).
+
+        API-04 / API-07: eliminates the read-check-spawn race window.
+
+        Returns the updated ``Job`` on success, or ``None`` when:
+          - the job does not exist, OR
+          - the current status is not ``from_status`` (CAS failed).
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        if job.status != from_status:
+            return None  # CAS failed
+        upd_fields: dict = {
+            "status": to_status,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if to_status == JobStatus.RUNNING:
+            upd_fields["started_at"] = datetime.now(timezone.utc)
+        updated = job.model_copy(update=upd_fields)
+        self._jobs[job_id] = updated
+        return updated
+
     def delete(self, job_id: str) -> bool:
         """Remove a single job.  Returns True if it existed, False otherwise."""
         if job_id in self._jobs:
@@ -122,11 +151,22 @@ class SqliteJobStore:
 
     def _init_db(self) -> None:
         with sqlite3.connect(str(self._db_path)) as conn:
+            # INFRA-02: enable WAL mode so readers and writers don't block each
+            # other.  NORMAL synchronous keeps durability guarantees without the
+            # overhead of FULL (fsync on every commit).
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute(self._DDL)
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(str(self._db_path), check_same_thread=False)
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        # INFRA-02: WAL mode must be set on every new connection — it is a
+        # per-connection pragma even though the mode is stored in the database
+        # file.  NORMAL synchronous balances performance and durability.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
 
     def _recover_interrupted_jobs(self) -> int:
         """Mark any RUNNING jobs as FAILED — they were interrupted by a previous crash.
@@ -196,24 +236,86 @@ class SqliteJobStore:
         return job
 
     def update_status(self, job_id: str, status: JobStatus, *, error_message: str | None = None) -> Job | None:
-        job = self.get(job_id)
-        if job is None:
-            return None
-        fields: dict = {"status": status, "updated_at": datetime.now(timezone.utc)}
-        if status == JobStatus.RUNNING:
-            fields["started_at"] = datetime.now(timezone.utc)
-        if error_message is not None:
-            from .models import JobOutput
-            fields["output"] = job.output.model_copy(update={"error_message": error_message})
-        updated = job.model_copy(update=fields)
-        return self._upsert(updated)
+        # API-16: hold the lock for the full read-modify-write to eliminate the
+        # race window that existed when get() and _upsert() each acquired the
+        # lock separately.
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            job = Job.model_validate_json(row[0])
+            upd_fields: dict = {"status": status, "updated_at": datetime.now(timezone.utc)}
+            if status == JobStatus.RUNNING:
+                upd_fields["started_at"] = datetime.now(timezone.utc)
+            if error_message is not None:
+                upd_fields["output"] = job.output.model_copy(
+                    update={"error_message": error_message}
+                )
+            updated = job.model_copy(update=upd_fields)
+            conn.execute(
+                "UPDATE jobs SET status = ?, data = ? WHERE id = ?",
+                (updated.status.value, updated.model_dump_json(), updated.id),
+            )
+        return updated
 
     def update_job(self, job_id: str, **fields: Any) -> Job | None:
-        job = self.get(job_id)
-        if job is None:
-            return None
-        fields.setdefault("updated_at", datetime.now(timezone.utc))
-        return self._upsert(job.model_copy(update=fields))
+        # API-16: same single-lock pattern as update_status.
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            job = Job.model_validate_json(row[0])
+            fields.setdefault("updated_at", datetime.now(timezone.utc))
+            updated = job.model_copy(update=fields)
+            conn.execute(
+                "UPDATE jobs SET status = ?, data = ? WHERE id = ?",
+                (updated.status.value, updated.model_dump_json(), updated.id),
+            )
+        return updated
+
+    def transition_status(
+        self,
+        job_id: str,
+        from_status: JobStatus,
+        to_status: JobStatus,
+    ) -> "Job | None":
+        """Atomically transition a job from ``from_status`` to ``to_status`` (CAS).
+
+        API-04 / API-07: performs the check-and-set as a single locked DB
+        transaction so that two concurrent callers cannot both succeed.
+
+        Returns the updated ``Job`` on success, or ``None`` when:
+          - the job does not exist, OR
+          - the current status is not ``from_status`` (CAS failed — another
+            caller already transitioned it).
+
+        Callers should treat ``None`` as a conflict (HTTP 409).
+        """
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            job = Job.model_validate_json(row[0])
+            if job.status != from_status:
+                return None  # CAS failed — status already changed by another caller
+            upd_fields: dict = {
+                "status": to_status,
+                "updated_at": datetime.now(timezone.utc),
+            }
+            if to_status == JobStatus.RUNNING:
+                upd_fields["started_at"] = datetime.now(timezone.utc)
+            updated = job.model_copy(update=upd_fields)
+            conn.execute(
+                "UPDATE jobs SET status = ?, data = ? WHERE id = ?",
+                (updated.status.value, updated.model_dump_json(), updated.id),
+            )
+        return updated
 
     # ── Read operations ───────────────────────────────────────────────────
 
@@ -242,8 +344,18 @@ class SqliteJobStore:
             conditions.append("country = ?")
             params.append(country.value)
         if query is not None:
-            conditions.append("case_name LIKE ?")
-            params.append(f"%{query}%")
+            # SEC-01: escape LIKE metacharacters before wrapping in wildcards so
+            # that '%' and '_' in the user-supplied query are treated as literals
+            # rather than SQL wildcards. The ESCAPE '\' clause tells SQLite which
+            # escape character we are using.
+            escaped_query = (
+                query
+                .replace("\\", "\\\\")   # escape the escape char first
+                .replace("%", "\\%")     # escape wildcard %
+                .replace("_", "\\_")     # escape wildcard _
+            )
+            conditions.append("case_name LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped_query}%")
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         params.extend([limit, offset])
@@ -298,7 +410,13 @@ class WorkspaceStore:
         )
 
     def _save_locked(self, cfg: WorkspaceConfig) -> None:
-        self._path.write_text(cfg.model_dump_json(indent=2), encoding="utf-8")
+        # API-02: write atomically via a sibling temp file then replace.
+        # This prevents a partial-write from corrupting the workspace file if
+        # the process crashes mid-write (e.g. SIGKILL, power loss).
+        content = cfg.model_dump_json(indent=2)
+        tmp = self._path.with_suffix(".tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(self._path)
 
     # ── Public API ────────────────────────────────────────────────────────
 

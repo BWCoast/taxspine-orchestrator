@@ -75,6 +75,12 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    # API-05: CANCELLED is a terminal state set by POST /jobs/{id}/cancel.
+    # Distinct from FAILED so that:
+    #   (a) callers can distinguish user-initiated cancellation from execution errors, and
+    #   (b) the execution thread can detect that a cancel arrived mid-run and avoid
+    #       overwriting the CANCELLED terminal state with COMPLETED.
+    CANCELLED = "cancelled"
 
 
 # ── CSV file spec ────────────────────────────────────────────────────────────
@@ -241,6 +247,27 @@ class JobOutput(BaseModel):
     )
     log_path: Optional[str] = None
     error_message: Optional[str] = None
+    # TL-01 / TL-02: provenance metadata — which valuation engine and price
+    # source were used.  Surfaced in the job response so callers can detect
+    # dummy-valuation output without inspecting the RF-1159 JSON directly.
+    valuation_mode_used: Optional[str] = Field(
+        default=None,
+        description=(
+            "Valuation mode that was applied during execution "
+            "('dummy' or 'price_table').  'dummy' output MUST NOT be filed."
+        ),
+    )
+    price_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Price source used for NOK valuation "
+            "('norges_bank_usd_nok' or 'price_table_csv' or 'dummy')."
+        ),
+    )
+    price_table_path: Optional[str] = Field(
+        default=None,
+        description="Path to the CSV price table used, if valuation_mode=price_table.",
+    )
 
 
 class Job(BaseModel):

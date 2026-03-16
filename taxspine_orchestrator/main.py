@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import logging
 import os
 import shutil
 from enum import Enum
@@ -64,12 +65,29 @@ async def _require_key(key: str | None = Security(_api_key_header)) -> None:
 # Ensure all working directories exist before the first request.
 settings.ensure_dirs()
 
+# INFRA-17: Warn loudly at startup when authentication is disabled.
+# An empty ORCHESTRATOR_KEY is acceptable for local/dev use but silently
+# exposes the entire API on any reachable network interface in production.
+_startup_logger = logging.getLogger(__name__)
+_log = _startup_logger  # module-level logger used by endpoint handlers
+if not settings.ORCHESTRATOR_KEY:
+    _startup_logger.warning(
+        "ORCHESTRATOR_KEY is not set — all API endpoints are PUBLICLY ACCESSIBLE. "
+        "Set ORCHESTRATOR_KEY in your environment or .env file before deploying "
+        "to any network-reachable host."
+    )
+
 # Persistent SQLite job store — jobs survive server restarts.
 _job_store = SqliteJobStore(settings.DATA_DIR / "jobs.db")
 _job_service = JobService(_job_store)
 
 # Persistent workspace — accounts and CSV files survive server restarts.
 _workspace_store = WorkspaceStore(settings.DATA_DIR / "workspace.json")
+
+# API-17: retain strong references to background tasks so the garbage collector
+# cannot discard them before they complete.  Each task removes itself from the
+# set via add_done_callback once finished.
+_background_tasks: set[asyncio.Task] = set()
 
 # ── Static UI ─────────────────────────────────────────────────────────────────
 
@@ -80,9 +98,12 @@ if _UI_DIR.is_dir():
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
-app.include_router(prices_router)
-app.include_router(dedup_router)
-app.include_router(lots_router)
+# Sub-routers: all endpoints require the same key as mutating endpoints.
+# When ORCHESTRATOR_KEY is empty (dev/local default) the dependency is a
+# no-op and every request is accepted — behaviour is unchanged.
+app.include_router(prices_router, dependencies=[Depends(_require_key)])
+app.include_router(dedup_router,  dependencies=[Depends(_require_key)])
+app.include_router(lots_router,   dependencies=[Depends(_require_key)])
 
 
 @app.get("/", include_in_schema=False)
@@ -150,11 +171,15 @@ async def health() -> JSONResponse:
         _job_store.ping()
         checks["db"] = "ok"
     except Exception as exc:  # noqa: BLE001
-        checks["db"] = f"error: {exc}"
+        # SEC-16: log the full exception server-side but return only an opaque
+        # status to callers — raw exception text can expose DB file paths and
+        # SQLite internals to unauthenticated observers.
+        _log.error("Health check: DB ping failed: %s", exc)
+        checks["db"] = "error"
 
     # OUTPUT_DIR writable
     out_ok = os.access(settings.OUTPUT_DIR, os.W_OK)
-    checks["output_dir"] = "ok" if out_ok else "error: not writable"
+    checks["output_dir"] = "ok" if out_ok else "error"
 
     # CLI binaries present
     for cli_name in ["taxspine-nor-report", "taxspine-xrpl-nor"]:
@@ -174,13 +199,13 @@ async def health() -> JSONResponse:
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 
 
-@app.post("/jobs", response_model=Job, tags=["jobs"], dependencies=[Depends(_require_key)])
+@app.post("/jobs", response_model=Job, status_code=201, tags=["jobs"], dependencies=[Depends(_require_key)])
 def create_job(job_input: JobInput) -> Job:
     """Create a new tax job (PENDING)."""
     return _job_service.create_job(job_input)
 
 
-@app.get("/jobs", response_model=list[Job], tags=["jobs"])
+@app.get("/jobs", response_model=list[Job], tags=["jobs"], dependencies=[Depends(_require_key)])
 def list_jobs(
     status: Optional[JobStatus] = Query(default=None, description="Filter by job status"),
     country: Optional[Country] = Query(default=None, description="Filter by country"),
@@ -198,7 +223,7 @@ def list_jobs(
     )
 
 
-@app.get("/jobs/{job_id}", response_model=Job, tags=["jobs"])
+@app.get("/jobs/{job_id}", response_model=Job, tags=["jobs"], dependencies=[Depends(_require_key)])
 def get_job(job_id: str) -> Job:
     """Retrieve a single job by ID."""
     job = _job_service.get_job(job_id)
@@ -214,31 +239,44 @@ async def start_job(job_id: str) -> JSONResponse:
     The job runs in a thread-pool worker via asyncio.to_thread so the HTTP
     response is returned before the subprocess completes.  Poll
     GET /jobs/{job_id} to observe the final status (RUNNING → COMPLETED/FAILED).
+
+    API-04 / API-07: uses an atomic CAS (compare-and-swap) transition from
+    PENDING → RUNNING before spawning the worker thread.  This eliminates the
+    race window where two concurrent callers could both observe PENDING and both
+    spawn execution threads for the same job.
     """
     job = _job_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.status == JobStatus.RUNNING:
-        raise HTTPException(status_code=409, detail="Job is already running")
-    if job.status != JobStatus.PENDING:
-        # Return current state for COMPLETED/FAILED (idempotent).
+    if job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+        # Return current state for COMPLETED/FAILED/CANCELLED (idempotent).
         return JSONResponse(
             {"status": job.status.value, "job_id": job_id},
             status_code=200,
         )
-    asyncio.create_task(asyncio.to_thread(_job_service.start_job_execution, job_id))
+    # API-04: atomically claim the job — only one caller wins the CAS.
+    transitioned = _job_store.transition_status(job_id, JobStatus.PENDING, JobStatus.RUNNING)
+    if transitioned is None:
+        # CAS failed: another caller already started the job.
+        raise HTTPException(status_code=409, detail="Job is already running")
+    task = asyncio.create_task(asyncio.to_thread(_job_service.start_job_execution, job_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return JSONResponse({"status": "accepted", "job_id": job_id}, status_code=202)
 
 
 @app.post("/jobs/{job_id}/cancel", tags=["jobs"], dependencies=[Depends(_require_key)])
 async def cancel_job(job_id: str) -> dict:
-    """Cancel a PENDING or RUNNING job by marking it FAILED.
+    """Cancel a PENDING or RUNNING job by marking it CANCELLED.
+
+    API-05: uses a distinct CANCELLED terminal state (not FAILED) so callers
+    can distinguish user-initiated cancellation from execution errors.
 
     Note: if the job is already executing in a background thread the subprocess
-    cannot be killed immediately.  The DB status is set to FAILED right away,
-    but the background thread may still complete and overwrite the status with
-    COMPLETED/FAILED depending on subprocess outcome.  This is a known
-    limitation and acceptable for the current implementation.
+    cannot be killed immediately.  The DB status is set to CANCELLED right away;
+    the background execution thread checks for CANCELLED before overwriting the
+    status with COMPLETED or FAILED (API-07), so the CANCELLED state is
+    preserved in the common case.
     """
     job = _job_service.get_job(job_id)
     if job is None:
@@ -248,16 +286,106 @@ async def cancel_job(job_id: str) -> dict:
             status_code=400,
             detail=f"Cannot cancel a job with status {job.status.value}",
         )
-    _job_store.update_status(job_id, JobStatus.FAILED, error_message="Cancelled by user")
+    _job_store.update_status(job_id, JobStatus.CANCELLED, error_message="Cancelled by user")
     return {"status": "cancelled", "job_id": job_id}
 
 
+@app.post("/jobs/{job_id}/redact", response_model=Job, tags=["jobs"], dependencies=[Depends(_require_key)])
+def redact_job(job_id: str) -> Job:
+    """Remove personal data fields from a completed or failed job record.
+
+    LC-04 — field-level erasure:
+    Nulls out ``xrpl_accounts`` in the stored job input so that XRPL
+    account addresses (pseudonymous personal data under GDPR) are no
+    longer retained in the database after the job is no longer needed.
+
+    Only COMPLETED and FAILED jobs may be redacted — PENDING and RUNNING
+    jobs are rejected with HTTP 400 because their addresses are still
+    required for execution.
+
+    This endpoint is idempotent: redacting an already-redacted job returns
+    HTTP 200 with the current (already-empty) record.
+    """
+    job = _job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot redact a {job.status.value} job — "
+                "only completed or failed jobs may be redacted."
+            ),
+        )
+    updated_input = job.input.model_copy(update={"xrpl_accounts": []})
+    updated = _job_store.update_job(job_id, input=updated_input)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return updated
+
+
+def _collect_job_file_paths(job: Job) -> list[Path]:
+    """Return all on-disk paths associated with *job* (output + input CSVs)."""
+    paths: list[Path] = []
+    out = job.output
+    # Single-path output fields.
+    for field in (
+        out.gains_csv_path, out.wealth_csv_path, out.summary_json_path,
+        out.report_html_path, out.rf1159_json_path, out.review_json_path,
+        out.log_path,
+    ):
+        if field:
+            paths.append(Path(field))
+    # Multi-path list fields (NOR_MULTI / multi-account jobs).
+    for lst in (out.report_html_paths or [], out.rf1159_json_paths or [], out.review_json_paths or []):
+        paths.extend(Path(p) for p in lst)
+    # Input CSV files (personal financial data).
+    for spec in job.input.csv_files:
+        paths.append(Path(spec.path))
+    return paths
+
+
+def _delete_job_files(job: Job) -> int:
+    """Best-effort deletion of all files associated with *job*.
+
+    Returns the count of files successfully removed.
+    """
+    removed = 0
+    for path in _collect_job_file_paths(job):
+        try:
+            if path.is_file():
+                path.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 @app.delete("/jobs/{job_id}", tags=["jobs"], dependencies=[Depends(_require_key)])
-def delete_job(job_id: str) -> dict:
+def delete_job(
+    job_id: str,
+    delete_files: bool = Query(
+        default=True,
+        description=(
+            "Also delete all output files and input CSVs associated with this job from disk. "
+            "LC-03: input CSVs and output files contain personal financial data and should "
+            "be removed together with the job record unless explicitly retained."
+        ),
+    ),
+) -> dict:
     """Permanently remove a job record from the store.
 
-    Running jobs cannot be deleted — cancel first.  The job's output files on
-    disk are NOT removed; only the DB record is deleted.
+    Running jobs cannot be deleted — cancel first.
+
+    When ``delete_files`` is True (default) all output artefacts
+    (gains CSV, HTML report, RF-1159 JSON, execution log, …) and the
+    job's input CSV files are deleted from disk.  Set ``delete_files=false``
+    only if you need to retain the files for archival purposes.
+
+    **Data notice (LC-03):** CSV files contain personal financial data
+    (transaction histories).  Retaining them beyond the statutory tax
+    retention period (7 years under Norwegian Bokføringsloven) violates
+    the principle of storage limitation under GDPR Article 5(1)(e).
     """
     job = _job_store.get(job_id)
     if job is None:
@@ -267,14 +395,15 @@ def delete_job(job_id: str) -> dict:
             status_code=409,
             detail="Cannot delete a running job — cancel it first",
         )
+    files_removed = _delete_job_files(job) if delete_files else 0
     _job_store.delete(job_id)
-    return {"deleted": True, "id": job_id}
+    return {"deleted": True, "id": job_id, "files_removed": files_removed}
 
 
 # ── File listing / download ───────────────────────────────────────────────────
 
 
-@app.get("/jobs/{job_id}/files", tags=["files"])
+@app.get("/jobs/{job_id}/files", tags=["files"], dependencies=[Depends(_require_key)])
 def list_job_files(job_id: str) -> dict:
     """Return a JSON map of output-file kinds → paths for *job_id*.
 
@@ -292,7 +421,7 @@ def list_job_files(job_id: str) -> dict:
     return files
 
 
-@app.get("/jobs/{job_id}/files/{kind}", tags=["files"])
+@app.get("/jobs/{job_id}/files/{kind}", tags=["files"], dependencies=[Depends(_require_key)])
 def get_job_file(job_id: str, kind: FileKind) -> FileResponse:
     """Stream a single output file for *job_id*.
 
@@ -342,7 +471,7 @@ def get_job_file(job_id: str, kind: FileKind) -> FileResponse:
 # ── Multi-report listing / download ──────────────────────────────────────────
 
 
-@app.get("/jobs/{job_id}/reports", tags=["files"])
+@app.get("/jobs/{job_id}/reports", tags=["files"], dependencies=[Depends(_require_key)])
 def list_job_reports(job_id: str) -> list[dict]:
     """Return a list of all HTML report files produced by *job_id*.
 
@@ -372,7 +501,7 @@ def list_job_reports(job_id: str) -> list[dict]:
     ]
 
 
-@app.get("/jobs/{job_id}/reports/{index}", tags=["files"])
+@app.get("/jobs/{job_id}/reports/{index}", tags=["files"], dependencies=[Depends(_require_key)])
 def get_job_report_by_index(job_id: str, index: int) -> FileResponse:
     """Stream the HTML report at position *index* for *job_id*.
 
@@ -417,7 +546,7 @@ def get_job_report_by_index(job_id: str, index: int) -> FileResponse:
 # ── Review summary ────────────────────────────────────────────────────────────
 
 
-@app.get("/jobs/{job_id}/review", tags=["jobs"])
+@app.get("/jobs/{job_id}/review", tags=["jobs"], dependencies=[Depends(_require_key)])
 def get_job_review(job_id: str) -> dict:
     """Return an aggregated review summary for a completed Norway job.
 
@@ -585,7 +714,21 @@ def attach_csv_to_job(job_id: str, body: AttachCsvRequest) -> Job:
             detail="Cannot attach CSV files to a non-pending job",
         )
 
+    upload_dir = settings.UPLOAD_DIR.resolve()
     for spec in body.csv_files:
+        # SEC-13: assert path is inside UPLOAD_DIR before accepting it.
+        # This prevents an authenticated caller from attaching arbitrary
+        # filesystem paths (e.g. /etc/passwd) to a job.
+        try:
+            Path(spec.path).resolve().relative_to(upload_dir)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"CSV path must be inside the upload directory "
+                    f"({upload_dir}): {spec.path}"
+                ),
+            )
         if not Path(spec.path).is_file():
             raise HTTPException(
                 status_code=400,
@@ -607,10 +750,60 @@ def attach_csv_to_job(job_id: str, body: AttachCsvRequest) -> Job:
 # ── Workspace ─────────────────────────────────────────────────────────────────
 
 
-@app.get("/workspace", response_model=WorkspaceConfig, tags=["workspace"])
+@app.get("/workspace", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])
 def get_workspace() -> WorkspaceConfig:
-    """Return the current persistent workspace configuration."""
+    """Return the current persistent workspace configuration.
+
+    **Data notice (LC-02):** ``workspace.json`` stores XRPL account addresses
+    (pseudonymous personal data under GDPR).  The data directory containing
+    this file **must** be encrypted at the OS level (e.g. LUKS, FileVault,
+    BitLocker, or ZFS native encryption).  Do **not** store ``workspace.json``
+    on an unencrypted volume.  Use ``DELETE /workspace`` to erase all stored
+    addresses when they are no longer required.
+    """
     return _workspace_store.load()
+
+
+@app.delete("/workspace", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])
+def purge_workspace(
+    delete_files: bool = Query(
+        default=False,
+        description=(
+            "Also delete uploaded CSV files registered in the workspace from disk. "
+            "Set to true to fully erase personal financial data from this server."
+        ),
+    ),
+) -> WorkspaceConfig:
+    """Erase all registered XRPL accounts and CSV files from the workspace.
+
+    LC-01 — right-to-erasure / data retention:
+    Removes all XRPL account addresses and CSV file registrations from the
+    persistent workspace.  When ``delete_files`` is True, the actual CSV
+    files are also deleted from disk.
+
+    **Recommended retention schedule:**
+
+    - Tax records: retain for **7 years** from the end of the income year
+      (Norwegian Bokføringsloven § 13).
+    - After the retention period, call this endpoint with ``delete_files=true``
+      to satisfy GDPR Article 17 (right to erasure).
+
+    This endpoint does **not** delete individual job records — use
+    ``DELETE /jobs/{id}`` to remove job records and their associated output files.
+    """
+    ws = _workspace_store.load()
+    files_removed = 0
+    if delete_files:
+        for spec in ws.csv_files:
+            try:
+                p = Path(spec.path)
+                if p.is_file():
+                    p.unlink()
+                    files_removed += 1
+            except OSError:
+                pass
+    cleared = _workspace_store.clear()
+    return cleared
 
 
 class AddAccountRequest(BaseModel):
@@ -691,13 +884,17 @@ class WorkspaceRunRequest(BaseModel):
 
 
 @app.post("/workspace/run", response_model=Job, tags=["workspace"], dependencies=[Depends(_require_key)])
-def run_workspace_report(body: WorkspaceRunRequest) -> Job:
+async def run_workspace_report(body: WorkspaceRunRequest) -> Job:
     """Create and immediately execute a job using all workspace accounts and CSVs.
 
     This is the primary year-over-year entry point:
     - All registered XRPL accounts are included automatically.
     - All registered CSV files are included automatically.
     - Change only ``tax_year`` from one year to the next.
+
+    API-03: execution is offloaded to a thread-pool worker via
+    ``asyncio.to_thread`` so the event loop is not blocked during the
+    (potentially long-running) CLI subprocess calls.
 
     Returns the completed (or failed) job.
     """
@@ -729,7 +926,9 @@ def run_workspace_report(body: WorkspaceRunRequest) -> Job:
     )
 
     job = _job_service.create_job(job_input)
-    result = _job_service.start_job_execution(job.id)
+    # API-03: offload blocking CLI execution to the thread pool so the FastAPI
+    # event loop is not blocked during subprocess calls.
+    result = await asyncio.to_thread(_job_service.start_job_execution, job.id)
     if result is None:
         raise HTTPException(status_code=500, detail="Job execution returned None")
     return result
@@ -741,7 +940,7 @@ def run_workspace_report(body: WorkspaceRunRequest) -> Job:
 _ALERTS_SCAN_LIMIT = 20   # how many recent jobs to inspect for review alerts
 
 
-@app.get("/alerts", tags=["meta"])
+@app.get("/alerts", tags=["meta"], dependencies=[Depends(_require_key)])
 async def get_alerts(
     limit: int = Query(
         default=_ALERTS_SCAN_LIMIT,
@@ -779,17 +978,19 @@ async def get_alerts(
         _job_store.ping()
         health_checks["db"] = "ok"
     except Exception as exc:  # noqa: BLE001
-        health_checks["db"] = f"error: {exc}"
+        # SEC-16: log full detail server-side; return opaque status to caller.
+        _log.error("Alerts: DB ping failed: %s", exc)
+        health_checks["db"] = "error"
 
     out_ok = os.access(settings.OUTPUT_DIR, os.W_OK)
-    health_checks["output_dir"] = "ok" if out_ok else "error: not writable"
+    health_checks["output_dir"] = "ok" if out_ok else "error"
 
     for cli_name in ["taxspine-nor-report", "taxspine-xrpl-nor"]:
         health_checks[cli_name] = "ok" if shutil.which(cli_name) else "missing"
 
     for check_name, check_val in health_checks.items():
         if check_val != "ok":
-            severity = "error" if check_val.startswith("error") else "warn"
+            severity = "error" if check_val == "error" else "warn"
             alerts.append({
                 "severity": severity,
                 "category": "health",

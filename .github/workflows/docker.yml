@@ -129,10 +129,17 @@ jobs:
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "tax-nor HEAD: ${SHA}"
 
-      # ── Fetch blockchain-reader HEAD SHA (cache-busting) ────────────────────
-      # Same pattern as tax-nor above.  blockchain-reader is imported by
-      # taxspine-xrpl-nor at runtime; its SHA must change the Docker layer
-      # cache key independently of tax-nor.
+      # ── Fetch blockchain-reader HEAD SHA (INFRA-01: supply-chain pin) ─────────
+      # The full 40-character SHA is passed to the Dockerfile as
+      # BLOCKCHAIN_READER_SHA and used as the git ref in the pip install URL.
+      # This pins the installed package to an exact commit — any upstream
+      # change (including a branch-tip compromise) will not affect an existing
+      # image build.  The sha- image tag produced by this workflow records
+      # which orchestrator commit built against which blockchain-reader commit.
+      #
+      # Falls back to "main" only when GH_READ_TOKEN is unavailable (local /
+      # unauthenticated CI).  "main" is rejected by production deploy policy —
+      # see Dockerfile warning and deployment runbook.
       - name: Fetch blockchain-reader HEAD SHA
         id: blockchain_reader_sha
         env:
@@ -142,13 +149,13 @@ jobs:
             SHA=$(curl -sf \
               -H "Authorization: Bearer ${GH_READ_TOKEN}" \
               "https://api.github.com/repos/BWCoast/blockchain-reader/commits/main" \
-              | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'][:12])" \
-              2>/dev/null || echo "unknown")
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'])" \
+              2>/dev/null || echo "main")
           else
-            SHA="unknown"
+            SHA="main"
           fi
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
-          echo "blockchain-reader HEAD: ${SHA}"
+          echo "blockchain-reader pinned ref: ${SHA}"
 
       # ── Build and push ──────────────────────────────────────────────────────
       - name: Build and push image
@@ -183,15 +190,18 @@ jobs:
           secrets: |
             gh_token=${{ secrets.GH_READ_TOKEN }}
 
-      # ── Summary ────────────────────────────────────────────────────────────
+      # ── Summary (INFRA-16: sha- tag shown for Compose pin update) ──────────
       - name: Print image digest
         if: github.event_name != 'pull_request'
         run: |
+          SHA_TAG="sha-$(echo '${{ github.sha }}' | cut -c1-7)"
           echo "### Docker image pushed" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`ghcr.io/bwcoast/taxspine-orchestrator:latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Tags:** ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`ghcr.io/bwcoast/taxspine-orchestrator:${SHA_TAG}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**All tags:** ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Pull on Synology:" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ghcr.io/bwcoast/taxspine-orchestrator:latest" >> $GITHUB_STEP_SUMMARY
+          echo "#### Deploy this build (INFRA-16: pin Compose to this tag)" >> $GITHUB_STEP_SUMMARY
+          echo "Update \`docker-compose.synology.yml\` image line to:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`yaml" >> $GITHUB_STEP_SUMMARY
+          echo "image: ghcr.io/bwcoast/taxspine-orchestrator:${SHA_TAG}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "Then restart the container on the NAS." >> $GITHUB_STEP_SUMMARY

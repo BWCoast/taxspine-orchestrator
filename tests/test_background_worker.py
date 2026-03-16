@@ -279,7 +279,8 @@ class TestHealthCheck:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "degraded"
-        assert "not writable" in body["output_dir"]
+        # SEC-16: output_dir now returns an opaque "error" string (no detail text).
+        assert body["output_dir"] == "error"
 
     def test_health_db_field_present(self, client: TestClient) -> None:
         """Health response always includes a 'db' field."""
@@ -340,13 +341,13 @@ class TestCancelEndpoint:
         assert body["status"] == "cancelled"
         assert body["job_id"] == job_id
 
-        # Verify job is now FAILED in the store.
+        # API-05: cancel now sets CANCELLED (not FAILED) — distinct terminal state.
         job = client.get(f"/jobs/{job_id}").json()
-        assert job["status"] == "failed"
+        assert job["status"] == "cancelled"
         assert job["output"]["error_message"] == "Cancelled by user"
 
-    def test_cancel_running_job_marks_failed(self, client: TestClient) -> None:
-        """Cancelling a RUNNING job also marks it FAILED."""
+    def test_cancel_running_job_marks_cancelled(self, client: TestClient) -> None:
+        """Cancelling a RUNNING job marks it CANCELLED (API-05)."""
         resp = client.post("/jobs", json=_NORWAY_INPUT)
         job_id = resp.json()["id"]
 
@@ -358,7 +359,7 @@ class TestCancelEndpoint:
         assert cancel_resp.json()["status"] == "cancelled"
 
         job = client.get(f"/jobs/{job_id}").json()
-        assert job["status"] == "failed"
+        assert job["status"] == "cancelled"
 
     def test_cancel_completed_job_returns_400(self, client: TestClient) -> None:
         """Cancelling a COMPLETED job returns 400 Bad Request."""

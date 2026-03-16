@@ -16,12 +16,88 @@ Supported job types
 
 from __future__ import annotations
 
+import json as _json
 import logging
+import re
 import shutil
 import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+# LC-05: XRPL base-58 address pattern (r + 25-34 chars from the base-58 alphabet,
+# excluding 0, O, I, and l).  Used to redact addresses from execution logs so that
+# pseudonymous personal data is not retained in plaintext log files longer than needed.
+_XRPL_ADDR_RE = re.compile(r"\br[1-9A-HJ-NP-Za-km-z]{24,34}\b")
+
+
+def _redact_xrpl_addresses(text: str) -> str:
+    """Replace every XRPL address in *text* with ``[XRPL-ADDRESS]``."""
+    return _XRPL_ADDR_RE.sub("[XRPL-ADDRESS]", text)
+
+
+# ── TL-01 / TL-02: provenance annotation ──────────────────────────────────────
+
+# HTML warning banner injected into every HTML report produced with dummy
+# valuation (TL-01).  Uses inline styles so it works without any external CSS.
+_DRAFT_BANNER = (
+    '<div style="background:#ff9800;color:#000;padding:14px 16px;'
+    "font-family:monospace;font-size:15px;font-weight:bold;text-align:center;"
+    'border-bottom:3px solid #e65100;position:sticky;top:0;z-index:9999">'
+    "&#9888; DRAFT &mdash; Dummy valuation used: NOK values are placeholders "
+    "and MUST NOT be filed with Skatteetaten. "
+    "Re-run with valuation_mode=price_table before submitting."
+    "</div>"
+)
+
+
+def _annotate_rf1159_with_provenance(
+    path: Path,
+    *,
+    valuation_mode: str,
+    price_source: str,
+    price_table_path: str | None,
+) -> None:
+    """Add a ``_provenance`` block to an RF-1159 JSON file in-place.
+
+    TL-01: Makes dummy-valuation output distinguishable from real output by
+    setting ``draft=true`` when ``valuation_mode == "dummy"``.
+    TL-02: Records the price source so a tax auditor can verify provenance.
+    """
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    data["_provenance"] = {
+        "valuation_mode": valuation_mode,
+        "price_source": price_source,
+        "price_table_path": price_table_path,
+        "draft": valuation_mode == "dummy",
+        "generated_by": "taxspine-orchestrator",
+    }
+    path.write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _inject_draft_banner(path: Path) -> None:
+    """Insert a visible draft-warning banner at the top of an HTML report (TL-01).
+
+    Inserts immediately after the opening ``<body`` tag if present, otherwise
+    prepends the banner to the document.
+    """
+    try:
+        html = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if "<body" in html:
+        idx = html.find("<body")
+        end = html.find(">", idx)
+        if end != -1:
+            html = html[: end + 1] + "\n" + _DRAFT_BANNER + html[end + 1 :]
+        else:
+            html = _DRAFT_BANNER + html
+    else:
+        html = _DRAFT_BANNER + html
+    path.write_text(html, encoding="utf-8")
 
 from .config import settings
 from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, PipelineMode, ValuationMode
@@ -99,14 +175,16 @@ class JobService:
         if job is None:
             return None
 
-        # Only start from PENDING — return current state otherwise.
-        if job.status != JobStatus.PENDING:
+        # API-04: Accept PENDING or RUNNING.  RUNNING means the start_job
+        # endpoint already performed the CAS transition — skip re-marking.
+        # Any other terminal state (COMPLETED, FAILED, CANCELLED) returns early.
+        if job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
             return job
 
         has_xrpl = bool(job.input.xrpl_accounts)
         has_csv = bool(job.input.csv_files)
 
-        # ── Mark RUNNING ──────────────────────────────────────────────────
+        # ── Mark RUNNING (idempotent when endpoint already did the CAS) ──────
         self.store.update_status(job_id, JobStatus.RUNNING)
 
         output_dir = self._job_output_dir(job_id)
@@ -163,6 +241,31 @@ class JobService:
                     output_dir=output_dir,
                 )
 
+            # ── Guard: non-generic CSVs are incompatible with XRPL jobs ──
+            # taxspine-xrpl-nor only accepts --generic-events-csv.  Firi,
+            # Coinbase, and other native-format CSVs cannot be attached to an
+            # XRPL job; the caller must submit a separate CSV-only job instead.
+            if has_xrpl and has_csv:
+                unsupported_specs = [
+                    spec for spec in job.input.csv_files
+                    if spec.source_type != CsvSourceType.GENERIC_EVENTS
+                ]
+                if unsupported_specs:
+                    bad = ", ".join(
+                        f"{spec.source_type.value}:{spec.path}"
+                        for spec in unsupported_specs
+                    )
+                    return self._fail_job(
+                        job_id,
+                        error=(
+                            "Mixed XRPL+CSV jobs only support generic-events CSV files. "
+                            f"The following files use unsupported source types: {bad}. "
+                            "Submit a separate CSV-only job for these files."
+                        ),
+                        log_lines=log_lines,
+                        output_dir=output_dir,
+                    )
+
             # ── dry_run: preview commands only ────────────────────────────
             if job.input.dry_run:
                 return self._execute_dry_run(
@@ -181,6 +284,24 @@ class JobService:
                         error=f"CSV file not found: {spec.path}",
                         log_lines=log_lines,
                         output_dir=output_dir,
+                    )
+
+            # ── Carry-forward lots (Norway jobs only) ─────────────────────
+            # Load FIFO lots saved from tax_year-1 and inject them as
+            # synthetic opening-position TRADE events.  The CSV is prepended
+            # to XRPL and NOR_MULTI invocations so all sources share the same
+            # opening inventory.  PER_FILE mode does not support carry-forward
+            # (each invocation has an isolated lot pool).
+            carry_forward_spec: CsvFileSpec | None = None
+            if job.input.country == Country.NORWAY:
+                carry_csv = self._maybe_write_carry_forward_csv(
+                    output_dir, job.input.tax_year
+                )
+                if carry_csv is not None:
+                    carry_forward_spec = CsvFileSpec(path=str(carry_csv))
+                    log_lines.append(
+                        f"[carry-forward] injecting {len(carry_csv.read_text(encoding='utf-8').splitlines()) - 1} "
+                        f"lot(s) from {job.input.tax_year - 1}: {carry_csv}"
                     )
 
             # ── Step 1: XRPL accounts → taxspine-xrpl-nor ────────────────
@@ -207,19 +328,30 @@ class JobService:
                     suffix = f"_{idx}" if len(job.input.xrpl_accounts) > 1 else ""
                     html_dest = output_dir / f"report{suffix}.html"
                     review_dest = output_dir / f"review{suffix}.json"
+                    # RF-1159 export is only meaningful for Norway jobs.
+                    rf1159_dest: Path | None = (
+                        output_dir / f"rf1159{suffix}.json"
+                        if job.input.country == Country.NORWAY
+                        else None
+                    )
 
                     # Attach CSV files only to the primary account (idx == 0)
                     # when this is a mixed workspace.  This keeps the FIFO lot
                     # pool unified and prevents formue double-counting.
-                    csv_files_for_account = (
-                        job.input.csv_files if (has_csv and idx == 0) else []
+                    csv_files_for_account: list[CsvFileSpec] = (
+                        list(job.input.csv_files) if (has_csv and idx == 0) else []
                     )
+                    # Prepend carry-forward lots to the primary account so
+                    # the opening position is established before any events.
+                    if carry_forward_spec is not None and idx == 0:
+                        csv_files_for_account = [carry_forward_spec] + csv_files_for_account
 
                     xrpl_cmd = self._build_xrpl_command(
                         job.input,
                         account=account,
                         html_path=html_dest,
                         csv_files=csv_files_for_account,
+                        rf1159_json_path=rf1159_dest,
                         review_json_path=review_dest,
                     )
                     log_lines.append(f"$ {' '.join(str(c) for c in xrpl_cmd)}")
@@ -255,6 +387,11 @@ class JobService:
                         if review_json_path is None:
                             review_json_path = review_dest
 
+                    if rf1159_dest is not None and rf1159_dest.exists():
+                        all_rf1159_json_paths.append(str(rf1159_dest))
+                        if rf1159_json_path is None:
+                            rf1159_json_path = rf1159_dest
+
             # ── Step 2: CSVs → taxspine-nor-report / taxspine-nor-multi ───
             # Only run this step for CSV-only workspaces.  When XRPL accounts
             # are present, generic-events CSV files were already merged in Step 1.
@@ -264,12 +401,19 @@ class JobService:
                     and job.input.country == Country.NORWAY
                 ):
                     # Single combined invocation — all CSV sources in one shot.
+                    # Prepend carry-forward lots (if any) so the FIFO engine
+                    # sees the prior-year opening inventory first.
                     html_dest = output_dir / "report_combined.html"
                     rf1159_dest_nm = output_dir / "rf1159.json"
                     review_dest_nm = output_dir / "review.json"
+                    nor_multi_specs = (
+                        [carry_forward_spec] + list(job.input.csv_files)
+                        if carry_forward_spec is not None
+                        else list(job.input.csv_files)
+                    )
                     nor_multi_cmd = self._build_nor_multi_command(
                         job.input,
-                        csv_specs=job.input.csv_files,
+                        csv_specs=nor_multi_specs,
                         html_path=html_dest,
                         rf1159_json_path=rf1159_dest_nm,
                         review_json_path=review_dest_nm,
@@ -363,6 +507,29 @@ class JobService:
                             if review_json_path is None:
                                 review_json_path = review_dest_pf
 
+            # ── Step 2.5: annotate output files with provenance ───────────
+            # TL-01 / TL-02: determine the effective price source string and
+            # annotate all RF-1159 JSON files with a _provenance block.  If the
+            # job used dummy valuation, also inject a visible draft banner into
+            # every HTML report so the output cannot be mistaken for a real filing.
+            _valuation_mode = job.input.valuation_mode.value
+            _price_source = (
+                "price_table_csv" if _valuation_mode == "price_table" else "dummy"
+            )
+            _price_table_path = job.input.csv_prices_path
+
+            for _rf1159_path_str in all_rf1159_json_paths:
+                _annotate_rf1159_with_provenance(
+                    Path(_rf1159_path_str),
+                    valuation_mode=_valuation_mode,
+                    price_source=_price_source,
+                    price_table_path=_price_table_path,
+                )
+
+            if _valuation_mode == "dummy":
+                for _html_path_str in all_html_paths:
+                    _inject_draft_banner(Path(_html_path_str))
+
             # ── Step 3: write log + build output record ───────────────────
             log_path = self._write_log(output_dir, log_lines)
 
@@ -374,7 +541,16 @@ class JobService:
                 review_json_path=str(review_json_path) if review_json_path else None,
                 review_json_paths=all_review_json_paths,
                 log_path=str(log_path),
+                valuation_mode_used=_valuation_mode,
+                price_source=_price_source,
+                price_table_path=_price_table_path,
             )
+            # API-07: guard against overwriting a user-initiated CANCELLED state
+            # with COMPLETED.  If the job was cancelled mid-run the terminal
+            # CANCELLED status must be preserved.
+            current = self.store.get(job_id)
+            if current and current.status == JobStatus.CANCELLED:
+                return current
             return self.store.update_job(
                 job_id, status=JobStatus.COMPLETED, output=output,
             )
@@ -397,6 +573,7 @@ class JobService:
         account: str,
         html_path: Path,
         csv_files: list[CsvFileSpec] | None = None,
+        rf1159_json_path: Path | None = None,
         review_json_path: Path | None = None,
     ) -> list[str]:
         """Build a ``taxspine-xrpl-nor`` command for a single XRPL account.
@@ -409,6 +586,7 @@ class JobService:
             --account              ADDRESS  (required)
             --year                 YEAR     (required)
             --generic-events-csv   PATH     (optional; repeatable — one per CSV)
+            --rf1159-json          PATH     (optional; RF-1159 JSON export)
             --csv-prices           PATH     (optional; CSV format price table)
             --debug-valuation               (optional)
             --html-output          PATH     (optional; self-contained HTML report)
@@ -445,6 +623,12 @@ class JobService:
             and job_input.csv_prices_path is not None
         ):
             cmd.extend(["--csv-prices", job_input.csv_prices_path])
+
+        if rf1159_json_path is not None:
+            cmd.extend(["--rf1159-json", str(rf1159_json_path)])
+
+        if review_json_path is not None:
+            cmd.extend(["--review-json", str(review_json_path)])
 
         if job_input.include_trades:
             cmd.append("--include-trades")
@@ -570,6 +754,91 @@ class JobService:
         return cmd
 
     @staticmethod
+    def _maybe_write_carry_forward_csv(output_dir: Path, tax_year: int) -> Path | None:
+        """Load prior-year FIFO lots and write them as synthetic TRADE events.
+
+        Reads carry-forward lots from the lot persistence store for
+        ``tax_year - 1`` and writes a generic-events CSV that the tax CLI
+        will process as opening positions for ``tax_year``.  This bridges
+        the orchestrator's lot store into the CLI's FIFO engine.
+
+        Returns the path to the generated CSV, or ``None`` when:
+        - the ``tax_spine`` package is not installed
+        - the lot store database does not exist yet
+        - no lots were saved for the prior year
+        - all prior-year lots have a missing cost basis
+
+        The synthetic events are dated ``{tax_year-1}-12-31T23:59:59Z`` so
+        they sit chronologically before the current year's events in the
+        FIFO engine, yet do not appear in the current year's tax report.
+        """
+        try:
+            from tax_spine.pipeline.lot_store import LotPersistenceStore  # noqa: PLC0415
+        except ImportError:
+            _log.debug("LotPersistenceStore not available — skipping carry-forward")
+            return None
+
+        db_path = settings.LOT_STORE_DB
+        if not db_path.is_file():
+            _log.debug("Lot store not found at %s — no carry-forward", db_path)
+            return None
+
+        prior_year = tax_year - 1
+        try:
+            with LotPersistenceStore(str(db_path)) as store:
+                if prior_year not in store.list_years():
+                    _log.debug("No lots saved for %d — skipping carry-forward", prior_year)
+                    return None
+                lots = store.load_carry_forward(prior_year)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("Could not read carry-forward lots for %d: %s", prior_year, exc)
+            return None
+
+        if not lots:
+            return None
+
+        # Build synthetic TRADE rows: one buy per lot with a resolved basis.
+        # Lots without a resolved NOK basis are skipped; they cannot be
+        # expressed as a cost-basis TRADE event.
+        ts = f"{prior_year}-12-31T23:59:59Z"
+        rows: list[str] = []
+        for i, lot in enumerate(lots):
+            if lot.remaining_cost_basis_nok is None:
+                _log.debug(
+                    "Skipping carry-forward lot %s for %s — missing basis",
+                    lot.lot_id, lot.asset,
+                )
+                continue
+            event_id = f"carry_{prior_year}_{i}"
+            rows.append(
+                f"{event_id},{ts},TRADE,carry_forward,orchestrator,"
+                f"{lot.asset},{lot.remaining_quantity},"
+                f"NOK,{lot.remaining_cost_basis_nok},"
+                f",,,,,,"
+            )
+
+        if not rows:
+            _log.debug("All carry-forward lots for %d have missing basis — skipping", prior_year)
+            return None
+
+        carry_csv = output_dir / f"carry_forward_{prior_year}.csv"
+        header = (
+            "event_id,timestamp,event_type,source,account,"
+            "asset_in,amount_in,asset_out,amount_out,"
+            "fee_asset,fee_amount,tx_hash,exchange_tx_id,label,"
+            "complex_tax_treatment,note"
+        )
+        carry_csv.write_text(
+            header + "\n" + "\n".join(rows) + "\n",
+            encoding="utf-8",
+        )
+        _log.info(
+            "Wrote carry-forward CSV: %d lots from %d → %s",
+            len(rows), prior_year, carry_csv,
+        )
+        return carry_csv
+
+    @staticmethod
     def _dedup_store_path(source_slug: str) -> Path:
         """Return the per-source dedup store path inside DEDUP_DIR.
 
@@ -583,9 +852,19 @@ class JobService:
 
         The directory is created lazily by ``ensure_dirs()`` at startup.
         """
-        # Sanitise the slug to a filesystem-safe name (replace path separators).
-        safe = source_slug.replace("/", "_").replace("\\", "_")
-        return settings.DEDUP_DIR / f"{safe}.db"
+        # SEC-02: allowlist-only sanitisation — only [A-Za-z0-9_-] permitted.
+        # This is stricter than the previous separator-only replacement, which
+        # still admitted '..' sequences that could escape DEDUP_DIR.
+        safe = re.sub(r"[^A-Za-z0-9_-]", "_", source_slug)
+        resolved = (settings.DEDUP_DIR / f"{safe}.db").resolve()
+        try:
+            resolved.relative_to(settings.DEDUP_DIR.resolve())
+        except ValueError:
+            raise ValueError(
+                f"Resolved dedup path {resolved!r} escapes DEDUP_DIR — "
+                f"source slug {source_slug!r} rejected"
+            )
+        return resolved
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -605,9 +884,14 @@ class JobService:
 
     @staticmethod
     def _write_log(output_dir: Path, lines: list[str]) -> Path:
-        """Write *lines* to ``execution.log`` inside *output_dir*."""
+        """Write *lines* to ``execution.log`` inside *output_dir*.
+
+        LC-05: XRPL account addresses are redacted before writing so that
+        pseudonymous personal data is not retained verbatim in log files.
+        """
         log_path = output_dir / "execution.log"
-        log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        content = _redact_xrpl_addresses("\n".join(lines) + "\n")
+        log_path.write_text(content, encoding="utf-8")
         return log_path
 
     def _fail_job(
@@ -618,12 +902,20 @@ class JobService:
         log_lines: list[str],
         output_dir: Path,
     ) -> Job | None:
-        """Mark a job as FAILED, persisting the error and log."""
+        """Mark a job as FAILED, persisting the error and log.
+
+        API-07: does not overwrite a CANCELLED terminal state — if the user
+        cancelled the job mid-run, CANCELLED takes precedence over FAILED.
+        """
         log_path = self._write_log(output_dir, log_lines)
         output = JobOutput(
             error_message=error,
             log_path=str(log_path),
         )
+        # Preserve CANCELLED: do not overwrite a user-initiated cancel with FAILED.
+        current = self.store.get(job_id)
+        if current and current.status == JobStatus.CANCELLED:
+            return current
         return self.store.update_job(
             job_id, status=JobStatus.FAILED, output=output,
         )
@@ -647,20 +939,45 @@ class JobService:
 
         has_csv = bool(job.input.csv_files)
 
+        # Note carry-forward availability without writing the actual CSV.
+        dry_carry_forward_spec: CsvFileSpec | None = None
+        if job.input.country == Country.NORWAY:
+            prior_year = job.input.tax_year - 1
+            carry_path = output_dir / f"carry_forward_{prior_year}.csv"
+            if settings.LOT_STORE_DB.is_file():
+                log_lines.append(
+                    f"[carry-forward] lot store found at {settings.LOT_STORE_DB}; "
+                    f"carry-forward CSV would be written to {carry_path}"
+                )
+                dry_carry_forward_spec = CsvFileSpec(path=str(carry_path))
+            else:
+                log_lines.append(
+                    f"[carry-forward] lot store not found at {settings.LOT_STORE_DB} — "
+                    "no carry-forward (first run or lot store not yet initialised)"
+                )
+
         if has_xrpl:
             for idx, account in enumerate(job.input.xrpl_accounts):
                 suffix = f"_{idx}" if len(job.input.xrpl_accounts) > 1 else ""
                 html_path = output_dir / f"report{suffix}.html"
                 review_path = output_dir / f"review{suffix}.json"
-                # Primary account (idx == 0) gets all CSV files in mixed workspace.
-                csv_files_for_account = (
-                    job.input.csv_files if (has_csv and idx == 0) else []
+                rf1159_dry_path: Path | None = (
+                    output_dir / f"rf1159{suffix}.json"
+                    if job.input.country == Country.NORWAY
+                    else None
                 )
+                # Primary account (idx == 0) gets all CSV files in mixed workspace.
+                dry_csv_files: list[CsvFileSpec] = (
+                    list(job.input.csv_files) if (has_csv and idx == 0) else []
+                )
+                if dry_carry_forward_spec is not None and idx == 0:
+                    dry_csv_files = [dry_carry_forward_spec] + dry_csv_files
                 cmd = self._build_xrpl_command(
                     job.input,
                     account=account,
                     html_path=html_path,
-                    csv_files=csv_files_for_account,
+                    csv_files=dry_csv_files,
+                    rf1159_json_path=rf1159_dry_path,
                     review_json_path=review_path,
                 )
                 log_lines.append(f"[would run] $ {' '.join(str(c) for c in cmd)}")
@@ -672,9 +989,14 @@ class JobService:
                 and job.input.country == Country.NORWAY
             ):
                 html_path = output_dir / "report_combined.html"
+                dry_nm_specs = (
+                    [dry_carry_forward_spec] + list(job.input.csv_files)
+                    if dry_carry_forward_spec is not None
+                    else list(job.input.csv_files)
+                )
                 cmd = self._build_nor_multi_command(
                     job.input,
-                    csv_specs=job.input.csv_files,
+                    csv_specs=dry_nm_specs,
                     html_path=html_path,
                     rf1159_json_path=output_dir / "rf1159.json",
                     review_json_path=output_dir / "review.json",
@@ -700,6 +1022,10 @@ class JobService:
 
         log_path = self._write_log(output_dir, log_lines)
         output = JobOutput(log_path=str(log_path))
+        # API-07: preserve CANCELLED — do not overwrite with COMPLETED.
+        current = self.store.get(job_id)
+        if current and current.status == JobStatus.CANCELLED:
+            return current
         return self.store.update_job(
             job_id, status=JobStatus.COMPLETED, output=output,
         )

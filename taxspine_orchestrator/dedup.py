@@ -26,6 +26,7 @@ by the command builders — e.g. ``generic_events``, ``firi_csv``,
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -41,9 +42,26 @@ router = APIRouter(prefix="/dedup", tags=["dedup"])
 
 
 def _db_path(source: str) -> Path:
-    """Resolve a source slug to its on-disk SQLite path."""
-    safe = source.replace("/", "_").replace("\\", "_")
-    return settings.DEDUP_DIR / f"{safe}.db"
+    """Resolve a source slug to its on-disk SQLite path.
+
+    SEC-02: allowlist-only sanitisation — any character outside ``[A-Za-z0-9_-]``
+    is replaced with ``_``.  This is significantly stricter than the previous
+    separator-only replacement, which still admitted ``..`` sequences that could
+    resolve outside DEDUP_DIR after the separator characters were stripped.
+    The resolved path is also asserted to remain inside DEDUP_DIR as a second
+    line of defence against symlink traversal or other OS-level tricks.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", source)
+    resolved = (settings.DEDUP_DIR / f"{safe}.db").resolve()
+    # Belt-and-suspenders containment check.
+    try:
+        resolved.relative_to(settings.DEDUP_DIR.resolve())
+    except ValueError:
+        raise ValueError(
+            f"Resolved dedup path {resolved!r} escapes DEDUP_DIR — "
+            f"source slug {source!r} rejected"
+        )
+    return resolved
 
 
 def _mtime_iso(path: Path) -> str:

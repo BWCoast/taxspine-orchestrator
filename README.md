@@ -55,12 +55,11 @@ Open `ui/index.html` in a browser (or serve it statically) to use the dashboard.
 ## Authentication
 
 Set `ORCHESTRATOR_KEY` in the environment to enable API key authentication.
-All mutating endpoints (`POST`, `DELETE`) require the key in the
-`X-API-Key` header.  Read-only endpoints (`GET`) are always public.
+All endpoints require the key in the `X-Orchestrator-Key` header.
 
 ```bash
 export ORCHESTRATOR_KEY=my-secret-key
-curl -H "X-API-Key: my-secret-key" -X POST http://localhost:8000/jobs ...
+curl -H "X-Orchestrator-Key: my-secret-key" -X POST http://localhost:8000/jobs ...
 ```
 
 When `ORCHESTRATOR_KEY` is unset (default for local dev), all endpoints are
@@ -73,15 +72,21 @@ unrestricted.
 ```
 PENDING ──▶ RUNNING ──▶ COMPLETED   (outputs populated)
    │                └──▶ FAILED      (error_message + log_path set)
-   └── cancel ──▶ FAILED
+   │                └──▶ CANCELLED   (user-initiated via /cancel mid-run)
+   └── cancel ──▶ CANCELLED
 ```
 
 - `POST /jobs` creates a job in `PENDING` state.
-- `POST /jobs/{id}/start` executes the pipeline in a background thread and
+- `POST /jobs/{id}/start` atomically transitions the job to `RUNNING` via a
+  compare-and-swap, then executes the pipeline in a background thread and
   returns `202` immediately.  Poll `GET /jobs/{id}` or refresh the dashboard.
 - Starting a job that is already `RUNNING` returns `409`.
-- Starting a job that is already `COMPLETED` or `FAILED` returns `200` with
-  the current state unchanged (idempotent).
+- Starting a job that is already `COMPLETED`, `FAILED`, or `CANCELLED` returns
+  `200` with the current state unchanged (idempotent).
+- `POST /jobs/{id}/cancel` marks the job `CANCELLED` — a distinct terminal
+  state from `FAILED` so callers can distinguish user cancellation from errors.
+  If execution is in progress, the `CANCELLED` state is preserved when the
+  thread finishes (it does not overwrite with `COMPLETED` or `FAILED`).
 - On server restart any jobs left in `RUNNING` state are automatically
   marked `FAILED` (crash recovery via `SqliteJobStore`).
 
@@ -170,12 +175,15 @@ curl -s 'http://localhost:8000/jobs?query=main+wallets'
 ## Cancelling and deleting jobs
 
 ```bash
-# Cancel a pending or running job (marks it FAILED)
+# Cancel a pending or running job (marks it CANCELLED)
 curl -s -X POST http://localhost:8000/jobs/JOB_ID/cancel
 
-# Delete a job record — only works for non-running jobs; does NOT remove output files
+# Delete a job record (also removes output files and input CSVs from disk by default)
 curl -s -X DELETE http://localhost:8000/jobs/JOB_ID
-# → {"deleted": true, "id": "JOB_ID"}
+# → {"deleted": true, "id": "JOB_ID", "files_removed": 3}
+
+# Delete without removing files
+curl -s -X DELETE "http://localhost:8000/jobs/JOB_ID?delete_files=false"
 ```
 
 Attempting to delete a `RUNNING` job returns `409`.  Cancel it first, then
@@ -329,7 +337,8 @@ All settings are controlled via environment variables:
 | `blockchain-reader` fails        | FAILED — `"blockchain-reader failed (rc=N)"`           |
 | Tax CLI fails                    | FAILED — `"tax report CLI failed (rc=N)"`              |
 | Delete a running job             | `409` — cancel the job first                           |
-| Start an already-running job     | `409`                                                  |
+| Start an already-running job     | `409` (CAS prevents duplicate starts)                  |
+| Cancel a completed/failed job    | `400` — only PENDING and RUNNING jobs can be cancelled |
 
 In all failure cases `job.output.log_path` points to `execution.log` with
 captured commands and stderr.

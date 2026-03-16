@@ -83,15 +83,30 @@ RUN --mount=type=secret,id=gh_token,required=false \
 # taxspine-xrpl-nor at runtime to fetch XRPL account transactions.
 # Must be installed AFTER tax-spine (blockchain-reader depends on tax-spine).
 #
-# Same token / cache-busting pattern as tax-spine above.
-ARG BLOCKCHAIN_READER_SHA=unknown
+# INFRA-01 (supply-chain pin): BLOCKCHAIN_READER_SHA must be set to a full
+# 40-character (or at minimum 12-character) commit hash from the
+# BWCoast/blockchain-reader repository before any production build.
+#
+# The GitHub Actions workflow fetches the current HEAD SHA automatically and
+# passes it here via --build-arg.  For local/manual builds, look up the
+# desired commit at:
+#   https://github.com/BWCoast/blockchain-reader/commits/main
+# then pass:
+#   docker build --build-arg BLOCKCHAIN_READER_SHA=<full-sha> ...
+#
+# Default "main" retains backward-compat for quick local dev builds but
+# MUST NOT be used in production — it tracks the floating branch tip.
+ARG BLOCKCHAIN_READER_SHA=main
 RUN --mount=type=secret,id=gh_token,required=false \
-    echo "# blockchain-reader HEAD: ${BLOCKCHAIN_READER_SHA}" && \
+    echo "# blockchain-reader pinned ref: ${BLOCKCHAIN_READER_SHA}" && \
+    if [ "${BLOCKCHAIN_READER_SHA}" = "main" ]; then \
+        echo "WARNING: BLOCKCHAIN_READER_SHA not pinned — using floating 'main' branch. Set a commit SHA for production builds." >&2; \
+    fi && \
     TOKEN=$(cat /run/secrets/gh_token 2>/dev/null || echo "") && \
     if [ -n "$TOKEN" ]; then \
-        pip install --no-cache-dir "git+https://${TOKEN}@github.com/BWCoast/blockchain-reader.git"; \
+        pip install --no-cache-dir "git+https://${TOKEN}@github.com/BWCoast/blockchain-reader.git@${BLOCKCHAIN_READER_SHA}"; \
     else \
-        pip install --no-cache-dir "git+https://github.com/BWCoast/blockchain-reader.git"; \
+        pip install --no-cache-dir "git+https://github.com/BWCoast/blockchain-reader.git@${BLOCKCHAIN_READER_SHA}"; \
     fi
 
 # ── Application source ────────────────────────────────────────────────────────
