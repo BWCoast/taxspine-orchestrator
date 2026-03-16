@@ -197,6 +197,63 @@
       min-height: 500px;
     }
 
+    /* ── Tax Center ── */
+    .tc-tabs {
+      display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap;
+    }
+    .tc-tab {
+      padding: 7px 16px; border-radius: 20px; font-size: 0.82rem; font-weight: 500;
+      cursor: pointer; border: 1px solid rgba(255,255,255,0.12);
+      background: transparent; color: #94a3b8; transition: all 0.15s;
+    }
+    .tc-tab.active {
+      background: rgba(99,102,241,0.2); border-color: rgba(99,102,241,0.5); color: #a5b4fc;
+    }
+    .tc-panel { display: none; }
+    .tc-panel.active { display: block; }
+
+    .tc-year-row {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .tc-year-row select { width: auto; flex: 0 0 auto; padding: 7px 12px; }
+    .tc-refresh {
+      padding: 7px 14px; background: rgba(99,102,241,0.2);
+      border: 1px solid rgba(99,102,241,0.4); color: #a5b4fc;
+      border-radius: 8px; font-size: 0.82rem; cursor: pointer; transition: all 0.15s;
+    }
+    .tc-refresh:hover { background: rgba(99,102,241,0.35); }
+
+    .tc-stat-row {
+      display: flex; gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
+    }
+    .tc-stat {
+      flex: 1; min-width: 80px;
+      background: rgba(0,0,0,0.2); border-radius: 10px; padding: 12px 16px;
+      text-align: center;
+    }
+    .tc-stat .num { font-size: 1.6rem; font-weight: 700; color: #e2e8f0; }
+    .tc-stat .lbl { font-size: 0.7rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 3px; }
+
+    .tc-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .tc-table th {
+      text-align: left; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: #64748b; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.07);
+    }
+    .tc-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); color: #cbd5e1; }
+    .tc-table tr:last-child td { border-bottom: none; }
+    .tc-table tr:hover td { background: rgba(255,255,255,0.03); }
+    .tc-table .mono { font-family: 'Consolas','Monaco',monospace; font-size: 0.78rem; color: #94a3b8; }
+
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 12px;
+      font-size: 0.72rem; font-weight: 600; letter-spacing: 0.03em;
+    }
+    .pill-green { background: rgba(34,197,94,0.15); color: #86efac; }
+    .pill-slate { background: rgba(100,116,139,0.2); color: #94a3b8; }
+
+    .tc-empty { color: #64748b; font-size: 0.85rem; text-align: center; padding: 24px 0; }
+    .tc-loading { color: #6366f1; font-size: 0.82rem; padding: 8px 0; }
+
     /* ── Progress ── */
     .progress-ring {
       width: 36px; height: 36px;
@@ -323,6 +380,87 @@
       <div class="download-row" id="dl-row"></div>
       <div id="report-frame-wrap">
         <iframe id="report-frame" title="Tax Report"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Card 4: Tax Center ── -->
+  <div class="card" id="tax-center-card">
+    <h3>🏛 Tax Center <span style="font-weight:400;font-size:0.82rem;color:#64748b;">carry-forward lots · ingestion health</span></h3>
+
+    <!-- Tabs -->
+    <div class="tc-tabs">
+      <button class="tc-tab active" onclick="tcTab('lots', this)">📦 Carry-Forward Lots</button>
+      <button class="tc-tab" onclick="tcTab('dedup', this)">🔁 Ingestion Sources</button>
+    </div>
+
+    <!-- Panel: Lots -->
+    <div class="tc-panel active" id="tc-panel-lots">
+      <div class="tc-year-row">
+        <select id="tc-year-select" onchange="loadLotYear(this.value)">
+          <option value="">— select year —</option>
+        </select>
+        <button class="tc-refresh" onclick="loadTaxCenter()">↻ Refresh</button>
+        <span class="tc-loading" id="tc-lots-loading" style="display:none">Loading…</span>
+      </div>
+
+      <!-- Stats row -->
+      <div class="tc-stat-row" id="tc-lot-stats" style="display:none">
+        <div class="tc-stat">
+          <div class="num" id="tc-stat-total">—</div>
+          <div class="lbl">Total lots</div>
+        </div>
+        <div class="tc-stat">
+          <div class="num" id="tc-stat-active" style="color:#86efac">—</div>
+          <div class="lbl">Active (carry)</div>
+        </div>
+        <div class="tc-stat">
+          <div class="num" id="tc-stat-depleted" style="color:#64748b">—</div>
+          <div class="lbl">Depleted</div>
+        </div>
+        <div class="tc-stat">
+          <div class="num" id="tc-stat-assets">—</div>
+          <div class="lbl">Assets</div>
+        </div>
+      </div>
+
+      <!-- Per-asset table -->
+      <div id="tc-asset-wrap">
+        <div class="tc-empty" id="tc-lots-empty">No lot snapshots yet. Run a Norway pipeline job to populate carry-forward state.</div>
+        <table class="tc-table" id="tc-asset-table" style="display:none">
+          <thead>
+            <tr>
+              <th>Asset</th>
+              <th style="text-align:right">Total lots</th>
+              <th style="text-align:right">Active</th>
+              <th style="text-align:right">Depleted</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="tc-asset-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Panel: Dedup -->
+    <div class="tc-panel" id="tc-panel-dedup">
+      <div class="tc-year-row">
+        <button class="tc-refresh" onclick="loadDedupSources()">↻ Refresh</button>
+        <span class="tc-loading" id="tc-dedup-loading" style="display:none">Loading…</span>
+      </div>
+
+      <div id="tc-dedup-wrap">
+        <div class="tc-empty" id="tc-dedup-empty">No dedup sources found. Sources appear here after the first ingestion run.</div>
+        <table class="tc-table" id="tc-dedup-table" style="display:none">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th style="text-align:right">Size</th>
+              <th>Last modified</th>
+            </tr>
+          </thead>
+          <tbody id="tc-dedup-tbody"></tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -631,11 +769,144 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Tax Center ────────────────────────────────────────────────────────────────
+
+function tcTab(name, btn) {
+  document.querySelectorAll('.tc-tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tc-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(`tc-panel-${name}`).classList.add('active');
+}
+
+async function loadTaxCenter() {
+  await Promise.all([loadLotYears(), loadDedupSources()]);
+}
+
+// ── Lots panel ────────────────────────────────────────────────────────────────
+
+async function loadLotYears() {
+  const sel = document.getElementById('tc-year-select');
+  try {
+    const data = await apiFetch('GET', '/lots/years');
+    const years = (data.years || []).slice().reverse();   // most-recent first
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— select year —</option>' +
+      years.map(y => `<option value="${y}"${String(y) === prev ? ' selected' : ''}>${y}</option>`).join('');
+
+    if (years.length > 0) {
+      const pick = years.includes(parseInt(prev, 10)) ? prev : String(years[0]);
+      sel.value = pick;
+      await loadLotYear(pick);
+    } else {
+      _showLotEmpty(true);
+    }
+  } catch (err) {
+    console.warn('Could not load lot years:', err.message);
+    _showLotEmpty(true);
+  }
+}
+
+async function loadLotYear(year) {
+  if (!year) { _showLotEmpty(true); return; }
+  const loading = document.getElementById('tc-lots-loading');
+  loading.style.display = '';
+  try {
+    const data = await apiFetch('GET', `/lots/${year}`);
+    _renderLotSummary(data);
+  } catch (err) {
+    console.warn('Could not load lot year:', err.message);
+    _showLotEmpty(true);
+  } finally {
+    loading.style.display = 'none';
+  }
+}
+
+function _renderLotSummary(data) {
+  const assets = data.assets || {};
+  const assetKeys = Object.keys(assets);
+
+  document.getElementById('tc-stat-total').textContent    = data.total_lots ?? '—';
+  document.getElementById('tc-stat-active').textContent   = data.active_lots ?? '—';
+  document.getElementById('tc-stat-depleted').textContent = data.depleted_lots ?? '—';
+  document.getElementById('tc-stat-assets').textContent   = assetKeys.length;
+  document.getElementById('tc-lot-stats').style.display   = '';
+
+  if (assetKeys.length === 0) {
+    _showLotEmpty(true);
+    return;
+  }
+
+  const tbody = document.getElementById('tc-asset-tbody');
+  tbody.innerHTML = assetKeys.sort().map(asset => {
+    const info     = assets[asset];
+    const total    = info.total_lots ?? 0;
+    const active   = info.active_lots ?? 0;
+    const depleted = total - active;
+    const pill     = active > 0
+      ? '<span class="pill pill-green">active</span>'
+      : '<span class="pill pill-slate">depleted</span>';
+    return `<tr>
+      <td><strong>${escHtml(asset)}</strong></td>
+      <td style="text-align:right">${total}</td>
+      <td style="text-align:right">${active}</td>
+      <td style="text-align:right">${depleted}</td>
+      <td>${pill}</td>
+    </tr>`;
+  }).join('');
+
+  _showLotEmpty(false);
+}
+
+function _showLotEmpty(show) {
+  document.getElementById('tc-lots-empty').style.display    = show ? '' : 'none';
+  document.getElementById('tc-asset-table').style.display   = show ? 'none' : '';
+  if (show) document.getElementById('tc-lot-stats').style.display = 'none';
+}
+
+// ── Dedup panel ───────────────────────────────────────────────────────────────
+
+async function loadDedupSources() {
+  const loading = document.getElementById('tc-dedup-loading');
+  loading.style.display = '';
+  try {
+    const sources = await apiFetch('GET', '/dedup/sources');
+    _renderDedupSources(sources);
+  } catch (err) {
+    console.warn('Could not load dedup sources:', err.message);
+    _showDedupEmpty(true);
+  } finally {
+    loading.style.display = 'none';
+  }
+}
+
+function _renderDedupSources(sources) {
+  if (!sources || sources.length === 0) { _showDedupEmpty(true); return; }
+
+  const tbody = document.getElementById('tc-dedup-tbody');
+  tbody.innerHTML = sources.map(s => {
+    const kb   = (s.size_bytes / 1024).toFixed(1);
+    const mtime = s.last_modified ? s.last_modified.replace('T', ' ').replace('Z', ' UTC') : '—';
+    return `<tr>
+      <td><strong>${escHtml(s.source)}</strong></td>
+      <td style="text-align:right" class="mono">${kb} KB</td>
+      <td class="mono">${escHtml(mtime)}</td>
+    </tr>`;
+  }).join('');
+
+  _showDedupEmpty(false);
+}
+
+function _showDedupEmpty(show) {
+  document.getElementById('tc-dedup-empty').style.display = show ? '' : 'none';
+  document.getElementById('tc-dedup-table').style.display = show ? 'none' : '';
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   addWallet();               // seed one empty wallet row
   checkHealth();
   setInterval(checkHealth, 20_000);
+  loadTaxCenter();           // populate Tax Center on page load
 });
 </script>
 </body>
