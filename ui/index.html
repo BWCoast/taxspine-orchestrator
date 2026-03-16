@@ -171,10 +171,22 @@
         </div>
         <div>
           <label for="run-country" class="text-xs text-gray-400 mb-1 block">Country</label>
-          <select id="run-country" class="select w-full">
+          <select id="run-country" class="select w-full" onchange="toggleCountryFields()">
             <option value="norway">🇳🇴 Norway</option>
             <option value="uk">🇬🇧 United Kingdom</option>
           </select>
+        </div>
+        <!-- Pipeline mode — Norway only -->
+        <div id="pipeline-mode-section">
+          <label for="run-pipeline-mode" class="text-xs text-gray-400 mb-1 block">Pipeline mode</label>
+          <select id="run-pipeline-mode" class="select w-full">
+            <option value="per_file">Per file — one report per source (default)</option>
+            <option value="nor_multi">NOR MULTI — unified FIFO pool, single report</option>
+          </select>
+          <p class="text-xs text-gray-600 mt-1 leading-snug">
+            <em>nor_multi</em> combines all CSV sources into one FIFO lot pool.
+            Use when you want a single combined report across all exchange files.
+          </p>
         </div>
         <div>
           <label for="run-valuation" class="text-xs text-gray-400 mb-1 block">Valuation</label>
@@ -216,6 +228,11 @@
           </p>
         </div>
 
+        <div>
+          <label for="run-case-name" class="text-xs text-gray-400 mb-1 block">Case name <span class="text-gray-600">(optional)</span></label>
+          <input type="text" id="run-case-name" class="input" placeholder="e.g. 2025 Norway – main wallets">
+        </div>
+
         <button id="run-btn" onclick="runReport()" class="btn-primary w-full mt-1">
           ▶ Run Report
         </button>
@@ -244,9 +261,26 @@
 
     <!-- Jobs list -->
     <div class="card p-5">
-      <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center justify-between mb-3">
         <h2 class="font-semibold text-white text-xs uppercase tracking-widest">Job History</h2>
         <button onclick="loadJobs()" class="btn-secondary text-xs">↻ Refresh</button>
+      </div>
+      <!-- Filter bar -->
+      <div class="flex flex-wrap gap-2 mb-4">
+        <input id="jobs-filter-query" type="search" class="input text-xs flex-1 min-w-0" style="min-width:120px;"
+          placeholder="Search case name…" oninput="applyJobFilters()">
+        <select id="jobs-filter-status" class="select text-xs" onchange="applyJobFilters()">
+          <option value="">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="running">Running</option>
+          <option value="completed">Completed</option>
+          <option value="failed">Failed</option>
+        </select>
+        <select id="jobs-filter-country" class="select text-xs" onchange="applyJobFilters()">
+          <option value="">All countries</option>
+          <option value="norway">🇳🇴 Norway</option>
+          <option value="uk">🇬🇧 UK</option>
+        </select>
       </div>
       <!-- F-15: shows loading → empty state → job rows -->
       <div id="jobs-list" class="flex flex-col gap-2">
@@ -404,7 +438,8 @@ const API = (location.protocol === 'file:') ? 'http://localhost:8000' : '';
 // ── Dynamic defaults ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('run-tax-year').value = new Date().getFullYear() - 1;
-  togglePricesField(); // sync warning banner with initial valuation selection
+  togglePricesField();    // sync warning banner with initial valuation selection
+  toggleCountryFields();  // show/hide pipeline-mode section for initial country
 });
 
 // ── Health check ────────────────────────────────────────────────────────────
@@ -638,6 +673,13 @@ function togglePricesField() {
   document.getElementById('dummy-valuation-warning').classList.toggle('hidden', v !== 'dummy');
 }
 
+function toggleCountryFields() {
+  const country = document.getElementById('run-country').value;
+  // Pipeline mode only makes sense for Norway CSV jobs
+  document.getElementById('pipeline-mode-section').style.display =
+    country === 'norway' ? '' : 'none';
+}
+
 async function fetchPrices() {
   const taxYear = parseInt(document.getElementById('run-tax-year').value);
   const btn     = document.getElementById('fetch-prices-btn');
@@ -680,6 +722,10 @@ async function runReport() {
   const includeTrades = document.getElementById('run-trades').checked;
   const debug = document.getElementById('run-debug').checked;
   const dry = document.getElementById('run-dry').checked;
+  const caseName = document.getElementById('run-case-name').value.trim() || null;
+  const pipelineMode = country === 'norway'
+    ? document.getElementById('run-pipeline-mode').value
+    : 'per_file';
 
   if (!workspace.xrpl_accounts.length && !workspace.csv_files.length) {
     alert('Add at least one XRPL account or CSV file to the workspace first.');
@@ -707,6 +753,8 @@ async function runReport() {
         include_trades: includeTrades,
         debug_valuation: debug,
         dry_run: dry,
+        case_name: caseName,
+        pipeline_mode: pipelineMode,
       }),
     });
 
@@ -741,7 +789,7 @@ async function loadJobs() {
     const r = await fetch(`${API}/jobs?limit=500`);
     if (!r.ok) throw new Error();
     _cachedJobs = await r.json();
-    renderJobs(_cachedJobs);
+    renderJobs(_filteredJobs());
   } catch {
     document.getElementById('jobs-list').innerHTML =
       '<p class="text-red-400 text-xs text-center py-4">Could not load jobs — is the server running?</p>';
@@ -754,8 +802,12 @@ function _jobRowHtml(j) {
   const sel = j.id === selectedJobId ? 'selected' : '';
   const hasReport = j.output?.report_html_path ? '📄' : '';
   const label = j.input.case_name || `${j.input.country} ${j.input.tax_year}`;
-  const canDelete = j.status !== 'running';
-  const deleteBtn = canDelete
+  const isRunning = j.status === 'running';
+  const cancelBtn = isRunning
+    ? `<button class="btn-secondary flex-shrink-0" style="padding:3px 8px;font-size:11px;color:#f87171;"
+        onclick="event.stopPropagation();cancelJob('${escHtml(j.id)}')" title="Cancel job">⏹ Cancel</button>`
+    : '';
+  const deleteBtn = !isRunning
     ? `<button class="btn-danger flex-shrink-0" style="padding:3px 8px;font-size:11px;"
         onclick="event.stopPropagation();deleteJob('${escHtml(j.id)}')" title="Delete job">✕</button>`
     : '';
@@ -776,11 +828,13 @@ function _jobRowHtml(j) {
           <span>${j.input.xrpl_accounts.length} acct${j.input.xrpl_accounts.length !== 1 ? 's' : ''}
             + ${j.input.csv_files.length} CSV${j.input.csv_files.length !== 1 ? 's' : ''}</span>
           ${j.input.dry_run ? '<span class="text-yellow-600 font-semibold">DRY RUN</span>' : ''}
+          ${j.input.pipeline_mode === 'nor_multi' ? '<span class="text-blue-400 font-semibold">NOR MULTI</span>' : ''}
         </div>
         ${j.output?.error_message
           ? `<details class="mt-1"><summary class="text-xs text-red-400 cursor-pointer">Show error</summary><pre class="text-xs text-red-300 mt-1 whitespace-pre-wrap">${escHtml(j.output.error_message)}</pre></details>` : ''}
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">
+        ${cancelBtn}
         ${deleteBtn}
         <span class="text-gray-600 text-sm">›</span>
       </div>
@@ -825,7 +879,27 @@ function renderJobs(jobs) {
 
 function loadMoreJobs() {
   _visibleJobCount += _LOAD_MORE_STEP;
-  renderJobs(_cachedJobs);
+  renderJobs(_filteredJobs());
+}
+
+function _filteredJobs() {
+  const q       = (document.getElementById('jobs-filter-query')?.value || '').toLowerCase().trim();
+  const status  = document.getElementById('jobs-filter-status')?.value || '';
+  const country = document.getElementById('jobs-filter-country')?.value || '';
+  return _cachedJobs.filter(j => {
+    if (status  && j.status         !== status)  return false;
+    if (country && j.input?.country !== country) return false;
+    if (q) {
+      const name = (j.input?.case_name || '').toLowerCase();
+      if (!name.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function applyJobFilters() {
+  _visibleJobCount = _INITIAL_VISIBLE;
+  renderJobs(_filteredJobs());
 }
 
 function badgeHtml(status) {
@@ -851,7 +925,8 @@ async function openResultsById(jobId) {
 
 async function openResults(job) {
   selectedJobId = job.id;
-  renderJobs(_cachedJobs.length ? _cachedJobs : await fetchJobsList());
+  if (!_cachedJobs.length) await fetchJobsList();
+  renderJobs(_filteredJobs());
 
   const panel = document.getElementById('results-panel');
   panel.classList.remove('hidden');
@@ -887,7 +962,7 @@ async function openResults(job) {
     const fr = await fetch(`${API}/jobs/${job.id}/files`);
     if (fr.ok) {
       const files = await fr.json();
-      const icons = { gains: '📈', wealth: '💰', summary: '🗂️', log: '📋' };
+      const icons = { gains: '📈', wealth: '💰', summary: '🗂️', log: '📋', rf1159: '🇳🇴', review: '🔍' };
 
       // Non-report files (gains, wealth, summary, log buttons)
       for (const [kind, path] of Object.entries(files)) {
@@ -1049,9 +1124,27 @@ async function deleteJob(jobId) {
       selectedJobId = null;
       document.getElementById('results-panel').classList.add('hidden');
     }
-    renderJobs(_cachedJobs);
+    renderJobs(_filteredJobs());
   } catch {
     alert('Delete failed — is the server running?');
+  }
+}
+
+async function cancelJob(jobId) {
+  if (!confirm('Cancel this running job?')) return;
+  try {
+    const r = await fetch(`${API}/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      alert(`Could not cancel job: ${data.detail || r.statusText}`);
+      return;
+    }
+    // Refresh the job in the cache and re-render
+    _cachedJobs = _cachedJobs.map(j => j.id === jobId ? data : j);
+    renderJobs(_filteredJobs());
+    if (selectedJobId === jobId) openResults(data);
+  } catch {
+    alert('Cancel failed — is the server running?');
   }
 }
 

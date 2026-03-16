@@ -1,13 +1,13 @@
 # taxspine-orchestrator
 
-Internal API for creating, tracking, and executing tax-computation jobs that
-coordinate blockchain-reader and taxspine-\* CLI pipelines.
+Internal API and dashboard for creating, tracking, and executing tax-computation
+jobs that coordinate `blockchain-reader` and `taxspine-*` CLI pipelines.
 
 ## Quick start
 
 ```bash
 # Create a virtual environment and install
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
 # Run the dev server
@@ -17,24 +17,80 @@ uvicorn taxspine_orchestrator.main:app --reload
 pytest
 ```
 
+Open `ui/index.html` in a browser (or serve it statically) to use the dashboard.
+
+---
+
 ## API overview
 
-| Method | Path                          | Description                          |
-|--------|-------------------------------|--------------------------------------|
-| GET    | `/health`                     | Health check                         |
-| POST   | `/jobs`                       | Create a new tax job                 |
-| GET    | `/jobs`                       | List jobs (with optional filters)    |
-| GET    | `/jobs/{job_id}`              | Get a single job by ID               |
-| POST   | `/jobs/{job_id}/start`        | Execute the job synchronously        |
-| POST   | `/jobs/{job_id}/attach-csv`   | Attach uploaded CSVs to a pending job|
-| GET    | `/jobs/{job_id}/files`        | List output files for a job          |
-| GET    | `/jobs/{job_id}/files/{kind}` | Download a single output file        |
-| POST   | `/uploads/csv`                | Upload a CSV file                    |
+| Method | Path                            | Description                                 |
+|--------|---------------------------------|---------------------------------------------|
+| GET    | `/health`                       | Health check (liveness probe)               |
+| GET    | `/alerts`                       | Active alerts across all jobs               |
+| POST   | `/jobs`                         | Create a new tax job                        |
+| GET    | `/jobs`                         | List jobs (filters, sort, paging)           |
+| GET    | `/jobs/{id}`                    | Get a single job by ID                      |
+| POST   | `/jobs/{id}/start`              | Execute the job (async background)          |
+| POST   | `/jobs/{id}/cancel`             | Cancel a pending or running job             |
+| DELETE | `/jobs/{id}`                    | Delete a job record (non-running only)      |
+| POST   | `/jobs/{id}/attach-csv`         | Attach uploaded CSVs to a pending job       |
+| GET    | `/jobs/{id}/files`              | Map of output file kinds → paths            |
+| GET    | `/jobs/{id}/files/{kind}`       | Download a single output file               |
+| GET    | `/jobs/{id}/reports`            | List all HTML report files for a job        |
+| GET    | `/jobs/{id}/reports/{index}`    | Download HTML report by index               |
+| GET    | `/jobs/{id}/review`             | Norway review summary (unlinked transfers…) |
+| POST   | `/uploads/csv`                  | Upload a CSV file                           |
+| GET    | `/workspace`                    | Get current workspace config                |
+| POST   | `/workspace/accounts`           | Add an XRPL account to the workspace        |
+| DELETE | `/workspace/accounts/{account}` | Remove an XRPL account                      |
+| POST   | `/workspace/csv`                | Add a CSV file to the workspace             |
+| DELETE | `/workspace/csv`                | Remove a CSV file from the workspace        |
+| POST   | `/workspace/run`                | Create + start a job from workspace config  |
+| GET    | `/lots`                         | Carry-forward lot store summary             |
+| GET    | `/dedup`                        | Dedup store health and stats                |
+| GET    | `/prices/fetch`                 | Fetch NOK price table for a tax year        |
 
-### Example — create and start a job
+---
+
+## Authentication
+
+Set `ORCHESTRATOR_KEY` in the environment to enable API key authentication.
+All mutating endpoints (`POST`, `DELETE`) require the key in the
+`X-API-Key` header.  Read-only endpoints (`GET`) are always public.
 
 ```bash
-# 1. Create (case_name and dry_run are optional)
+export ORCHESTRATOR_KEY=my-secret-key
+curl -H "X-API-Key: my-secret-key" -X POST http://localhost:8000/jobs ...
+```
+
+When `ORCHESTRATOR_KEY` is unset (default for local dev), all endpoints are
+unrestricted.
+
+---
+
+## Job lifecycle
+
+```
+PENDING ──▶ RUNNING ──▶ COMPLETED   (outputs populated)
+   │                └──▶ FAILED      (error_message + log_path set)
+   └── cancel ──▶ FAILED
+```
+
+- `POST /jobs` creates a job in `PENDING` state.
+- `POST /jobs/{id}/start` executes the pipeline in a background thread and
+  returns `202` immediately.  Poll `GET /jobs/{id}` or refresh the dashboard.
+- Starting a job that is already `RUNNING` returns `409`.
+- Starting a job that is already `COMPLETED` or `FAILED` returns `200` with
+  the current state unchanged (idempotent).
+- On server restart any jobs left in `RUNNING` state are automatically
+  marked `FAILED` (crash recovery via `SqliteJobStore`).
+
+---
+
+## Creating and starting a job
+
+```bash
+# 1. Create
 curl -s -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
   -d '{
@@ -42,325 +98,238 @@ curl -s -X POST http://localhost:8000/jobs \
     "tax_year": 2025,
     "country": "norway",
     "csv_files": ["data/generic-events-2025.csv"],
-    "case_name": "2025 Norway – main wallets",
-    "dry_run": false
+    "case_name": "2025 Norway – main wallets"
   }'
 
 # 2. Start (replace JOB_ID with the id from step 1)
 curl -s -X POST http://localhost:8000/jobs/JOB_ID/start
+
+# 3. Poll for completion
+curl -s http://localhost:8000/jobs/JOB_ID
 ```
-
-### Filtering, sorting, and paging
-
-`GET /jobs` accepts optional query parameters for filtering, sorting, and
-paging.  Results are always sorted by `created_at` descending (newest
-first).
-
-| Parameter | Type   | Default | Description                                  |
-|-----------|--------|---------|----------------------------------------------|
-| `status`  | enum   | —       | Filter by job status                         |
-| `country` | enum   | —       | Filter by country                            |
-| `query`   | string | —       | Case-insensitive substring match on case_name|
-| `limit`   | int    | 50      | Max results (1–200)                           |
-| `offset`  | int    | 0       | Number of results to skip                    |
-
-```bash
-# Only completed jobs
-curl -s 'http://localhost:8000/jobs?status=completed'
-
-# Only Norway jobs
-curl -s 'http://localhost:8000/jobs?country=norway'
-
-# Combine filters
-curl -s 'http://localhost:8000/jobs?status=failed&country=uk'
-
-# Free-text search against case_name
-curl -s 'http://localhost:8000/jobs?query=wallets'
-
-# Paging: first page of 10
-curl -s 'http://localhost:8000/jobs?limit=10'
-
-# Paging: second page of 10
-curl -s 'http://localhost:8000/jobs?limit=10&offset=10'
-```
-
-Valid values — `status`: `pending`, `running`, `completed`, `failed`;
-`country`: `norway`, `uk`.  Invalid enum values return `422`.
-`query` is a free-text substring match against `case_name`; jobs without
-a `case_name` are excluded when `query` is provided.
-
-### Listing and downloading output files
-
-```bash
-# All output files for a job (JSON map of kind → path)
-curl -s http://localhost:8000/jobs/JOB_ID/files
-
-# Download a specific file (gains | wealth | summary | log)
-curl -OJ http://localhost:8000/jobs/JOB_ID/files/gains
-```
-
-`GET /jobs/{id}/files` returns a JSON map of populated kinds → paths.
-
-`GET /jobs/{id}/files/{kind}` streams the actual file with appropriate
-headers:
-
-| Kind      | Content-Type       | Filename pattern           |
-|-----------|--------------------|----------------------------|
-| `gains`   | `text/csv`         | `gains-<job_id>.csv`       |
-| `wealth`  | `text/csv`         | `wealth-<job_id>.csv`      |
-| `summary` | `application/json` | `summary-<job_id>.json`    |
-| `log`     | `text/plain`       | `log-<job_id>.txt`         |
-
-Returns `404` if the job does not exist, the path is not recorded, or the
-file is missing from disk.
-
-## Job execution
-
-A job represents **inputs + country + tax year → tax report**.
-
-Inputs can be any combination of:
-
-- **XRPL accounts** — fetched via `blockchain-reader` into `events.json`.
-- **Generic-events CSV files** — already in the canonical CSV schema
-  understood by the taxspine CLIs.  Passed through as-is; the orchestrator
-  does not parse or validate CSV content.
-
-At least one of `xrpl_accounts` or `csv_files` must be non-empty.  If both
-are empty the job fails immediately.
 
 ### Input combinations
 
-| xrpl_accounts | csv_files | Behaviour                                     |
-|---------------|-----------|-----------------------------------------------|
-| non-empty     | empty     | XRPL-only: reader + tax CLI                   |
+| xrpl_accounts | csv_files | Behaviour                                      |
+|---------------|-----------|------------------------------------------------|
+| non-empty     | empty     | XRPL-only: blockchain-reader + tax CLI         |
 | empty         | non-empty | CSV-only: tax CLI only (reader skipped)        |
 | non-empty     | non-empty | Combined: reader + tax CLI with both inputs    |
 | empty         | empty     | Immediate FAILED — no inputs                   |
 
-Jobs also accept:
+### Job fields
 
-- **`case_name`** (optional string) — a human-friendly label
-  (e.g. `"2025 Norway – main wallets"`) for dashboard display and
-  free-text filtering.  Defaults to `null`.
-- **`dry_run`** (optional bool, default `false`) — when `true`, the job
-  skips actual CLI execution and only writes an execution log listing
-  the commands that *would* have been run.  Useful for testing and
-  previewing the pipeline.
-- **`valuation_mode`** (optional enum, default `"dummy"`) — controls how
-  the tax CLIs value assets.  See [Valuation mode](#valuation-mode).
-- **`csv_prices_path`** (optional string, default `null`) — path to a
-  CSV price table on disk.  Only used when `valuation_mode` is
-  `"price_table"`.
+| Field             | Type    | Default     | Description                                               |
+|-------------------|---------|-------------|-----------------------------------------------------------|
+| `xrpl_accounts`   | list    | `[]`        | XRPL r-addresses to fetch                                 |
+| `csv_files`       | list    | `[]`        | CSV file specs (`{path, source_type}`) or bare paths      |
+| `tax_year`        | int     | required    | Tax year to report (e.g. `2025`)                          |
+| `country`         | enum    | required    | `"norway"` or `"uk"`                                      |
+| `case_name`       | string  | `null`      | Human-friendly label for dashboard display and filtering  |
+| `pipeline_mode`   | enum    | `"per_file"`| `"per_file"` or `"nor_multi"` (Norway CSV jobs only)      |
+| `valuation_mode`  | enum    | `"dummy"`   | `"dummy"` or `"price_table"`                              |
+| `csv_prices_path` | string  | `null`      | Path to NOK price table CSV (required for `price_table`)  |
+| `include_trades`  | bool    | `false`     | Include XRPL DEX swap events (OfferCreate)                |
+| `debug_valuation` | bool    | `false`     | Write valuation diagnostics to the execution log          |
+| `dry_run`         | bool    | `false`     | Log commands that would run; skip actual CLI execution    |
 
-Every job response includes **`created_at`** and **`updated_at`**
-timestamps (UTC, ISO-8601).  `created_at` is set once on creation;
-`updated_at` is refreshed whenever the job status or output changes.
+### Pipeline mode (Norway CSV jobs)
 
-### Pipeline steps
+| Mode        | Behaviour                                                           |
+|-------------|---------------------------------------------------------------------|
+| `per_file`  | Run `taxspine-nor-report` once per CSV file (default)               |
+| `nor_multi` | Run `taxspine-nor-multi` once with all files — unified FIFO pool    |
 
-1. **Validate CSV paths** — each path in `csv_files` is checked for
-   existence.  If any file is missing the job fails before any CLI is called.
-2. **blockchain-reader** _(XRPL-only / combined)_ — exports XRPL events
-   for the given accounts into `events.json`.
-3. **Country-specific tax CLI** — processes all inputs and produces gains
-   CSV, wealth CSV, and summary JSON.
+`nor_multi` produces a single combined HTML report and merges FIFO lots
+across all sources.  Use it when exchange files must share a common cost
+basis.  Has no effect on XRPL jobs or UK jobs.
 
-### Norway — combined example
+---
 
-```
-blockchain-reader \
-    --mode scenario \
-    --xrpl-account rACCOUNT1 \
-    --output <work_dir>/events.json
+## Filtering, sorting, and paging jobs
 
-taxspine-nor-report \
-    --xrpl-scenario <work_dir>/events.json \
-    --generic-events-csv data/generic-events-2025.csv \
-    --tax-year 2025 \
-    --gains-csv <work_dir>/gains.csv \
-    --wealth-csv <work_dir>/wealth.csv \
-    --summary-json <work_dir>/summary.json
-```
+`GET /jobs` accepts optional query parameters:
 
-### Norway — CSV-only example
+| Parameter | Type   | Default | Description                                  |
+|-----------|--------|---------|----------------------------------------------|
+| `status`  | enum   | —       | Filter by status (`pending`/`running`/…)     |
+| `country` | enum   | —       | Filter by country (`norway`/`uk`)            |
+| `query`   | string | —       | Substring match on `case_name` (jobs without a `case_name` are excluded) |
+| `limit`   | int    | 50      | Max results (1–200)                          |
+| `offset`  | int    | 0       | Number of results to skip                    |
 
-```
-taxspine-nor-report \
-    --generic-events-csv data/file1.csv \
-    --generic-events-csv data/file2.csv \
-    --tax-year 2025 \
-    --gains-csv <work_dir>/gains.csv \
-    --wealth-csv <work_dir>/wealth.csv \
-    --summary-json <work_dir>/summary.json
-```
-
-### UK pipeline
-
-Uses `taxspine-uk-report` with `--uk-gains-csv`, `--uk-wealth-csv`,
-`--uk-summary-json` instead.  The `--xrpl-scenario` and
-`--generic-events-csv` flags work the same way.
-
-### Job lifecycle
-
-```
-PENDING ──▶ RUNNING ──▶ COMPLETED   (outputs populated)
-                    └──▶ FAILED      (error_message + log_path set)
-```
-
-Starting a non-PENDING job is a no-op — the current state is returned
-unchanged.
-
-### Dry-run mode
-
-Set `"dry_run": true` when creating a job to preview the pipeline
-without executing any CLI commands:
+Results are always sorted `created_at` descending (newest first).
 
 ```bash
-curl -s -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "xrpl_accounts": ["rEXAMPLE1"],
-    "tax_year": 2025,
-    "country": "norway",
-    "dry_run": true
-  }'
-
-# Start as usual
-curl -s -X POST http://localhost:8000/jobs/JOB_ID/start
+curl -s 'http://localhost:8000/jobs?status=completed&country=norway&limit=10'
+curl -s 'http://localhost:8000/jobs?query=main+wallets'
 ```
 
-The resulting execution log will contain entries like:
+---
 
-```
-[DRY RUN] — no subprocesses will be executed.
-[would run] $ blockchain-reader --mode scenario --xrpl-account rEXAMPLE1 --output …/events.json
-[would run] $ taxspine-nor-report --xrpl-scenario …/events.json --tax-year 2025 …
-```
-
-The job completes with `status=completed` and only `log_path` set.
-Gains, wealth, and summary paths remain `null`.
-
-If the job has no inputs (`xrpl_accounts=[]` and `csv_files=[]`), it
-still fails even in dry-run mode — there is nothing useful to preview.
-
-### Valuation mode
-
-By default jobs use `valuation_mode: "dummy"`, which relies on the
-built-in default valuation in the tax CLIs (no extra flags are passed).
-
-Set `valuation_mode: "price_table"` to instruct the tax CLIs to use an
-external CSV price table.  You must also provide `csv_prices_path`
-pointing to an existing file on disk.  The orchestrator verifies the
-file exists but does not validate its contents — it is passed as-is
-via `--csv-prices <path>` to the tax CLI.
+## Cancelling and deleting jobs
 
 ```bash
-curl -s -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "xrpl_accounts": ["rEXAMPLE1"],
-    "tax_year": 2025,
-    "country": "norway",
-    "csv_files": [],
-    "case_name": "2025 NO with price table",
-    "valuation_mode": "price_table",
-    "csv_prices_path": "/tmp/prices-2025-nok.csv"
-  }'
+# Cancel a pending or running job (marks it FAILED)
+curl -s -X POST http://localhost:8000/jobs/JOB_ID/cancel
+
+# Delete a job record — only works for non-running jobs; does NOT remove output files
+curl -s -X DELETE http://localhost:8000/jobs/JOB_ID
+# → {"deleted": true, "id": "JOB_ID"}
 ```
 
-Failure scenarios:
+Attempting to delete a `RUNNING` job returns `409`.  Cancel it first, then
+delete.
 
-- `valuation_mode=price_table` without `csv_prices_path` → FAILED
-  (`"valuation_mode=price_table requires csv_prices_path"`).
-- `csv_prices_path` points to a non-existent file → FAILED
-  (`"CSV price table not found: <path>"`).
+---
 
-In dry-run mode the `--csv-prices` flag appears in the logged
-would-be commands but no subprocess is called.
+## Output files
 
-### Error handling
+### List all files for a job
 
-| Condition                   | Behaviour                                           |
-|-----------------------------|-----------------------------------------------------|
-| No inputs at all            | FAILED — `"job has no inputs …"`                    |
-| CSV file not found          | FAILED — `"CSV file not found: <path>"`             |
-| price_table without path    | FAILED — `"valuation_mode=price_table requires …"` |
-| CSV price table not found   | FAILED — `"CSV price table not found: <path>"`      |
-| blockchain-reader fails     | FAILED — `"blockchain-reader failed (rc=N)"`        |
-| Tax CLI fails               | FAILED — `"tax report CLI failed (rc=N)"`           |
+```bash
+curl -s http://localhost:8000/jobs/JOB_ID/files
+```
 
-In all failure cases `job.output.log_path` points to an `execution.log`
-with captured commands and stderr.
+Returns a JSON map of kind → absolute path for every file that was produced.
 
-### Configuration
+### Download a file
 
-CLI paths and working directories are configured via environment variables:
+```bash
+curl -OJ http://localhost:8000/jobs/JOB_ID/files/{kind}
+```
 
-| Variable                   | Default                              |
-|----------------------------|--------------------------------------|
-| `TEMP_DIR`                 | `/tmp/taxspine_orchestrator/tmp`     |
-| `OUTPUT_DIR`               | `/tmp/taxspine_orchestrator/output`  |
-| `UPLOAD_DIR`               | `/tmp/taxspine_orchestrator/uploads` |
-| `BLOCKCHAIN_READER_CLI`    | `blockchain-reader`                  |
-| `TAXSPINE_NOR_REPORT_CLI`  | `taxspine-nor-report`                |
-| `TAXSPINE_UK_REPORT_CLI`   | `taxspine-uk-report`                 |
+| Kind      | Content-Type       | Description                                 |
+|-----------|--------------------|---------------------------------------------|
+| `gains`   | `text/csv`         | Realised gains/losses CSV                   |
+| `wealth`  | `text/csv`         | Year-end wealth CSV                         |
+| `summary` | `application/json` | Pipeline summary JSON                       |
+| `report`  | `text/html`        | First HTML report (backward-compat alias)   |
+| `rf1159`  | `application/json` | RF-1159 Altinn export JSON (Norway only)    |
+| `review`  | `application/json` | Norway review summary (transfer warnings)   |
+| `log`     | `text/plain`       | Execution log                               |
+
+### HTML reports (multiple per job)
+
+Jobs with multiple XRPL accounts or CSV files produce one HTML report each.
+
+```bash
+# List all report files
+curl -s http://localhost:8000/jobs/JOB_ID/reports
+
+# Download report by index (0-based)
+curl -OJ http://localhost:8000/jobs/JOB_ID/reports/0
+```
+
+---
 
 ## Uploading CSVs
 
-The orchestrator can accept CSV files over HTTP so that dashboard users
-don't need direct filesystem access.  Upload a file, then reference its
-path in `csv_files` when creating a job (or attach it afterwards).
-
-### Upload a CSV
-
 ```bash
+# Upload a file; use the returned path in csv_files
 curl -F "file=@generic-events-2025.csv" http://localhost:8000/uploads/csv
+# → {"id": "...", "path": "/tmp/.../uploads/....csv", "original_filename": "..."}
+
+# Attach an uploaded CSV to an existing pending job
+curl -s -X POST http://localhost:8000/jobs/JOB_ID/attach-csv \
+  -H "Content-Type: application/json" \
+  -d '{"csv_paths": ["/tmp/.../uploads/....csv"]}'
 ```
 
-Example response:
+Accepted MIME types: `text/csv`, `application/vnd.ms-excel`,
+`application/octet-stream`.  Obviously wrong types (e.g. `image/*`) return
+`400`.
+
+---
+
+## Valuation mode
+
+| Mode          | Behaviour                                                        |
+|---------------|------------------------------------------------------------------|
+| `dummy`       | Built-in default valuation — no extra flags passed (default)     |
+| `price_table` | Passes `--csv-prices <path>` to the tax CLI                      |
+
+When `valuation_mode=price_table` the `csv_prices_path` field is required and
+the file must exist on disk.  The orchestrator checks existence but does not
+validate contents.
+
+---
+
+## Dry-run mode
+
+Set `"dry_run": true` to preview the pipeline without executing any CLIs:
+
+```bash
+curl -s -X POST http://localhost:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"xrpl_accounts":["rEXAMPLE1"],"tax_year":2025,"country":"norway","dry_run":true}'
+curl -s -X POST http://localhost:8000/jobs/JOB_ID/start
+```
+
+The execution log will contain `[would run] $ ...` entries for each command
+that would have been executed.  The job completes as `COMPLETED` with only
+`log_path` set.
+
+---
+
+## Health check
+
+`GET /health` always returns `200` (liveness probe semantics).  The response
+body includes diagnostic fields:
 
 ```json
 {
-  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "path": "/tmp/taxspine_orchestrator/uploads/a1b2c3d4-e5f6-7890-abcd-ef1234567890.csv",
-  "original_filename": "generic-events-2025.csv"
+  "status": "ok",
+  "db": "ok",
+  "output_dir": "ok",
+  "clis": {
+    "blockchain-reader": "ok",
+    "taxspine-nor-report": "ok",
+    "taxspine-uk-report": "ok",
+    "taxspine-nor-multi": "ok"
+  }
 }
 ```
 
-Use the returned `path` value in `JobInput.csv_files` — either when
-creating a job or via the attach endpoint below.
+`status` is `"ok"` when all checks pass, `"degraded"` otherwise.
 
-Content-type validation is intentionally lenient: `text/csv`,
-`application/vnd.ms-excel`, and `application/octet-stream` are all
-accepted.  Obviously wrong types (e.g. `image/*`) are rejected with
-a `400`.
+---
 
-### Attach CSVs to an existing job
+## Configuration
 
-```bash
-curl -s -X POST http://localhost:8000/jobs/JOB_ID/attach-csv \
-  -H "Content-Type: application/json" \
-  -d '{
-    "csv_paths": [
-      "/tmp/taxspine_orchestrator/uploads/a1b2c3d4-....csv"
-    ]
-  }'
-```
+All settings are controlled via environment variables:
 
-Behaviour:
+| Variable                    | Default                              | Description                        |
+|-----------------------------|--------------------------------------|------------------------------------|
+| `ORCHESTRATOR_KEY`          | *(unset)*                            | API key — leave unset for open dev |
+| `TEMP_DIR`                  | `/tmp/taxspine_orchestrator/tmp`     | Working dir for CLI runs           |
+| `OUTPUT_DIR`                | `/tmp/taxspine_orchestrator/output`  | Persisted output files             |
+| `UPLOAD_DIR`                | `/tmp/taxspine_orchestrator/uploads` | Uploaded CSV files                 |
+| `DATA_DIR`                  | `/tmp/taxspine_orchestrator/data`    | Persistent data (DB, dedup, lots)  |
+| `PRICES_DIR`                | `/tmp/taxspine_orchestrator/prices`  | Fetched NOK price tables           |
+| `SQLITE_DB`                 | `$DATA_DIR/jobs.db`                  | Job store database                 |
+| `LOT_STORE_DB`              | `$DATA_DIR/lots.db`                  | Carry-forward lot store            |
+| `DEDUP_DIR`                 | `$DATA_DIR/dedup`                    | Per-source dedup stores            |
+| `BLOCKCHAIN_READER_CLI`     | `blockchain-reader`                  | Path or name of blockchain-reader  |
+| `TAXSPINE_NOR_REPORT_CLI`   | `taxspine-nor-report`                | Norway per-file CLI                |
+| `TAXSPINE_UK_REPORT_CLI`    | `taxspine-uk-report`                 | UK report CLI                      |
+| `TAXSPINE_NOR_MULTI_CLI`    | `taxspine-nor-multi`                 | Norway multi-source CLI            |
+| `TAXSPINE_XRPL_NOR_CLI`     | `taxspine-xrpl-nor`                  | Norway XRPL CLI                    |
 
-- Only works for **PENDING** jobs (returns `400` otherwise).
-- Each path must point to an existing file (returns `400` if any is
-  missing).
-- Paths already present in `csv_files` are not duplicated.
-- Returns the updated job.
+---
 
-This is a convenience endpoint for the dashboard.  Users can still
-supply `csv_files` directly in the initial `POST /jobs` body.
+## Error handling
 
-## Non-goals (current scope)
+| Condition                        | Behaviour                                              |
+|----------------------------------|--------------------------------------------------------|
+| No inputs (empty accounts + CSV) | FAILED — `"job has no inputs"`                         |
+| CSV file not found               | FAILED — `"CSV file not found: <path>"`                |
+| `price_table` without path       | FAILED — `"valuation_mode=price_table requires …"`     |
+| CSV price table not found        | FAILED — `"CSV price table not found: <path>"`         |
+| `blockchain-reader` fails        | FAILED — `"blockchain-reader failed (rc=N)"`           |
+| Tax CLI fails                    | FAILED — `"tax report CLI failed (rc=N)"`              |
+| Delete a running job             | `409` — cancel the job first                           |
+| Start an already-running job     | `409`                                                  |
 
-- No background workers or async queues (execution is synchronous).
-- No authentication or multi-tenant concerns.
-- No database (in-memory store).
-- No CSV schema validation (CSVs are treated as opaque files).
+In all failure cases `job.output.log_path` points to `execution.log` with
+captured commands and stderr.
