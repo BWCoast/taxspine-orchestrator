@@ -21,7 +21,7 @@ from pydantic import BaseModel, field_validator
 from .config import settings
 from .dedup import router as dedup_router
 from .lots import router as lots_router
-from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, ValuationMode, WorkspaceConfig, _XRPL_ADDRESS_RE
+from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, PipelineMode, ValuationMode, WorkspaceConfig, _XRPL_ADDRESS_RE
 from .prices import router as prices_router
 from .services import JobService
 from .storage import SqliteJobStore, WorkspaceStore
@@ -682,6 +682,7 @@ class WorkspaceRunRequest(BaseModel):
     tax_year: int
     country: Country = Country.NORWAY
     case_name: Optional[str] = None
+    pipeline_mode: PipelineMode = PipelineMode.PER_FILE
     valuation_mode: ValuationMode = ValuationMode.DUMMY
     csv_prices_path: Optional[str] = None
     include_trades: bool = False
@@ -719,6 +720,7 @@ def run_workspace_report(body: WorkspaceRunRequest) -> Job:
         tax_year=body.tax_year,
         country=body.country,
         case_name=label,
+        pipeline_mode=body.pipeline_mode,
         valuation_mode=body.valuation_mode,
         csv_prices_path=body.csv_prices_path,
         include_trades=body.include_trades,

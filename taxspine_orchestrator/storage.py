@@ -340,6 +340,13 @@ class WorkspaceStore:
                 self._save_locked(cfg)
             return cfg
 
+    def clear(self) -> WorkspaceConfig:
+        """Reset the workspace to an empty state (removes all accounts and CSV files)."""
+        with self._lock:
+            empty = WorkspaceConfig()
+            self._save_locked(empty)
+            return empty
+
     def remove_csv(self, path: str) -> WorkspaceConfig:
         """Remove a CSV file by path."""
         with self._lock:
