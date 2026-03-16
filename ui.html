@@ -250,6 +250,7 @@
     }
     .pill-green { background: rgba(34,197,94,0.15); color: #86efac; }
     .pill-slate { background: rgba(100,116,139,0.2); color: #94a3b8; }
+    .pill-amber { background: rgba(245,158,11,0.15); color: #fcd34d; }
 
     .tc-empty { color: #64748b; font-size: 0.85rem; text-align: center; padding: 24px 0; }
     .tc-loading { color: #6366f1; font-size: 0.82rem; padding: 8px 0; }
@@ -386,23 +387,65 @@
 
   <!-- ── Card 4: Tax Center ── -->
   <div class="card" id="tax-center-card">
-    <h3>🏛 Tax Center <span style="font-weight:400;font-size:0.82rem;color:#64748b;">carry-forward lots · ingestion health</span></h3>
+    <h3>🏛 Tax Center <span style="font-weight:400;font-size:0.82rem;color:#64748b;">holdings · carry-forward lots · ingestion health</span></h3>
+
+    <!-- Shared year selector (Lots + Holdings tabs) -->
+    <div class="tc-year-row">
+      <select id="tc-year-select" onchange="onTaxYearChange(this.value)">
+        <option value="">— select year —</option>
+      </select>
+      <button class="tc-refresh" onclick="loadTaxCenter()">↻ Refresh</button>
+      <span class="tc-loading" id="tc-year-loading" style="display:none">Loading…</span>
+    </div>
 
     <!-- Tabs -->
     <div class="tc-tabs">
-      <button class="tc-tab active" onclick="tcTab('lots', this)">📦 Carry-Forward Lots</button>
+      <button class="tc-tab active" onclick="tcTab('portfolio', this)">📊 Holdings</button>
+      <button class="tc-tab" onclick="tcTab('lots', this)">📦 Carry-Forward Lots</button>
       <button class="tc-tab" onclick="tcTab('dedup', this)">🔁 Ingestion Sources</button>
     </div>
 
-    <!-- Panel: Lots -->
-    <div class="tc-panel active" id="tc-panel-lots">
-      <div class="tc-year-row">
-        <select id="tc-year-select" onchange="loadLotYear(this.value)">
-          <option value="">— select year —</option>
-        </select>
-        <button class="tc-refresh" onclick="loadTaxCenter()">↻ Refresh</button>
-        <span class="tc-loading" id="tc-lots-loading" style="display:none">Loading…</span>
+    <!-- Panel: Holdings (portfolio) -->
+    <div class="tc-panel active" id="tc-panel-portfolio">
+      <span class="tc-loading" id="tc-portfolio-loading" style="display:none">Loading…</span>
+
+      <!-- Summary stats -->
+      <div class="tc-stat-row" id="tc-portfolio-stats" style="display:none">
+        <div class="tc-stat">
+          <div class="num" id="tc-port-stat-assets">—</div>
+          <div class="lbl">Assets held</div>
+        </div>
+        <div class="tc-stat">
+          <div class="num" id="tc-port-stat-lots" style="color:#a5b4fc">—</div>
+          <div class="lbl">Active lots</div>
+        </div>
+        <div class="tc-stat" id="tc-port-stat-basis-wrap">
+          <div class="num" id="tc-port-stat-basis" style="color:#86efac; font-size:1.1rem">—</div>
+          <div class="lbl">Total cost basis (NOK)</div>
+        </div>
       </div>
+
+      <div id="tc-portfolio-wrap">
+        <div class="tc-empty" id="tc-portfolio-empty">No lot snapshots yet. Run a Norway pipeline job to populate carry-forward state.</div>
+        <table class="tc-table" id="tc-portfolio-table" style="display:none">
+          <thead>
+            <tr>
+              <th>Asset</th>
+              <th style="text-align:right">Quantity</th>
+              <th style="text-align:right">Cost Basis (NOK)</th>
+              <th style="text-align:right">Avg Cost/Unit</th>
+              <th style="text-align:right">Lots</th>
+              <th>Basis</th>
+            </tr>
+          </thead>
+          <tbody id="tc-portfolio-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Panel: Lots -->
+    <div class="tc-panel" id="tc-panel-lots">
+      <span class="tc-loading" id="tc-lots-loading" style="display:none">Loading…</span>
 
       <!-- Stats row -->
       <div class="tc-stat-row" id="tc-lot-stats" style="display:none">
@@ -444,7 +487,7 @@
 
     <!-- Panel: Dedup -->
     <div class="tc-panel" id="tc-panel-dedup">
-      <div class="tc-year-row">
+      <div class="tc-year-row" style="margin-top:4px">
         <button class="tc-refresh" onclick="loadDedupSources()">↻ Refresh</button>
         <span class="tc-loading" id="tc-dedup-loading" style="display:none">Loading…</span>
       </div>
@@ -778,6 +821,12 @@ function tcTab(name, btn) {
   document.getElementById(`tc-panel-${name}`).classList.add('active');
 }
 
+/** Called when the shared year selector changes — refreshes Lots + Holdings panels. */
+function onTaxYearChange(year) {
+  loadLotYear(year);
+  loadPortfolioYear(year);
+}
+
 async function loadTaxCenter() {
   await Promise.all([loadLotYears(), loadDedupSources()]);
 }
@@ -796,13 +845,16 @@ async function loadLotYears() {
     if (years.length > 0) {
       const pick = years.includes(parseInt(prev, 10)) ? prev : String(years[0]);
       sel.value = pick;
-      await loadLotYear(pick);
+      // Load both panels for the selected year.
+      await Promise.all([loadLotYear(pick), loadPortfolioYear(pick)]);
     } else {
       _showLotEmpty(true);
+      _showPortfolioEmpty(true);
     }
   } catch (err) {
     console.warn('Could not load lot years:', err.message);
     _showLotEmpty(true);
+    _showPortfolioEmpty(true);
   }
 }
 
@@ -861,6 +913,75 @@ function _showLotEmpty(show) {
   document.getElementById('tc-lots-empty').style.display    = show ? '' : 'none';
   document.getElementById('tc-asset-table').style.display   = show ? 'none' : '';
   if (show) document.getElementById('tc-lot-stats').style.display = 'none';
+}
+
+// ── Holdings / Portfolio panel ─────────────────────────────────────────────────
+
+const _nokFmt = new Intl.NumberFormat('nb-NO', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const _qtyFmt = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8 });
+
+function _fmtNok(str)  { const v = parseFloat(str); return isNaN(v) ? '—' : _nokFmt.format(v); }
+function _fmtQty(str)  { const v = parseFloat(str); return isNaN(v) ? '—' : _qtyFmt.format(v); }
+
+async function loadPortfolioYear(year) {
+  if (!year) { _showPortfolioEmpty(true); return; }
+  const loading = document.getElementById('tc-portfolio-loading');
+  loading.style.display = '';
+  try {
+    const data = await apiFetch('GET', `/lots/${year}/portfolio`);
+    _renderPortfolio(data);
+  } catch (err) {
+    console.warn('Could not load portfolio:', err.message);
+    _showPortfolioEmpty(true);
+  } finally {
+    loading.style.display = 'none';
+  }
+}
+
+function _renderPortfolio(data) {
+  const assets = data.assets || [];
+  if (assets.length === 0) { _showPortfolioEmpty(true); return; }
+
+  // Summary stats
+  const totalLots  = assets.reduce((s, a) => s + a.lot_count, 0);
+  const totalBasis = assets.reduce((s, a) => s + parseFloat(a.total_cost_basis_nok || '0'), 0);
+  const anyMissing = assets.some(a => a.has_missing_basis);
+
+  document.getElementById('tc-port-stat-assets').textContent = assets.length;
+  document.getElementById('tc-port-stat-lots').textContent   = totalLots;
+  document.getElementById('tc-port-stat-basis').textContent  =
+    (anyMissing ? '≥ ' : '') + 'kr ' + _nokFmt.format(totalBasis);
+  document.getElementById('tc-portfolio-stats').style.display = '';
+
+  // Table rows
+  const tbody = document.getElementById('tc-portfolio-tbody');
+  tbody.innerHTML = assets.map(a => {
+    const basisStr = a.total_cost_basis_nok !== null
+      ? (a.has_missing_basis ? '≥ ' : '') + 'kr ' + _fmtNok(a.total_cost_basis_nok)
+      : '—';
+    const avgStr = a.avg_cost_nok_per_unit !== null
+      ? (a.has_missing_basis ? '≈ ' : '') + 'kr ' + _fmtNok(a.avg_cost_nok_per_unit)
+      : '—';
+    const basisPill = a.has_missing_basis
+      ? '<span class="pill pill-amber">⚠ partial</span>'
+      : '<span class="pill pill-green">complete</span>';
+    return `<tr>
+      <td><strong>${escHtml(a.asset)}</strong></td>
+      <td style="text-align:right" class="mono">${_fmtQty(a.total_quantity)}</td>
+      <td style="text-align:right" class="mono">${escHtml(basisStr)}</td>
+      <td style="text-align:right" class="mono">${escHtml(avgStr)}</td>
+      <td style="text-align:right">${a.lot_count}</td>
+      <td>${basisPill}</td>
+    </tr>`;
+  }).join('');
+
+  _showPortfolioEmpty(false);
+}
+
+function _showPortfolioEmpty(show) {
+  document.getElementById('tc-portfolio-empty').style.display   = show ? '' : 'none';
+  document.getElementById('tc-portfolio-table').style.display   = show ? 'none' : '';
+  if (show) document.getElementById('tc-portfolio-stats').style.display = 'none';
 }
 
 // ── Dedup panel ───────────────────────────────────────────────────────────────

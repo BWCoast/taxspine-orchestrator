@@ -200,3 +200,97 @@ def get_carry_forward_lots(year: int) -> list[dict]:
         }
         for lot in lots
     ]
+
+
+# ── Portfolio (per-asset aggregated holdings) ─────────────────────────────────
+
+
+@router.get("/{year}/portfolio", summary="Per-asset holdings portfolio for a tax year")
+def get_portfolio(year: int) -> dict:
+    """Return per-asset aggregated holdings from carry-forward lots.
+
+    Aggregates all active (remaining_quantity > 0) lots for *year* into one
+    row per asset.  Useful as a portfolio snapshot before running the next
+    tax year — shows what positions are being carried forward, their total
+    quantity, and total cost basis.
+
+    Each asset entry includes:
+
+    - ``asset``                — asset symbol (e.g. "BTC")
+    - ``lot_count``            — number of active lots
+    - ``total_quantity``       — sum of remaining_quantity (string, full precision)
+    - ``total_cost_basis_nok`` — sum of remaining_cost_basis_nok for lots that
+                                  have a resolved basis (partial when
+                                  ``has_missing_basis`` is true)
+    - ``avg_cost_nok_per_unit``— total_cost_basis_nok / total_quantity (nullable)
+    - ``has_missing_basis``    — true when one or more lots lack a cost basis
+
+    Raises 404 when no snapshot exists for *year*.
+    """
+    from decimal import Decimal  # noqa: PLC0415 – avoid module-level import cycle risk
+
+    store = _open_store()
+    if store is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No lot store found at {settings.LOT_STORE_DB}",
+        )
+
+    try:
+        with store:
+            years = store.list_years()
+            if year not in years:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No lot snapshot found for tax year {year}. "
+                           f"Available years: {years or 'none'}",
+                )
+            lots = store.load_carry_forward(year)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not read portfolio for {year}: {exc}",
+        ) from exc
+
+    # Aggregate per asset — accumulate resolved basis separately from total qty.
+    aggregates: dict[str, dict] = {}
+    for lot in lots:
+        if lot.asset not in aggregates:
+            aggregates[lot.asset] = {
+                "asset": lot.asset,
+                "lot_count": 0,
+                "total_quantity": Decimal("0"),
+                "total_cost_basis_nok": Decimal("0"),
+                "has_missing_basis": False,
+            }
+        agg = aggregates[lot.asset]
+        agg["lot_count"] += 1
+        agg["total_quantity"] += lot.remaining_quantity
+        if lot.remaining_cost_basis_nok is not None:
+            agg["total_cost_basis_nok"] += lot.remaining_cost_basis_nok
+        else:
+            agg["has_missing_basis"] = True
+
+    # Build sorted output list.
+    result = []
+    for key in sorted(aggregates):
+        agg = aggregates[key]
+        qty   = agg["total_quantity"]
+        basis = agg["total_cost_basis_nok"]
+        avg   = (basis / qty).quantize(Decimal("0.01")) if qty > 0 else None
+        result.append({
+            "asset":                 agg["asset"],
+            "lot_count":             agg["lot_count"],
+            "total_quantity":        str(qty),
+            "total_cost_basis_nok":  str(basis),
+            "avg_cost_nok_per_unit": str(avg) if avg is not None else None,
+            "has_missing_basis":     agg["has_missing_basis"],
+        })
+
+    return {
+        "tax_year":    year,
+        "asset_count": len(result),
+        "assets":      result,
+    }

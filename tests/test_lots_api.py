@@ -234,3 +234,174 @@ class TestCarryForwardLots:
             # remaining_quantity and original_quantity should be parseable as Decimal.
             Decimal(lot["remaining_quantity"])
             Decimal(lot["original_quantity"])
+
+
+# ── TestPortfolio ─────────────────────────────────────────────────────────────
+
+
+def _write_lots_with_missing_basis(db_path: Path, tax_year: int) -> None:
+    """Write lots where one lot lacks a cost basis (basis_status=missing)."""
+    from tax_spine.fifo.models import Lot
+    from tax_spine.pipeline.lot_store import LotPersistenceStore
+
+    lots = [
+        Lot(
+            lot_id="lot_xrp_0",
+            origin_event_id="evt_xrp_0",
+            origin_type="transfer_in",
+            asset="XRP",
+            acquired_timestamp="2025-06-01T00:00:00+00:00",
+            ordering_key="2025-06-01_00000",
+            original_quantity=Decimal("1000"),
+            remaining_quantity=Decimal("1000"),
+            original_cost_basis_nok=None,       # no basis
+            remaining_cost_basis_nok=None,
+            basis_status="missing",
+        ),
+        Lot(
+            lot_id="lot_xrp_1",
+            origin_event_id="evt_xrp_1",
+            origin_type="buy",
+            asset="XRP",
+            acquired_timestamp="2025-09-01T00:00:00+00:00",
+            ordering_key="2025-09-01_00000",
+            original_quantity=Decimal("500"),
+            remaining_quantity=Decimal("500"),
+            original_cost_basis_nok=Decimal("5000"),
+            remaining_cost_basis_nok=Decimal("5000"),
+            basis_status="resolved",
+        ),
+    ]
+    with LotPersistenceStore(str(db_path)) as store:
+        store.save_year_end_lots(lots, tax_year)
+
+
+class TestPortfolio:
+    def test_404_when_no_db(self, client, tmp_path):
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", tmp_path / "lots.db"):
+            resp = client.get("/lots/2025/portfolio")
+        assert resp.status_code == 404
+
+    def test_404_for_missing_year(self, client, tmp_path):
+        db = tmp_path / "lots.db"
+        _write_lots(db, 2024)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            resp = client.get("/lots/2023/portfolio")
+        assert resp.status_code == 404
+
+    def test_returns_two_assets(self, client, tmp_path):
+        db = tmp_path / "lots.db"
+        _write_lots(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        assert data["asset_count"] == 2
+        assert data["tax_year"] == 2025
+        symbols = {a["asset"] for a in data["assets"]}
+        assert symbols == {"BTC", "ETH"}
+
+    def test_assets_sorted_alphabetically(self, client, tmp_path):
+        db = tmp_path / "lots.db"
+        _write_lots(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        symbols = [a["asset"] for a in data["assets"]]
+        assert symbols == sorted(symbols)
+
+    def test_btc_totals(self, client, tmp_path):
+        """2 active BTC lots at 0.5 each → total_qty=1.0, basis=100000."""
+        db = tmp_path / "lots.db"
+        _write_lots(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        btc = next(a for a in data["assets"] if a["asset"] == "BTC")
+        assert Decimal(btc["total_quantity"]) == Decimal("1.0")
+        assert Decimal(btc["total_cost_basis_nok"]) == Decimal("100000")
+        assert btc["lot_count"] == 2
+        assert btc["has_missing_basis"] is False
+
+    def test_eth_totals(self, client, tmp_path):
+        """1 active ETH lot at 1.5 → total_qty=1.5, basis=15000, avg=10000."""
+        db = tmp_path / "lots.db"
+        _write_lots(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        eth = next(a for a in data["assets"] if a["asset"] == "ETH")
+        assert Decimal(eth["total_quantity"]) == Decimal("1.5")
+        assert Decimal(eth["total_cost_basis_nok"]) == Decimal("15000")
+        assert eth["lot_count"] == 1
+
+    def test_avg_cost_per_unit(self, client, tmp_path):
+        """avg_cost_nok_per_unit = basis / qty (rounded to 2dp)."""
+        db = tmp_path / "lots.db"
+        _write_lots(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        btc = next(a for a in data["assets"] if a["asset"] == "BTC")
+        # 100000 / 1.0 = 100000.00
+        assert Decimal(btc["avg_cost_nok_per_unit"]) == Decimal("100000.00")
+        eth = next(a for a in data["assets"] if a["asset"] == "ETH")
+        # 15000 / 1.5 = 10000.00
+        assert Decimal(eth["avg_cost_nok_per_unit"]) == Decimal("10000.00")
+
+    def test_has_missing_basis_false_for_resolved(self, client, tmp_path):
+        db = tmp_path / "lots.db"
+        _write_lots(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        for asset in data["assets"]:
+            assert asset["has_missing_basis"] is False
+
+    def test_has_missing_basis_true_when_any_missing(self, client, tmp_path):
+        """An asset with one missing-basis lot gets has_missing_basis=True."""
+        db = tmp_path / "lots.db"
+        _write_lots_with_missing_basis(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        xrp = next(a for a in data["assets"] if a["asset"] == "XRP")
+        assert xrp["has_missing_basis"] is True
+
+    def test_missing_basis_partial_total(self, client, tmp_path):
+        """Resolved-basis lots contribute to total; missing-basis lots do not."""
+        db = tmp_path / "lots.db"
+        _write_lots_with_missing_basis(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        xrp = next(a for a in data["assets"] if a["asset"] == "XRP")
+        # Only the resolved lot (500 XRP, basis 5000) contributes to basis total.
+        assert Decimal(xrp["total_cost_basis_nok"]) == Decimal("5000")
+        # Total quantity still includes both lots.
+        assert Decimal(xrp["total_quantity"]) == Decimal("1500")
+
+    def test_all_required_fields_present(self, client, tmp_path):
+        db = tmp_path / "lots.db"
+        _write_lots(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        required = {"asset", "lot_count", "total_quantity", "total_cost_basis_nok",
+                    "avg_cost_nok_per_unit", "has_missing_basis"}
+        for asset in data["assets"]:
+            assert required <= asset.keys(), f"Missing fields in {asset}"
+
+    def test_decimal_precision_preserved(self, client, tmp_path):
+        """Quantity and basis are returned as strings parseable by Decimal."""
+        db = tmp_path / "lots.db"
+        _write_lots(db, 2025)
+        from unittest.mock import patch
+        with patch.object(_real_settings, "LOT_STORE_DB", db):
+            data = client.get("/lots/2025/portfolio").json()
+        for asset in data["assets"]:
+            Decimal(asset["total_quantity"])
+            Decimal(asset["total_cost_basis_nok"])
+            if asset["avg_cost_nok_per_unit"] is not None:
+                Decimal(asset["avg_cost_nok_per_unit"])
