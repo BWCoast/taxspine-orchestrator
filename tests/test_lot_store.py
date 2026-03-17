@@ -164,7 +164,7 @@ class TestDryRunLotStore:
                 "country": "norway",
                 "dry_run": True,
             })
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         job_id = resp.json()["id"]
         job = start_and_wait(client, job_id)
         log = Path(job["output"]["log_path"]).read_text(encoding="utf-8")
@@ -181,7 +181,7 @@ class TestDryRunLotStore:
                 "country": "norway",
                 "dry_run": True,
             })
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         job_id = resp.json()["id"]
         job = start_and_wait(client, job_id)
         log = Path(job["output"]["log_path"]).read_text(encoding="utf-8")
@@ -199,7 +199,7 @@ class TestDryRunLotStore:
                 "pipeline_mode": "nor_multi",
                 "dry_run": True,
             })
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         job_id = resp.json()["id"]
         job = start_and_wait(client, job_id)
         log = Path(job["output"]["log_path"]).read_text(encoding="utf-8")
@@ -215,7 +215,7 @@ class TestDryRunLotStore:
                 "country": "uk",
                 "dry_run": True,
             })
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         job_id = resp.json()["id"]
         job = start_and_wait(client, job_id)
         log = Path(job["output"]["log_path"]).read_text(encoding="utf-8")

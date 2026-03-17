@@ -247,7 +247,10 @@ class TestDryRun:
         assert "DRY RUN" in log_text
         assert "[would run]" in log_text
         assert "taxspine-xrpl-nor" in log_text
-        assert "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" in log_text
+        # LC-05: XRPL addresses are redacted from logs; the literal address must
+        # NOT appear — only the redaction placeholder should be present.
+        assert "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" not in log_text
+        assert "[XRPL-ADDRESS]" in log_text
 
     @patch("taxspine_orchestrator.services.subprocess.run")
     def test_dry_run_no_inputs_still_fails(

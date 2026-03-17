@@ -100,16 +100,49 @@ class TestAuthHeader:
         finally:
             _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
 
-    def test_get_endpoint_does_not_require_key(self, client: TestClient) -> None:
-        """GET /jobs → 200 even when ORCHESTRATOR_KEY is set (no header sent)."""
+    def test_get_endpoint_requires_key_when_configured(self, client: TestClient) -> None:
+        """GET /jobs → 401 when ORCHESTRATOR_KEY is set and no key is sent.
+
+        SEC-12 fix: sensitive read endpoints are now gated on the same key
+        as mutating endpoints.  An unauthenticated network peer on the LAN
+        can no longer read job records, FIFO lots, or cost-basis data.
+        """
         from taxspine_orchestrator.config import settings as _s
 
         original = _s.ORCHESTRATOR_KEY
         _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
         try:
-            # No X-Orchestrator-Key header; GET is read-only and exempt.
             resp = client.get("/jobs")
+            assert resp.status_code == 401, (
+                "GET /jobs must return 401 when ORCHESTRATOR_KEY is set "
+                "and no X-Orchestrator-Key header is provided"
+            )
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
+
+    def test_get_endpoint_succeeds_with_correct_key(self, client: TestClient) -> None:
+        """GET /jobs → 200 when the correct key header is provided."""
+        from taxspine_orchestrator.config import settings as _s
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
+        try:
+            resp = client.get("/jobs", headers={"X-Orchestrator-Key": "secret-key"})
             assert resp.status_code == 200
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
+
+    def test_get_endpoint_no_auth_when_key_empty(self, client: TestClient) -> None:
+        """GET /jobs → 200 when ORCHESTRATOR_KEY is '' (dev/local mode)."""
+        from taxspine_orchestrator.config import settings as _s
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = ""  # type: ignore[assignment]
+        try:
+            resp = client.get("/jobs")
+            assert resp.status_code == 200, (
+                "GET /jobs must be freely accessible when ORCHESTRATOR_KEY is empty"
+            )
         finally:
             _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
 
@@ -155,7 +188,7 @@ class TestPathContainment:
         job store so the download endpoint will try to serve it.  Returns
         the job id."""
         resp = client.post("/jobs", json=_SAMPLE_JOB)
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         job_id = resp.json()["id"]
 
         # Directly inject a tampered report_html_path into the job store.
@@ -213,6 +246,215 @@ class TestPathContainment:
         resp = client.post("/workspace/csv", json={"path": missing})
         assert resp.status_code == 400
         assert "not found" in resp.json()["detail"].lower()
+
+    def test_attach_csv_outside_upload_dir_returns_400(
+        self, client: TestClient
+    ) -> None:
+        """SEC-13 — POST /jobs/{id}/attach-csv with a path outside UPLOAD_DIR
+        must return 400, even for an authenticated caller.
+
+        Previously, only /workspace/csv enforced containment; attach-csv
+        bypassed it, allowing arbitrary filesystem paths to be forwarded
+        to the tax CLI.
+        """
+        # Create a pending job.
+        resp = client.post("/jobs", json=_SAMPLE_JOB)
+        assert resp.status_code == 201
+        job_id = resp.json()["id"]
+
+        # Attempt to attach a path outside UPLOAD_DIR.
+        resp = client.post(
+            f"/jobs/{job_id}/attach-csv",
+            json={"csv_files": [{"path": "/etc/passwd", "source_type": "generic_events"}]},
+        )
+        assert resp.status_code == 400, (
+            "attach-csv must reject paths outside UPLOAD_DIR with 400"
+        )
+        assert "upload directory" in resp.json()["detail"]
+
+    def test_attach_csv_inside_upload_dir_passes_containment(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """SEC-13 — attach-csv accepts paths inside UPLOAD_DIR (containment
+        check passes; only fails because the file does not exist, not 400
+        due to traversal)."""
+        from taxspine_orchestrator.config import settings as _s
+
+        resp = client.post("/jobs", json=_SAMPLE_JOB)
+        job_id = resp.json()["id"]
+
+        # A path that IS inside UPLOAD_DIR (file does not exist → 400 file-not-found,
+        # not 400 traversal-error).
+        inside_path = str(_s.UPLOAD_DIR / "some_nonexistent.csv")
+        resp = client.post(
+            f"/jobs/{job_id}/attach-csv",
+            json={"csv_files": [{"path": inside_path, "source_type": "generic_events"}]},
+        )
+        # 400 is expected because the file doesn't exist — but NOT because of
+        # path containment.  The error message must NOT say "upload directory".
+        assert resp.status_code == 400
+        assert "upload directory" not in resp.json()["detail"]
+        assert "not found" in resp.json()["detail"]
+
+
+# ── TestSec14PricesFetchAuth ──────────────────────────────────────────────────
+
+
+class TestSec14PricesFetchAuth:
+    """SEC-14 — POST /prices/fetch must require the orchestrator key.
+
+    Previously this endpoint was unauthenticated, allowing any LAN peer to
+    trigger repeated outbound HTTPS requests to Kraken and Norges Bank.
+    """
+
+    def test_fetch_prices_requires_key_when_configured(
+        self, client: TestClient
+    ) -> None:
+        """POST /prices/fetch → 401 when ORCHESTRATOR_KEY is set and no key sent."""
+        from taxspine_orchestrator.config import settings as _s
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
+        try:
+            resp = client.post("/prices/fetch", json={"year": 2023})
+            assert resp.status_code == 401, (
+                "POST /prices/fetch must return 401 when key is configured "
+                "and the header is missing"
+            )
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
+
+    def test_get_prices_requires_key_when_configured(
+        self, client: TestClient
+    ) -> None:
+        """GET /prices → 401 when ORCHESTRATOR_KEY is set and no key sent."""
+        from taxspine_orchestrator.config import settings as _s
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
+        try:
+            resp = client.get("/prices")
+            assert resp.status_code == 401
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
+
+    def test_fetch_prices_succeeds_with_correct_key(
+        self, client: TestClient
+    ) -> None:
+        """POST /prices/fetch → not 401 when the correct key is provided."""
+        from taxspine_orchestrator.config import settings as _s
+        from unittest.mock import patch, MagicMock
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
+        try:
+            mock_resp = MagicMock()
+            mock_resp.asset = "COMBINED"
+            mock_resp.year = 2023
+            mock_resp.path = "/tmp/combined_nok_2023.csv"
+            mock_resp.rows = 365
+            mock_resp.age_hours = 0.0
+            mock_resp.cached = False
+            mock_resp.unsupported_assets = []
+
+            with patch(
+                "taxspine_orchestrator.prices.fetch_all_prices_for_year",
+                return_value=mock_resp,
+            ):
+                resp = client.post(
+                    "/prices/fetch",
+                    json={"year": 2023},
+                    headers={"X-Orchestrator-Key": "secret-key"},
+                )
+            assert resp.status_code != 401
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
+
+    def test_fetch_prices_no_auth_when_key_empty(
+        self, client: TestClient
+    ) -> None:
+        """POST /prices/fetch → not 401 when ORCHESTRATOR_KEY is '' (dev mode)."""
+        from taxspine_orchestrator.config import settings as _s
+        from unittest.mock import patch, MagicMock
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = ""  # type: ignore[assignment]
+        try:
+            mock_resp = MagicMock()
+            mock_resp.asset = "COMBINED"
+            mock_resp.year = 2023
+            mock_resp.path = "/tmp/combined_nok_2023.csv"
+            mock_resp.rows = 365
+            mock_resp.age_hours = 0.0
+            mock_resp.cached = False
+            mock_resp.unsupported_assets = []
+
+            with patch(
+                "taxspine_orchestrator.prices.fetch_all_prices_for_year",
+                return_value=mock_resp,
+            ):
+                resp = client.post("/prices/fetch", json={"year": 2023})
+            assert resp.status_code != 401
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
+
+
+# ── TestSec12LotsAndWorkspaceAuth ─────────────────────────────────────────────
+
+
+class TestSec12LotsAndWorkspaceAuth:
+    """SEC-12 — Sensitive read endpoints beyond /jobs require auth."""
+
+    def test_get_workspace_requires_key_when_configured(
+        self, client: TestClient
+    ) -> None:
+        from taxspine_orchestrator.config import settings as _s
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
+        try:
+            resp = client.get("/workspace")
+            assert resp.status_code == 401
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
+
+    def test_get_alerts_requires_key_when_configured(
+        self, client: TestClient
+    ) -> None:
+        from taxspine_orchestrator.config import settings as _s
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
+        try:
+            resp = client.get("/alerts")
+            assert resp.status_code == 401
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
+
+    def test_get_lots_years_requires_key_when_configured(
+        self, client: TestClient
+    ) -> None:
+        from taxspine_orchestrator.config import settings as _s
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
+        try:
+            resp = client.get("/lots/years")
+            assert resp.status_code == 401
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
+
+    def test_health_endpoint_always_public(self, client: TestClient) -> None:
+        """GET /health must remain unauthenticated (liveness probe)."""
+        from taxspine_orchestrator.config import settings as _s
+
+        original = _s.ORCHESTRATOR_KEY
+        _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
+        try:
+            resp = client.get("/health")
+            assert resp.status_code == 200
+        finally:
+            _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
 
 
 # ── TestXrplAddressValidation ─────────────────────────────────────────────────

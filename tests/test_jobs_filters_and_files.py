@@ -56,7 +56,7 @@ def _create_job(
     if case_name is not None:
         payload["case_name"] = case_name
     resp = client.post("/jobs", json=payload)
-    assert resp.status_code == 200
+    assert resp.status_code == 201
     return resp.json()
 
 
@@ -352,7 +352,7 @@ class TestCaseName:
                 "case_name": "2025 Norway \u2013 main wallets",
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         body = resp.json()
         assert body["input"]["case_name"] == "2025 Norway \u2013 main wallets"
 
@@ -365,7 +365,7 @@ class TestCaseName:
             "/jobs",
             json={"tax_year": 2025, "country": "uk"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert resp.json()["input"]["case_name"] is None
 
     def test_filter_by_query_substring(self, client: TestClient) -> None:

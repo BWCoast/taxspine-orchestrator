@@ -37,7 +37,7 @@ def _create_job(client: TestClient, **overrides: object) -> dict:
         **overrides,
     }
     resp = client.post("/jobs", json=payload)
-    assert resp.status_code == 200
+    assert resp.status_code == 201
     return resp.json()
 
 

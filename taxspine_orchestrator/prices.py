@@ -41,6 +41,7 @@ import datetime
 import json
 import time
 import urllib.request
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -223,8 +224,12 @@ def fetch_all_prices_for_year(year: int) -> FetchPricesResponse:
 # ── Data sources ──────────────────────────────────────────────────────────────
 
 
-def _fetch_kraken_usd_prices(pair: str, year: int) -> dict[str, float]:
-    """Return {date_str: close_usd} from Kraken daily OHLC for *pair* in *year*."""
+def _fetch_kraken_usd_prices(pair: str, year: int) -> dict[str, Decimal]:
+    """Return {date_str: close_usd} from Kraken daily OHLC for *pair* in *year*.
+
+    Prices are returned as ``Decimal`` (not float) so that subsequent
+    multiplication with NOK/USD rates is exact and audit-traceable.
+    """
     tz = datetime.timezone.utc
     since = int(datetime.datetime(year, 1, 1, tzinfo=tz).timestamp())
 
@@ -254,11 +259,12 @@ def _fetch_kraken_usd_prices(pair: str, year: int) -> dict[str, float]:
     year_start = datetime.datetime(year, 1, 1, tzinfo=tz)
     year_end   = datetime.datetime(year, 12, 31, 23, 59, 59, tzinfo=tz)
 
-    prices: dict[str, float] = {}
+    prices: dict[str, Decimal] = {}
     for candle in result[data_key]:
         # [timestamp, open, high, low, close, vwap, volume, count]
         ts    = int(candle[0])
-        close = float(candle[4])
+        # Convert via str() to avoid floating-point rounding artefacts.
+        close = Decimal(str(candle[4]))
         dt    = datetime.datetime.fromtimestamp(ts, tz=tz)
         if year_start <= dt <= year_end:
             prices[dt.strftime("%Y-%m-%d")] = close
@@ -271,11 +277,14 @@ def _fetch_kraken_usd_prices(pair: str, year: int) -> dict[str, float]:
     return prices
 
 
-def _fetch_norges_bank_usd_nok(year: int) -> dict[str, float]:
+def _fetch_norges_bank_usd_nok(year: int) -> dict[str, Decimal]:
     """Return {date_str: usd_nok_rate} from Norges Bank for business days in *year*.
 
     Uses the official SDMX JSON API.  Only business days are published;
     call ``_fill_calendar_gaps`` to fill weekends and public holidays.
+
+    Rates are returned as ``Decimal`` to avoid float rounding when
+    multiplied with USD prices.
     """
     start = f"{year}-01-01"
     end   = f"{year}-12-31"
@@ -307,21 +316,22 @@ def _fetch_norges_bank_usd_nok(year: int) -> dict[str, float]:
             f"Unexpected Norges Bank response format: {exc}"
         ) from exc
 
-    rates: dict[str, float] = {}
+    rates: dict[str, Decimal] = {}
     for idx_str, value_list in obs.items():
-        rates[dates[int(idx_str)]] = float(value_list[0])
+        # Convert via str() to avoid float rounding artefacts.
+        rates[dates[int(idx_str)]] = Decimal(str(value_list[0]))
 
     if not rates:
         raise RuntimeError(f"Norges Bank returned no USD/NOK rates for {year}.")
     return rates
 
 
-def _fill_calendar_gaps(rates: dict[str, float], year: int) -> dict[str, float]:
+def _fill_calendar_gaps(rates: dict[str, Decimal], year: int) -> dict[str, Decimal]:
     """Fill weekend/public-holiday gaps by carrying the last known rate forward."""
     start   = datetime.date(year, 1, 1)
     end     = datetime.date(year, 12, 31)
-    filled: dict[str, float] = {}
-    last_rate: float | None = None
+    filled: dict[str, Decimal] = {}
+    last_rate: Decimal | None = None
 
     current = start
     while current <= end:
@@ -346,7 +356,8 @@ def _fetch_and_write(pair_usd: str, asset: str, year: int, dest: Path) -> None:
         nok_rate = nok_rates.get(date_str)
         if nok_rate is None:
             continue
-        rows.append((date_str, f"{usd_price * nok_rate:.4f}"))
+        nok_price = (usd_price * nok_rate).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        rows.append((date_str, str(nok_price)))
 
     if not rows:
         raise RuntimeError(

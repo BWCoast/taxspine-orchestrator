@@ -59,7 +59,7 @@ def _create_job_with_review(
     from taxspine_orchestrator import main as _m
 
     resp = client.post("/jobs", json={"tax_year": 2025, "country": "norway"})
-    assert resp.status_code == 200
+    assert resp.status_code == 201
     job_id = resp.json()["id"]
 
     written_paths: list[Path] = []

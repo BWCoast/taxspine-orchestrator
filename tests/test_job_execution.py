@@ -262,3 +262,387 @@ class TestIdempotency:
         assert resp2.json()["status"] == "failed"
         # Only one call despite two start attempts.
         assert mock_run.call_count == 1
+
+
+# ── API-01: --rf1159-json flag in XRPL command builder ───────────────────────
+
+
+class TestXrplRf1159Flag:
+    """Verify that _build_xrpl_command emits --rf1159-json for Norway jobs.
+
+    API-01 (CRITICAL): the flag was previously accepted as a parameter but
+    never appended to the command list, so XRPL jobs never produced an
+    RF-1159 export.
+    """
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    def test_norway_xrpl_command_contains_rf1159_json_flag(self, mock_run, client):
+        """Norway XRPL job → command includes --rf1159-json."""
+        mock_run.side_effect = [_make_ok(), _make_ok()]
+
+        resp = client.post("/jobs", json=_NORWAY_INPUT)
+        job_id = resp.json()["id"]
+        client.post(f"/jobs/{job_id}/start")
+
+        # Both account commands should carry --rf1159-json.
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            assert "--rf1159-json" in cmd, (
+                f"Expected --rf1159-json in XRPL command, got: {cmd}"
+            )
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    def test_norway_xrpl_rf1159_path_uses_correct_suffix(self, mock_run, client):
+        """Two-account Norway job → each account gets its own indexed rf1159 path."""
+        mock_run.side_effect = [_make_ok(), _make_ok()]
+
+        resp = client.post("/jobs", json=_NORWAY_INPUT)
+        job_id = resp.json()["id"]
+        client.post(f"/jobs/{job_id}/start")
+
+        cmd0 = mock_run.call_args_list[0][0][0]
+        cmd1 = mock_run.call_args_list[1][0][0]
+
+        idx0 = cmd0.index("--rf1159-json")
+        idx1 = cmd1.index("--rf1159-json")
+
+        path0 = cmd0[idx0 + 1]
+        path1 = cmd1[idx1 + 1]
+
+        # First account → rf1159_0.json; second → rf1159_1.json.
+        assert path0.endswith("rf1159_0.json"), f"Unexpected path: {path0}"
+        assert path1.endswith("rf1159_1.json"), f"Unexpected path: {path1}"
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    def test_uk_xrpl_command_omits_rf1159_json_flag(self, mock_run, client):
+        """UK XRPL job → --rf1159-json must NOT be emitted (Norway-only form)."""
+        mock_run.side_effect = [_make_ok()]
+
+        resp = client.post("/jobs", json=_UK_INPUT)
+        job_id = resp.json()["id"]
+        client.post(f"/jobs/{job_id}/start")
+
+        cmd = mock_run.call_args_list[0][0][0]
+        assert "--rf1159-json" not in cmd, (
+            f"--rf1159-json must not appear for UK jobs, got: {cmd}"
+        )
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    def test_dry_run_norway_xrpl_log_contains_rf1159_json(self, mock_run, client):
+        """Dry-run Norway XRPL job: execution log shows --rf1159-json in preview."""
+        # dry_run skips actual subprocess — mock should NOT be called.
+        mock_run.side_effect = []
+
+        resp = client.post("/jobs", json={**_NORWAY_INPUT, "dry_run": True})
+        job_id = resp.json()["id"]
+        body = start_and_wait(client, job_id)
+
+        assert body["status"] == "completed"
+        log_path = body["output"]["log_path"]
+        assert log_path is not None
+        from pathlib import Path
+        log_text = Path(log_path).read_text(encoding="utf-8")
+        assert "--rf1159-json" in log_text, (
+            "Dry-run log must show --rf1159-json in the [would run] preview"
+        )
+
+
+# ── TL-11: Reject non-GENERIC_EVENTS CSVs in mixed XRPL+CSV jobs ─────────────
+
+
+class TestMixedJobSourceTypeGuard:
+    """TL-11 — mixed XRPL+CSV jobs must fail fast for non-generic-events CSVs.
+
+    taxspine-xrpl-nor only accepts --generic-events-csv.  Previously,
+    Coinbase and Firi CSVs would silently be skipped; now the job fails
+    with a clear error so the user submits a separate CSV-only job.
+    """
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    def test_coinbase_csv_in_xrpl_job_fails(self, mock_run, client, tmp_path):
+        """XRPL + Coinbase CSV -> immediate FAILED, no subprocess called."""
+        csv_file = tmp_path / "coinbase.csv"
+        csv_file.write_text("dummy\n")
+
+        resp = client.post("/jobs", json={
+            "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
+            "tax_year": 2025,
+            "country": "norway",
+            "csv_files": [{"path": str(csv_file), "source_type": "coinbase_csv"}],
+        })
+        job_id = resp.json()["id"]
+        body = start_and_wait(client, job_id)
+
+        assert body["status"] == "failed"
+        assert mock_run.call_count == 0, "No subprocess must run for rejected mixed job"
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    def test_firi_csv_in_xrpl_job_fails(self, mock_run, client, tmp_path):
+        """XRPL + Firi CSV -> immediate FAILED."""
+        csv_file = tmp_path / "firi.csv"
+        csv_file.write_text("dummy\n")
+
+        resp = client.post("/jobs", json={
+            "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
+            "tax_year": 2025,
+            "country": "norway",
+            "csv_files": [{"path": str(csv_file), "source_type": "firi_csv"}],
+        })
+        job_id = resp.json()["id"]
+        body = start_and_wait(client, job_id)
+
+        assert body["status"] == "failed"
+        assert mock_run.call_count == 0
+
+    def test_error_message_names_unsupported_type_and_path(self, client, tmp_path):
+        """Error message must include the source_type and file path."""
+        csv_file = tmp_path / "coinbase_export.csv"
+        csv_file.write_text("dummy\n")
+
+        resp = client.post("/jobs", json={
+            "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
+            "tax_year": 2025,
+            "country": "norway",
+            "csv_files": [{"path": str(csv_file), "source_type": "coinbase_csv"}],
+        })
+        job_id = resp.json()["id"]
+        body = start_and_wait(client, job_id)
+
+        err = body["output"]["error_message"]
+        assert "coinbase_csv" in err
+        assert "coinbase_export.csv" in err
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    def test_generic_events_csv_in_xrpl_job_is_allowed(self, mock_run, client, tmp_path):
+        """XRPL + generic-events CSV -> must NOT be rejected (guard allows it)."""
+        mock_run.return_value = _make_ok()
+        csv_file = tmp_path / "events.csv"
+        csv_file.write_text(
+            "event_id,timestamp,event_type,source,account,"
+            "asset_in,amount_in,asset_out,amount_out,"
+            "fee_asset,fee_amount,tx_hash,exchange_tx_id,label,"
+            "complex_tax_treatment,note\n"
+        )
+
+        with patch("taxspine_orchestrator.services.settings") as mock_settings:
+            mock_settings.TAXSPINE_XRPL_NOR_CLI = "taxspine-xrpl-nor"
+            mock_settings.OUTPUT_DIR = tmp_path
+            mock_settings.PRICES_DIR = tmp_path
+            mock_settings.LOT_STORE_DB = tmp_path / "no_lots.db"
+
+            resp = client.post("/jobs", json={
+                "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
+                "tax_year": 2025,
+                "country": "norway",
+                "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
+            })
+            job_id = resp.json()["id"]
+            body = start_and_wait(client, job_id)
+
+        assert body["status"] == "completed"
+
+    def test_multiple_unsupported_types_all_listed_in_error(self, client, tmp_path):
+        """When multiple files are unsupported, all are named in the error."""
+        coinbase_file = tmp_path / "cb.csv"
+        firi_file = tmp_path / "firi.csv"
+        coinbase_file.write_text("x\n")
+        firi_file.write_text("x\n")
+
+        resp = client.post("/jobs", json={
+            "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
+            "tax_year": 2025,
+            "country": "norway",
+            "csv_files": [
+                {"path": str(coinbase_file), "source_type": "coinbase_csv"},
+                {"path": str(firi_file), "source_type": "firi_csv"},
+            ],
+        })
+        job_id = resp.json()["id"]
+        body = start_and_wait(client, job_id)
+
+        assert body["status"] == "failed"
+        err = body["output"]["error_message"]
+        assert "coinbase_csv" in err
+        assert "firi_csv" in err
+
+
+# ── TL-13: Lot carry-forward synthetic CSV ────────────────────────────────────
+
+
+class TestCarryForwardLots:
+    """TL-13 -- prior-year FIFO lots are injected as synthetic TRADE events.
+
+    _maybe_write_carry_forward_csv reads the lot persistence store and
+    writes a generic-events CSV that the CLI treats as opening positions
+    for the current tax year.
+    """
+
+    def _make_lot(self, asset: str, qty: str, basis_nok, lot_id: str = "lot1"):
+        lot = MagicMock()
+        lot.lot_id = lot_id
+        lot.asset = asset
+        lot.remaining_quantity = qty
+        lot.remaining_cost_basis_nok = basis_nok
+        return lot
+
+    def test_no_lot_store_file_returns_none(self, tmp_path):
+        """When LOT_STORE_DB does not exist, returns None."""
+        from taxspine_orchestrator.services import JobService
+
+        with patch("taxspine_orchestrator.services.settings") as mock_settings:
+            mock_settings.LOT_STORE_DB = tmp_path / "nonexistent.db"
+            result = JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
+
+        assert result is None
+
+    def test_no_prior_year_in_store_returns_none(self, tmp_path):
+        """When there are no lots for tax_year-1, returns None."""
+        from taxspine_orchestrator.services import JobService
+
+        db = tmp_path / "lots.db"
+        db.write_text("")
+
+        mock_store = MagicMock()
+        mock_store.__enter__ = MagicMock(return_value=mock_store)
+        mock_store.__exit__ = MagicMock(return_value=False)
+        mock_store.list_years.return_value = []
+
+        with patch("taxspine_orchestrator.services.settings") as mock_settings:
+            mock_settings.LOT_STORE_DB = db
+            with patch(
+                "tax_spine.pipeline.lot_store.LotPersistenceStore",
+                return_value=mock_store,
+            ):
+                result = JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
+
+        assert result is None
+
+    def test_lots_with_resolved_basis_are_written(self, tmp_path):
+        """Lots with resolved NOK basis -> synthetic TRADE rows written."""
+        from taxspine_orchestrator.services import JobService
+
+        db = tmp_path / "lots.db"
+        db.write_text("")
+
+        lot = self._make_lot("BTC", "0.5", "500000")
+        mock_store = MagicMock()
+        mock_store.__enter__ = MagicMock(return_value=mock_store)
+        mock_store.__exit__ = MagicMock(return_value=False)
+        mock_store.list_years.return_value = [2024]
+        mock_store.load_carry_forward.return_value = [lot]
+
+        with patch("taxspine_orchestrator.services.settings") as mock_settings:
+            mock_settings.LOT_STORE_DB = db
+            with patch(
+                "tax_spine.pipeline.lot_store.LotPersistenceStore",
+                return_value=mock_store,
+            ):
+                result = JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
+
+        assert result is not None and result.exists()
+        content = result.read_text(encoding="utf-8")
+        assert "BTC" in content
+        assert "0.5" in content
+        assert "500000" in content
+        assert "TRADE" in content
+        assert "2024-12-31T23:59:59Z" in content
+
+    def test_lots_with_missing_basis_are_skipped(self, tmp_path):
+        """Lots without a cost basis are not included in carry-forward CSV."""
+        from taxspine_orchestrator.services import JobService
+
+        db = tmp_path / "lots.db"
+        db.write_text("")
+
+        lot_good = self._make_lot("ETH", "1.0", "30000", "lot_good")
+        lot_bad = self._make_lot("XRP", "100", None, "lot_bad")
+        mock_store = MagicMock()
+        mock_store.__enter__ = MagicMock(return_value=mock_store)
+        mock_store.__exit__ = MagicMock(return_value=False)
+        mock_store.list_years.return_value = [2024]
+        mock_store.load_carry_forward.return_value = [lot_good, lot_bad]
+
+        with patch("taxspine_orchestrator.services.settings") as mock_settings:
+            mock_settings.LOT_STORE_DB = db
+            with patch(
+                "tax_spine.pipeline.lot_store.LotPersistenceStore",
+                return_value=mock_store,
+            ):
+                result = JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
+
+        assert result is not None
+        content = result.read_text(encoding="utf-8")
+        assert "ETH" in content
+        assert "XRP" not in content
+
+    def test_all_lots_missing_basis_returns_none(self, tmp_path):
+        """When every lot has missing basis, no CSV is written."""
+        from taxspine_orchestrator.services import JobService
+
+        db = tmp_path / "lots.db"
+        db.write_text("")
+
+        lot = self._make_lot("BTC", "0.1", None)
+        mock_store = MagicMock()
+        mock_store.__enter__ = MagicMock(return_value=mock_store)
+        mock_store.__exit__ = MagicMock(return_value=False)
+        mock_store.list_years.return_value = [2024]
+        mock_store.load_carry_forward.return_value = [lot]
+
+        with patch("taxspine_orchestrator.services.settings") as mock_settings:
+            mock_settings.LOT_STORE_DB = db
+            with patch(
+                "tax_spine.pipeline.lot_store.LotPersistenceStore",
+                return_value=mock_store,
+            ):
+                result = JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
+
+        assert result is None
+
+    def test_carry_forward_csv_has_generic_events_header(self, tmp_path):
+        """Output CSV must use the standard generic-events CSV header."""
+        from taxspine_orchestrator.services import JobService
+
+        db = tmp_path / "lots.db"
+        db.write_text("")
+
+        mock_store = MagicMock()
+        mock_store.__enter__ = MagicMock(return_value=mock_store)
+        mock_store.__exit__ = MagicMock(return_value=False)
+        mock_store.list_years.return_value = [2024]
+        mock_store.load_carry_forward.return_value = [self._make_lot("BTC", "1.0", "1000000")]
+
+        with patch("taxspine_orchestrator.services.settings") as mock_settings:
+            mock_settings.LOT_STORE_DB = db
+            with patch(
+                "tax_spine.pipeline.lot_store.LotPersistenceStore",
+                return_value=mock_store,
+            ):
+                result = JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
+
+        header = result.read_text(encoding="utf-8").splitlines()[0]
+        for col in ("event_id", "timestamp", "event_type", "asset_in", "amount_in"):
+            assert col in header, f"Expected column {col!r} in header: {header}"
+
+    def test_carry_forward_csv_filename_uses_prior_year(self, tmp_path):
+        """Output filename encodes prior year for easy identification."""
+        from taxspine_orchestrator.services import JobService
+
+        db = tmp_path / "lots.db"
+        db.write_text("")
+
+        mock_store = MagicMock()
+        mock_store.__enter__ = MagicMock(return_value=mock_store)
+        mock_store.__exit__ = MagicMock(return_value=False)
+        mock_store.list_years.return_value = [2024]
+        mock_store.load_carry_forward.return_value = [self._make_lot("BTC", "1.0", "1000000")]
+
+        with patch("taxspine_orchestrator.services.settings") as mock_settings:
+            mock_settings.LOT_STORE_DB = db
+            with patch(
+                "tax_spine.pipeline.lot_store.LotPersistenceStore",
+                return_value=mock_store,
+            ):
+                result = JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
+
+        assert "2024" in result.name

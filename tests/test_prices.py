@@ -11,7 +11,9 @@ Covers:
 from __future__ import annotations
 
 import datetime
+import io
 import json
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +24,10 @@ from taxspine_orchestrator.main import app
 from taxspine_orchestrator.prices import (
     _asset_csv_path,
     _combined_csv_path,
+    _fetch_kraken_usd_prices,
+    _fetch_norges_bank_usd_nok,
+    _fill_calendar_gaps,
+    _fetch_and_write,
     _needs_fetch,
     fetch_all_prices_for_year,
 )
@@ -354,3 +360,215 @@ class TestPricesAutoWiring:
             body = start_and_wait(client, job_id)
 
         assert body["status"] == "completed"
+
+
+# ── TL-12: Decimal arithmetic in price helpers ────────────────────────────────
+
+
+def _make_kraken_response(pair: str, year: int, close: str = "100.50") -> bytes:
+    """Minimal Kraken OHLC JSON response for one candle."""
+    import datetime as _dt
+    ts = int(_dt.datetime(year, 6, 1, tzinfo=_dt.timezone.utc).timestamp())
+    body = {
+        "error": [],
+        "result": {
+            pair: [[ts, "99.0", "101.0", "98.0", close, "100.0", "50.0", 100]],
+            "last": ts,
+        },
+    }
+    return json.dumps(body).encode()
+
+
+def _make_norges_bank_response(year: int, rate: str = "10.50") -> bytes:
+    """Minimal Norges Bank SDMX-JSON response for one date."""
+    date_str = f"{year}-06-01"
+    body = {
+        "data": {
+            "structure": {
+                "dimensions": {
+                    "observation": [
+                        {"values": [{"id": date_str}]}
+                    ]
+                }
+            },
+            "dataSets": [
+                {
+                    "series": {
+                        "0:0:0:0": {
+                            "observations": {"0": [rate]}
+                        }
+                    }
+                }
+            ],
+        }
+    }
+    return json.dumps(body).encode()
+
+
+def _urlopen_ctx(raw: bytes):
+    """Build a mock context manager for urllib.request.urlopen returning *raw*."""
+    ctx = MagicMock()
+    ctx.__enter__ = MagicMock(return_value=MagicMock(read=MagicMock(return_value=raw)))
+    ctx.__exit__ = MagicMock(return_value=False)
+    return ctx
+
+
+class TestKrakenPricesReturnDecimal:
+    """TL-12 — _fetch_kraken_usd_prices must return dict[str, Decimal]."""
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_returns_decimal_values(self, mock_urlopen):
+        mock_urlopen.return_value = _urlopen_ctx(_make_kraken_response("XRPUSD", 2025, "100.50"))
+        result = _fetch_kraken_usd_prices("XRPUSD", 2025)
+        assert result
+        for price in result.values():
+            assert isinstance(price, Decimal), f"Expected Decimal, got {type(price).__name__}"
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_no_float_rounding_for_exact_value(self, mock_urlopen):
+        """The string '0.1' is exactly representable as Decimal but not as float."""
+        mock_urlopen.return_value = _urlopen_ctx(_make_kraken_response("XRPUSD", 2025, "0.1"))
+        result = _fetch_kraken_usd_prices("XRPUSD", 2025)
+        assert list(result.values())[0] == Decimal("0.1")
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_raises_on_api_error(self, mock_urlopen):
+        body = json.dumps({"error": ["EQuery:Unknown asset pair"]}).encode()
+        mock_urlopen.return_value = _urlopen_ctx(body)
+        with pytest.raises(RuntimeError, match="Kraken API error"):
+            _fetch_kraken_usd_prices("XRPUSD", 2025)
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_raises_when_no_candle_data_key(self, mock_urlopen):
+        body = json.dumps({"error": [], "result": {"last": 0}}).encode()
+        mock_urlopen.return_value = _urlopen_ctx(body)
+        with pytest.raises(RuntimeError):
+            _fetch_kraken_usd_prices("XRPUSD", 2025)
+
+
+class TestNorgesBankPricesReturnDecimal:
+    """TL-12 — _fetch_norges_bank_usd_nok must return dict[str, Decimal]."""
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_returns_decimal_values(self, mock_urlopen):
+        mock_urlopen.return_value = _urlopen_ctx(_make_norges_bank_response(2025, "10.50"))
+        result = _fetch_norges_bank_usd_nok(2025)
+        assert result
+        for rate in result.values():
+            assert isinstance(rate, Decimal), f"Expected Decimal, got {type(rate).__name__}"
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_no_float_rounding_for_exact_rate(self, mock_urlopen):
+        mock_urlopen.return_value = _urlopen_ctx(_make_norges_bank_response(2025, "10.3"))
+        result = _fetch_norges_bank_usd_nok(2025)
+        assert list(result.values())[0] == Decimal("10.3")
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_raises_on_network_error(self, mock_urlopen):
+        mock_urlopen.side_effect = OSError("Connection refused")
+        with pytest.raises(RuntimeError, match="Norges Bank"):
+            _fetch_norges_bank_usd_nok(2025)
+
+
+class TestFillCalendarGapsDecimal:
+    """TL-12 — _fill_calendar_gaps must accept and return Decimal values."""
+
+    def test_propagates_decimal_type(self):
+        rates: dict[str, Decimal] = {"2025-01-02": Decimal("10.5")}  # Thursday
+        filled = _fill_calendar_gaps(rates, 2025)
+        assert "2025-01-04" in filled
+        assert isinstance(filled["2025-01-04"], Decimal)
+
+    def test_filled_value_equals_source(self):
+        rates: dict[str, Decimal] = {"2025-01-02": Decimal("10.5")}
+        filled = _fill_calendar_gaps(rates, 2025)
+        assert filled["2025-01-04"] == Decimal("10.5")
+
+    def test_empty_before_first_rate(self):
+        rates: dict[str, Decimal] = {"2025-03-01": Decimal("11.0")}
+        filled = _fill_calendar_gaps(rates, 2025)
+        assert "2025-01-01" not in filled
+
+    def test_covers_full_year_after_first_rate(self):
+        rates: dict[str, Decimal] = {"2025-01-01": Decimal("10.0")}
+        filled = _fill_calendar_gaps(rates, 2025)
+        assert "2025-12-31" in filled
+        assert len(filled) == 365  # 2025 is not a leap year
+
+
+class TestFetchAndWriteDecimalOutput:
+    """TL-12 — _fetch_and_write must use Decimal multiplication (no float)."""
+
+    def _side_effect_factory(self, kraken_body: bytes, nb_body: bytes):
+        """Return a urlopen side-effect that yields Kraken first, NB second."""
+        call_count = [0]
+
+        def side_effect(req, timeout=None):
+            call_count[0] += 1
+            ctx = MagicMock()
+            raw = kraken_body if call_count[0] == 1 else nb_body
+            ctx.__enter__ = MagicMock(return_value=MagicMock(read=MagicMock(return_value=raw)))
+            ctx.__exit__ = MagicMock(return_value=False)
+            return ctx
+
+        return side_effect
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_output_csv_has_four_decimal_places(self, mock_urlopen, tmp_path):
+        """Written price_fiat column must have exactly 4 decimal places."""
+        import datetime as _dt
+        ts = int(_dt.datetime(2025, 6, 1, tzinfo=_dt.timezone.utc).timestamp())
+        kraken_body = json.dumps({
+            "error": [],
+            "result": {
+                "XRPUSD": [[ts, "1.0", "1.0", "1.0", "1.5", "1.0", "1.0", 1]],
+                "last": ts,
+            },
+        }).encode()
+        nb_body = json.dumps({
+            "data": {
+                "structure": {"dimensions": {"observation": [{"values": [{"id": "2025-06-01"}]}]}},
+                "dataSets": [{"series": {"0:0:0:0": {"observations": {"0": ["10.3333"]}}}}],
+            }
+        }).encode()
+
+        mock_urlopen.side_effect = self._side_effect_factory(kraken_body, nb_body)
+
+        dest = tmp_path / "xrp_nok_2025.csv"
+        _fetch_and_write("XRPUSD", "XRP", 2025, dest)
+
+        lines = dest.read_text(encoding="utf-8").splitlines()
+        assert len(lines) >= 2
+        price_str = lines[1].split(",")[-1]
+        assert "." in price_str
+        decimal_part = price_str.split(".")[1]
+        assert len(decimal_part) == 4, f"Expected 4 decimal places, got: {price_str!r}"
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_decimal_multiplication_no_float_drift(self, mock_urlopen, tmp_path):
+        """0.1 USD × 10.0 NOK/USD = 1.0000 NOK — exact with Decimal, drifts with float."""
+        import datetime as _dt
+        ts = int(_dt.datetime(2025, 6, 1, tzinfo=_dt.timezone.utc).timestamp())
+        kraken_body = json.dumps({
+            "error": [],
+            "result": {
+                "XRPUSD": [[ts, "0.1", "0.1", "0.1", "0.1", "0.1", "1.0", 1]],
+                "last": ts,
+            },
+        }).encode()
+        nb_body = json.dumps({
+            "data": {
+                "structure": {"dimensions": {"observation": [{"values": [{"id": "2025-06-01"}]}]}},
+                "dataSets": [{"series": {"0:0:0:0": {"observations": {"0": ["10.0"]}}}}],
+            }
+        }).encode()
+
+        mock_urlopen.side_effect = self._side_effect_factory(kraken_body, nb_body)
+
+        dest = tmp_path / "xrp_nok_2025.csv"
+        _fetch_and_write("XRPUSD", "XRP", 2025, dest)
+
+        lines = dest.read_text(encoding="utf-8").splitlines()
+        price_str = lines[1].split(",")[-1]
+        # 0.1 * 10.0 = 1.0 exactly; stored as "1.0000"
+        assert price_str == "1.0000", f"Expected '1.0000', got {price_str!r}"

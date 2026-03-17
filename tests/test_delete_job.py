@@ -61,7 +61,7 @@ _NORWAY_INPUT = {
 
 def _create_job(client: TestClient) -> str:
     resp = client.post("/jobs", json=_NORWAY_INPUT)
-    assert resp.status_code == 200
+    assert resp.status_code == 201
     return resp.json()["id"]
 
 

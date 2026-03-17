@@ -2,7 +2,7 @@
 
 **Audit:** Full-spectrum codebase audit (2026-03-16) — 139 findings across 7 domains
 **Remediation window:** 18 batches, one batch per session
-**Last updated:** 2026-03-17
+**Last updated:** 2026-03-17 (Batch 12)
 
 ---
 
@@ -16,7 +16,8 @@
 | 9     | FE-01, UX-01 (tests only)   | ✅ Complete | `test_ui_fixes.py` +10 | Regression-guard tests for already-fixed findings |
 | 10    | SEC-01, SEC-02, SEC-16       | ✅ Complete | `test_medium_security.py` (19) | LIKE wildcard escape, slug allowlist, opaque health errors |
 | 11    | API-03, API-04, API-05, API-06, API-07 | ✅ Complete | `test_api_hardening.py` (22) | Async workspace/run, CAS start-job, CANCELLED status, UI limit 200, cancel-during-execution guard |
-| 12–18 | Remaining MEDIUM/LOW/INFO/MISSING TEST | 🔲 Pending | — | — |
+| 12    | API-18, API-20, SEC-18, SEC-19, FE-10, FE-11, FE-12 | ✅ Complete | `test_batch12.py` (24) | tax_year validation, async alerts I/O, self-hosted Tailwind, dedup path hiding, loadAlerts r.ok, openResultsById error, dry_run reset |
+| 13–18 | Remaining MEDIUM/LOW/INFO/MISSING TEST | 🔲 Pending | — | — |
 
 ---
 
@@ -47,6 +48,15 @@
 - **API-06** `ui/index.html`: both `limit=500` fetch calls replaced with `limit=200` — matches server-enforced `le=200` constraint
 - **API-07** `services.py`: CANCELLED guard added in `start_job_execution`, `_fail_job`, and `_execute_dry_run` — terminal CANCELLED state cannot be overwritten by a concurrent execution thread setting COMPLETED or FAILED
 
+### Batch 12 — MEDIUM findings (API-18, API-20, SEC-18, SEC-19, FE-10, FE-11, FE-12)
+- **API-18** `models.py` + `main.py`: `tax_year: int = Field(..., ge=2009, le=2100)` in both `JobInput` and `WorkspaceRunRequest`; `Field` added to pydantic imports in `main.py`
+- **API-20** `main.py`: `Path(p).read_text()` calls in `async def get_alerts()` wrapped with `await asyncio.to_thread(Path(p).read_text, encoding="utf-8")` — event loop no longer blocked by synchronous file I/O
+- **SEC-18** `Dockerfile` + `ui/index.html`: `ARG TAILWIND_VERSION=3.4.17` + Python `urllib` download baked into Docker image; `<link href="tailwind.min.css">` replaces `<script src="cdn.tailwindcss.com">`; `onerror` CDN fallback for local dev
+- **SEC-19** `dedup.py`: `"db_path"` key removed from both `list_dedup_sources()` and `get_dedup_summary()` response dicts — absolute server filesystem paths no longer exposed to callers
+- **FE-10** `ui/index.html`: `loadAlerts()` now does `const r = await fetch(...); if (!r.ok) throw new Error(...)` before calling `.json()` — server 500 no longer silently shows "All clear"
+- **FE-11** `ui/index.html`: `openResultsById()` injects a visible error message into `#results-panel` on HTTP error or network failure — replaces silent `if (!r.ok) return;` / empty `catch {}`
+- **FE-12** `ui/index.html`: `runReport()` sets `dryEl.checked = false` after `successJob` is confirmed — prevents accidental dry-run re-submission
+
 ---
 
 ## Test Counts
@@ -59,20 +69,24 @@
 | Batch 8 | 18 | ~221 |
 | Batch 9 | 10 | ~231 |
 | Batch 10 | 19 | ~250 |
-| Batch 11 | 22 | **609 passing** |
+| Batch 11 | 22 | ~609 |
+| Batch 12 | 24 | **633 passing** |
 
 ---
 
-## Remaining Work (Batches 12–18)
+## Remaining Work (Batches 13–18)
 
-Approximate distribution of open findings:
+Open findings by severity (approximate — see `AUDIT_REPORT.md` for exact lists):
 
-| Severity | Open | Domain focus |
-|----------|------|--------------|
-| HIGH     | ~10  | LC (legal), TL (tax law), BE (backend) |
-| MEDIUM   | ~40  | Mixed |
-| LOW      | ~40  | Mixed |
-| INFO     | ~4   | Backend |
-| MISSING TEST | ~4 | Backend |
+| Severity | Approx. open | Domain focus |
+|----------|-------------|--------------|
+| MEDIUM   | ~30         | FE (FE-03, FE-04, FE-13), UX (UX-02..UX-24), SEC (SEC-03, SEC-04, SEC-17, SEC-20), API (API-19, API-21, API-22), TL (TL-03..TL-09), INFRA (INFRA-03..INFRA-15) |
+| LOW      | ~40         | Mixed |
+| INFO     | ~4          | Backend |
+| MISSING TEST | ~4      | API-12, API-13, API-14, API-23 |
 
-Next batch will target remaining HIGH findings not yet addressed.
+**Already confirmed fixed (verified in Batch 12 scan)**
+All 26 HIGH findings are now remediated across Batches 1–12.
+The remaining work is MEDIUM, LOW, INFO, and MISSING TEST.
+
+Next batch (13) should target the next tier of MEDIUM findings.

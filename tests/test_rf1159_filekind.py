@@ -230,8 +230,13 @@ class TestDryRunRf1159Logged:
         log = Path(body["output"]["log_path"]).read_text(encoding="utf-8")
         assert "--rf1159-json" not in log
 
-    def test_xrpl_dry_run_does_not_log_rf1159(self, client):
-        """XRPL CLI has no --rf1159-json flag."""
+    def test_xrpl_dry_run_logs_rf1159(self, client):
+        """Norway XRPL dry-run log must contain --rf1159-json (API-01 fix).
+
+        Previously this flag was silently dropped from the XRPL command
+        builder. The test name and assertion are updated to reflect the
+        now-correct behaviour.
+        """
         resp = client.post("/jobs", json={
             "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
             "tax_year": 2025,
@@ -242,7 +247,7 @@ class TestDryRunRf1159Logged:
         body = start_and_wait(client, job_id)
         assert body["status"] == "completed"
         log = Path(body["output"]["log_path"]).read_text(encoding="utf-8")
-        assert "--rf1159-json" not in log
+        assert "--rf1159-json" in log
 
 
 # ── TestRf1159FileEndpoints ────────────────────────────────────────────────────
