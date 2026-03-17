@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from .config import settings
 from .dedup import router as dedup_router
@@ -872,7 +872,15 @@ def remove_workspace_csv(body: AddCsvRequest) -> WorkspaceConfig:
 class WorkspaceRunRequest(BaseModel):
     """Parameters for a workspace-wide report run."""
 
-    tax_year: int
+    tax_year: int = Field(
+        ...,
+        ge=2009,
+        le=2100,
+        description=(
+            "Tax year to report (e.g. 2025).  Must be 2009 or later "
+            "and no later than 2100."
+        ),
+    )
     country: Country = Country.NORWAY
     case_name: Optional[str] = None
     pipeline_mode: PipelineMode = PipelineMode.PER_FILE
@@ -1018,7 +1026,10 @@ async def get_alerts(
 
         for p in paths:
             try:
-                data = _json.loads(Path(p).read_text(encoding="utf-8"))
+                # API-20: use asyncio.to_thread so the event loop is not blocked
+                # by synchronous file I/O inside this async handler.
+                raw = await asyncio.to_thread(Path(p).read_text, encoding="utf-8")
+                data = _json.loads(raw)
                 all_warnings.extend(data.get("warnings", []))
                 if data.get("has_unlinked_transfers"):
                     has_unlinked = True

@@ -79,9 +79,11 @@ def list_dedup_sources() -> list[dict]:
 
     Each item contains:
     - ``source``        — slug name (basename without ``.db``)
-    - ``db_path``       — absolute path on the server
     - ``size_bytes``    — file size in bytes
     - ``last_modified`` — ISO 8601 UTC timestamp of the last write
+
+    Note: the absolute ``db_path`` is intentionally omitted from the response
+    (SEC-19) to avoid exposing server-side filesystem layout to callers.
     """
     dedup_dir = settings.DEDUP_DIR
     if not dedup_dir.is_dir():
@@ -93,7 +95,6 @@ def list_dedup_sources() -> list[dict]:
             stat = db_file.stat()
             results.append({
                 "source": db_file.stem,
-                "db_path": str(db_file),
                 "size_bytes": stat.st_size,
                 "last_modified": _mtime_iso(db_file),
             })
@@ -147,7 +148,7 @@ def get_dedup_summary(
     return {
         "source": source,
         "db_exists": True,
-        "db_path": str(db),
+        # SEC-19: db_path intentionally omitted — callers do not need server filesystem paths.
         "since": since,
         "total_skips": summary.total_skips,
         "by_source": summary.by_source,

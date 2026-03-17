@@ -4,7 +4,25 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Taxspine Orchestrator</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!--
+    SEC-18: Tailwind CSS is self-hosted in production (downloaded into ui/ by
+    the Docker build step — see Dockerfile ARG TAILWIND_VERSION).  The onerror
+    fallback loads the CDN play-script when the local file is absent (local dev
+    without running the download step).
+
+    For local development, run once:
+      python -c "import urllib.request; urllib.request.urlretrieve('https://cdn.jsdelivr.net/npm/tailwindcss@3.4.17/dist/tailwind.min.css','ui/tailwind.min.css')"
+  -->
+  <link id="tw-css" rel="stylesheet" href="tailwind.min.css">
+  <script>
+    // FE CDN fallback: if the local tailwind.min.css is absent (local dev),
+    // load the CDN play-script so classes continue to work.
+    document.getElementById('tw-css').addEventListener('error', function () {
+      var s = document.createElement('script');
+      s.src = 'https://cdn.tailwindcss.com';
+      document.head.appendChild(s);
+    });
+  </script>
   <style>
     body { font-family: 'Inter', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; }
     ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #1e2130; } ::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 3px; }
@@ -838,6 +856,12 @@ async function runReport() {
   // Post-success follow-up calls run outside the primary try/catch so that
   // failures here do not show a misleading "server down" alert to the user.
   if (successJob) {
+    // FE-12: uncheck the dry-run checkbox so the user cannot accidentally
+    // re-submit a second job as a dry run.  The debug flag is left as-is
+    // (intentional setting) but dry_run is risky to leave checked.
+    const dryEl = document.getElementById('run-dry');
+    if (dryEl) dryEl.checked = false;
+
     try {
       await loadJobs();
       openResults(successJob);
@@ -988,12 +1012,28 @@ function badgeHtml(status) {
 
 // ── Results panel ─────────────────────────────────────────────────────────────
 async function openResultsById(jobId) {
+  // FE-11: surface fetch failures in the results panel instead of silently
+  // doing nothing — silent failure leaves the panel empty with no explanation.
+  const panel = document.getElementById('results-panel');
   try {
     const r = await fetch(`${API}/jobs/${jobId}`);
-    if (!r.ok) return;
+    if (!r.ok) {
+      if (panel) {
+        panel.classList.remove('hidden');
+        panel.innerHTML = `<p class="text-red-400 text-sm p-4">
+          Could not load job details (HTTP ${r.status}). Try refreshing the page.</p>`;
+      }
+      return;
+    }
     const job = await r.json();
     openResults(job);
-  } catch {}
+  } catch {
+    if (panel) {
+      panel.classList.remove('hidden');
+      panel.innerHTML = `<p class="text-red-400 text-sm p-4">
+        Could not load job details — is the server running?</p>`;
+    }
+  }
 }
 
 async function openResults(job) {
@@ -1294,7 +1334,12 @@ async function loadAlerts() {
   const list  = document.getElementById('alerts-list');
   const badge = document.getElementById('alerts-count-badge');
   try {
-    const alerts = await (await fetch(`${API}/alerts`)).json();
+    // FE-10: check r.ok before parsing JSON — a server 500 returns a non-array
+    // JSON body that would otherwise fall through to the "all clear" empty state,
+    // masking a real backend failure from the operator.
+    const r = await fetch(`${API}/alerts`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const alerts = await r.json();
 
     if (!Array.isArray(alerts) || alerts.length === 0) {
       badge.style.display = 'none';

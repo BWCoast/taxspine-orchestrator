@@ -115,6 +115,22 @@ COPY ui/         ./ui/
 COPY main.py     .
 COPY scripts/    ./scripts/
 
+# ── SEC-18: self-host Tailwind CSS ────────────────────────────────────────────
+# Replace the CDN play-script with a locally-served static CSS file so that
+# Subresource Integrity (SRI) concerns do not apply — the file is fetched once
+# at build time and baked into the image, not loaded from an external CDN on
+# every page load.
+#
+# The version is pinned here; bump deliberately when upgrading Tailwind.
+ARG TAILWIND_VERSION=3.4.17
+RUN python3 -c "\
+import urllib.request, sys; \
+url = 'https://cdn.jsdelivr.net/npm/tailwindcss@${TAILWIND_VERSION}/dist/tailwind.min.css'; \
+print(f'Downloading Tailwind CSS {url}', file=sys.stderr); \
+urllib.request.urlretrieve(url, '/app/ui/tailwind.min.css'); \
+print('tailwind.min.css downloaded', file=sys.stderr) \
+"
+
 # ── Runtime configuration ─────────────────────────────────────────────────────
 # All paths resolve inside /data which should be a bind-mount or named volume.
 # Override any of these via environment variables or docker-compose.

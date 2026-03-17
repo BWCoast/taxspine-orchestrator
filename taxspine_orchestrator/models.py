@@ -122,7 +122,15 @@ class JobInput(BaseModel):
     """
 
     xrpl_accounts: List[str] = Field(default_factory=list)
-    tax_year: int
+    tax_year: int = Field(
+        ...,
+        ge=2009,
+        le=2100,
+        description=(
+            "Tax year to report (e.g. 2025).  Must be 2009 or later "
+            "(Bitcoin genesis year) and no later than 2100."
+        ),
+    )
 
     @field_validator("xrpl_accounts", mode="before")
     @classmethod
