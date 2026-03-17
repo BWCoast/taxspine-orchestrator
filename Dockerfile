@@ -15,13 +15,21 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # syntax=docker/dockerfile:1
-# F-16: Pin to a specific patch release for reproducible builds.
-# To get the full content-addressable digest (supply-chain pinning), run:
-#   docker pull python:3.11.9-slim
-#   docker inspect --format='{{index .RepoDigests 0}}' python:3.11.9-slim
-# Then replace the FROM line with:
-#   FROM python:3.11.9-slim@sha256:<digest>
-FROM python:3.11.9-slim
+# INFRA-03: The base image is parameterised via PYTHON_IMAGE so that CI can
+# pass a fully content-addressable digest for reproducible, supply-chain-safe
+# builds.  For local / quick builds the mutable tag is acceptable.
+#
+# To pin to a digest for production:
+#   1. docker pull python:3.11.9-slim
+#   2. docker inspect --format='{{index .RepoDigests 0}}' python:3.11.9-slim
+#   3. Pass the result as a build-arg:
+#        docker build --build-arg PYTHON_IMAGE=python:3.11.9-slim@sha256:<digest> .
+#
+# The GitHub Actions workflow should fetch and pass this digest automatically.
+# Default retains the mutable tag for developer convenience; MUST be overridden
+# in any production / CI build.
+ARG PYTHON_IMAGE=python:3.11.9-slim
+FROM ${PYTHON_IMAGE}
 
 # Keeps Python from generating .pyc files and enables unbuffered log output.
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -139,7 +147,26 @@ ENV OUTPUT_DIR=/data/output \
     UPLOAD_DIR=/data/uploads \
     DATA_DIR=/data/state \
     LOT_STORE_DB=/data/state/lots.db \
-    DEDUP_DIR=/data/state/dedup
+    DEDUP_DIR=/data/state/dedup \
+    PRICES_DIR=/data/prices
+
+# INFRA-07: Run as a non-root user (UID 1000) to limit the blast radius of a
+# container escape and avoid creating root-owned files on bind-mounted volumes.
+#
+# Data directories are created here with app ownership so the container works
+# correctly even without an external bind-mount (e.g. in CI / tests).
+# In production (Synology bind-mount), ensure the host directories are owned
+# by UID 1000 — or set PUID/PGID via environment and adjust accordingly.
+RUN useradd -r -u 1000 -s /sbin/nologin -d /app app \
+    && mkdir -p \
+        /data/output \
+        /data/tmp \
+        /data/uploads \
+        /data/state/dedup \
+        /data/prices \
+    && chown -R app:app /app /data
+
+USER app
 
 # ── Port ─────────────────────────────────────────────────────────────────────
 EXPOSE 8000

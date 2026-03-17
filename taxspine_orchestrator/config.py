@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # blockchain-reader: kept for reference; not called by default pipeline
     BLOCKCHAIN_READER_CLI: str = "blockchain-reader"
 
+    # ── Subprocess execution ───────────────────────────────────────────────
+    # SEC-20: all subprocess.run() calls are capped at this timeout (seconds).
+    # A hung or infinitely-looping tax CLI will be killed after this many
+    # seconds and the job will be marked FAILED with a descriptive error.
+    # Override via SUBPROCESS_TIMEOUT_SECONDS env var for very large datasets.
+    SUBPROCESS_TIMEOUT_SECONDS: int = 300
+
     def ensure_dirs(self) -> None:
         """Create all working directories if they do not exist."""
         self.TEMP_DIR.mkdir(parents=True, exist_ok=True)

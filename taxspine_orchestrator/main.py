@@ -77,6 +77,28 @@ if not settings.ORCHESTRATOR_KEY:
         "to any network-reachable host."
     )
 
+# SEC-17: Validate CLI binary names at startup.
+# If a configured binary name cannot be resolved via shutil.which() the server
+# still starts (CLIs may be installed later or not needed in all deployments),
+# but a loud WARNING is emitted so misconfigured environments are detectable.
+# This also acts as a canary: if a binary name was set to an arbitrary path via
+# environment variable, `which` reveals whether that path is executable.
+_CLI_NAMES: tuple[str, ...] = (
+    settings.TAXSPINE_XRPL_NOR_CLI,
+    settings.TAXSPINE_NOR_REPORT_CLI,
+    settings.TAXSPINE_NOR_MULTI_CLI,
+    settings.TAXSPINE_UK_REPORT_CLI,
+    settings.BLOCKCHAIN_READER_CLI,
+)
+for _cli in _CLI_NAMES:
+    if not shutil.which(_cli):
+        _startup_logger.warning(
+            "SEC-17: CLI binary %r not found in PATH — jobs requiring this "
+            "binary will fail at execution time.  Ensure the correct taxspine "
+            "packages are installed (or override via environment variable).",
+            _cli,
+        )
+
 # Persistent SQLite job store — jobs survive server restarts.
 _job_store = SqliteJobStore(settings.DATA_DIR / "jobs.db")
 _job_service = JobService(_job_store)
@@ -186,13 +208,22 @@ async def health() -> JSONResponse:
         checks[cli_name] = "ok" if shutil.which(cli_name) else "missing"
 
     overall_ok = all(v == "ok" for v in checks.values())
-    # Always return HTTP 200 — this is a liveness probe; the process is alive
-    # and can respond regardless of CLI binary availability.  Callers that need
-    # readiness information should inspect the "status" field in the body
-    # ("ok" vs "degraded") rather than the HTTP status code.
+
+    # INFRA-08: return 503 when core infrastructure is unhealthy so that
+    # container orchestrators (Docker HEALTHCHECK, Kubernetes readiness probes)
+    # correctly detect a degraded pod and stop routing traffic to it.
+    #
+    # "Critical" means the process cannot meaningfully serve requests:
+    #   - db == "error"      → cannot persist or retrieve jobs
+    #   - output_dir != "ok" → cannot write report artefacts
+    #
+    # CLI binaries being absent is "degraded" (HTTP 200) — the server can
+    # still respond and callers can diagnose via the response body.
+    critical_ok = checks.get("db") == "ok" and checks.get("output_dir") == "ok"
+
     return JSONResponse(
         {"status": "ok" if overall_ok else "degraded", **checks},
-        status_code=200,
+        status_code=200 if critical_ok else 503,
     )
 
 

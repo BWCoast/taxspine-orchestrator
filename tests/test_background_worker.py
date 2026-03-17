@@ -262,7 +262,11 @@ class TestHealthCheck:
         assert body["taxspine-xrpl-nor"] == "ok"
 
     def test_health_returns_degraded_when_output_dir_missing(self, client: TestClient) -> None:
-        """When OUTPUT_DIR is not writable, /health returns 200 with degraded status in body."""
+        """When OUTPUT_DIR is not writable, /health returns 503 with degraded status in body.
+
+        INFRA-08: /health now returns HTTP 503 (not 200) when a critical check
+        fails so container orchestrators can detect and reroute a degraded pod.
+        """
         import shutil
 
         def _mock_which(name: str):
@@ -276,7 +280,7 @@ class TestHealthCheck:
         ):
             resp = client.get("/health")
 
-        assert resp.status_code == 200
+        assert resp.status_code == 503  # INFRA-08: critical failure → 503
         body = resp.json()
         assert body["status"] == "degraded"
         # SEC-16: output_dir now returns an opaque "error" string (no detail text).
@@ -306,7 +310,11 @@ class TestHealthCheck:
         assert body["taxspine-xrpl-nor"] == "missing"
 
     def test_health_db_error_returns_degraded(self, client: TestClient) -> None:
-        """If the DB ping fails, /health returns 200 with degraded status in body."""
+        """If the DB ping fails, /health returns 503 with degraded status in body.
+
+        INFRA-08: DB failure is a critical check → HTTP 503 so orchestrators
+        detect the pod as unhealthy and stop routing traffic to it.
+        """
         from taxspine_orchestrator import main as _m
 
         def _bad_ping() -> None:
@@ -318,7 +326,7 @@ class TestHealthCheck:
         ):
             resp = client.get("/health")
 
-        assert resp.status_code == 200
+        assert resp.status_code == 503  # INFRA-08: critical failure → 503
         body = resp.json()
         assert body["status"] == "degraded"
         assert "error" in body["db"]

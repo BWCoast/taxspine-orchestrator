@@ -356,9 +356,23 @@ class JobService:
                     )
                     log_lines.append(f"$ {' '.join(str(c) for c in xrpl_cmd)}")
 
-                    xrpl_result = subprocess.run(
-                        xrpl_cmd, capture_output=True, text=True, check=False,
-                    )
+                    # SEC-20: cap execution time; TimeoutExpired is caught before
+                    # checking returncode so a hung CLI fails the job cleanly.
+                    try:
+                        xrpl_result = subprocess.run(
+                            xrpl_cmd, capture_output=True, text=True, check=False,
+                            timeout=settings.SUBPROCESS_TIMEOUT_SECONDS,
+                        )
+                    except subprocess.TimeoutExpired:
+                        return self._fail_job(
+                            job_id,
+                            error=(
+                                f"taxspine-xrpl-nor timed out for {account} "
+                                f"(limit={settings.SUBPROCESS_TIMEOUT_SECONDS}s)"
+                            ),
+                            log_lines=log_lines,
+                            output_dir=output_dir,
+                        )
                     log_lines.append(f"  rc={xrpl_result.returncode}")
                     if xrpl_result.stdout:
                         log_lines.append(f"  stdout:\n{xrpl_result.stdout.rstrip()}")
@@ -420,9 +434,22 @@ class JobService:
                     )
                     log_lines.append(f"$ {' '.join(str(c) for c in nor_multi_cmd)}")
 
-                    nor_multi_result = subprocess.run(
-                        nor_multi_cmd, capture_output=True, text=True, check=False,
-                    )
+                    # SEC-20: cap execution time.
+                    try:
+                        nor_multi_result = subprocess.run(
+                            nor_multi_cmd, capture_output=True, text=True, check=False,
+                            timeout=settings.SUBPROCESS_TIMEOUT_SECONDS,
+                        )
+                    except subprocess.TimeoutExpired:
+                        return self._fail_job(
+                            job_id,
+                            error=(
+                                f"taxspine-nor-multi timed out "
+                                f"(limit={settings.SUBPROCESS_TIMEOUT_SECONDS}s)"
+                            ),
+                            log_lines=log_lines,
+                            output_dir=output_dir,
+                        )
                     log_lines.append(f"  rc={nor_multi_result.returncode}")
                     if nor_multi_result.stdout:
                         log_lines.append(f"  stdout:\n{nor_multi_result.stdout.rstrip()}")
@@ -472,9 +499,22 @@ class JobService:
                         )
                         log_lines.append(f"$ {' '.join(str(c) for c in csv_cmd)}")
 
-                        csv_result = subprocess.run(
-                            csv_cmd, capture_output=True, text=True, check=False,
-                        )
+                        # SEC-20: cap execution time.
+                        try:
+                            csv_result = subprocess.run(
+                                csv_cmd, capture_output=True, text=True, check=False,
+                                timeout=settings.SUBPROCESS_TIMEOUT_SECONDS,
+                            )
+                        except subprocess.TimeoutExpired:
+                            return self._fail_job(
+                                job_id,
+                                error=(
+                                    f"taxspine-nor-report timed out for {spec.path} "
+                                    f"(limit={settings.SUBPROCESS_TIMEOUT_SECONDS}s)"
+                                ),
+                                log_lines=log_lines,
+                                output_dir=output_dir,
+                            )
                         log_lines.append(f"  rc={csv_result.returncode}")
                         if csv_result.stdout:
                             log_lines.append(f"  stdout:\n{csv_result.stdout.rstrip()}")

@@ -215,7 +215,12 @@ class TestSec16OpaqueHealthErrors:
         with patch.object(_m._job_store, "ping", side_effect=RuntimeError("sqlite path: /secret/db")):
             resp = client.get("/health")
 
-        assert resp.status_code == 200
+        # INFRA-08: DB failure is a critical check → HTTP 503.
+        # The key invariant for SEC-16 is that the *body* is opaque regardless
+        # of the HTTP status code returned.
+        assert resp.status_code == 503, (
+            f"DB failure must return 503 (INFRA-08); got {resp.status_code}"
+        )
         body = resp.json()
         # "db" is a top-level key, not nested under "status".
         assert body["db"] == "error", (
