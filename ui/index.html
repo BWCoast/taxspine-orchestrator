@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- FE-13: api-base allows a reverse-proxy deployer to inject a path prefix
+       (e.g. content="/taxspine/api") without modifying the JavaScript.
+       The default empty string means same-origin root, which is correct for
+       the standard Docker / local deployment. -->
+  <meta name="api-base" content="">
   <title>Taxspine Orchestrator</title>
   <!--
     SEC-18: Tailwind CSS is self-hosted in production (downloaded into ui/ by
@@ -219,7 +224,9 @@
           </select>
         </div>
         <!-- F-14: warning shown when built-in estimates are selected -->
-        <div id="dummy-valuation-warning" class="rounded border border-yellow-600 bg-yellow-900/30 px-3 py-2 text-xs text-yellow-300" role="alert">
+        <!-- UX-03: aria-live="polite" + aria-atomic="true" ensure screen readers
+             announce this warning when the valuation mode dropdown toggles it. -->
+        <div id="dummy-valuation-warning" class="rounded border border-yellow-600 bg-yellow-900/30 px-3 py-2 text-xs text-yellow-300" role="alert" aria-live="polite" aria-atomic="true">
           <strong>⚠ Not for filing</strong> — Built-in estimates are <em>not</em> accepted by Skatteetaten.
           Select <strong>Price table CSV</strong> and fetch authoritative NOK prices before generating a report you intend to submit.
         </div>
@@ -230,6 +237,9 @@
             <span id="fetch-prices-status" class="text-xs text-gray-500"></span>
           </div>
           <input id="run-prices-path" class="input text-xs" placeholder="auto-filled by Fetch, or enter path manually" style="font-family:monospace;">
+          <!-- UX-04: clarify that the path is server-side so remote users are
+               not confused by an absolute filesystem path they cannot navigate to. -->
+          <p class="text-xs text-gray-500 mt-1">Server-side path — auto-filled by Fetch Prices. Do not modify unless running locally.</p>
         </div>
         <div id="dex-trades-section" class="flex items-center gap-2" style="display:none;">
           <input type="checkbox" id="run-trades" class="accent-blue-500 w-4 h-4">
@@ -470,9 +480,14 @@
 
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
-// When served by FastAPI at /ui/, use relative API paths (same origin).
-// When opened as file://, fall back to localhost:8000.
-const API = (location.protocol === 'file:') ? 'http://localhost:8000' : '';
+// FE-13: read the API base URL from the <meta name="api-base"> tag injected
+// by the server.  An empty content means same-origin root (standard Docker /
+// local deploy).  For a reverse-proxy deployment with a path prefix, the
+// server sets content="/taxspine/api" (or similar) and all fetch calls resolve
+// correctly without touching this file.
+// Falls back to localhost:8000 when opened directly as a file:// URL (dev).
+const API = document.querySelector('meta[name="api-base"]')?.content
+  ?? ((location.protocol === 'file:') ? 'http://localhost:8000' : '');
 
 // ── Dynamic defaults ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -685,7 +700,10 @@ dropZone.addEventListener('drop', e => {
   dropZone.classList.remove('border-blue-500');
   if (e.dataTransfer.files.length) handleCsvFile(e.dataTransfer.files[0]);
 });
-dropZone.addEventListener('click', () => fileInput.click());
+// FE-03: the drop zone is already inside a <label for="csv-file-input">, so a
+// click on the zone natively activates the file input via the label.  Adding an
+// explicit fileInput.click() here caused a second file-picker dialog to open.
+// The handler is intentionally removed; drag-and-drop still works as before.
 
 async function uploadCsv(input) {
   if (!input.files.length) return;
@@ -900,18 +918,26 @@ function _jobRowHtml(j) {
   const hasReport = j.output?.report_html_path ? '📄' : '';
   const label = j.input.case_name || `${j.input.country} ${j.input.tax_year}`;
   const isRunning = j.status === 'running';
+  // FE-04: job ID is stored in a data-job-id attribute (HTML-escaped once) and
+  // read back as a plain string by the handler, which then applies
+  // encodeURIComponent() for the URL.  This eliminates the dual-escaping problem
+  // that arose from embedding the ID in an onclick="" attribute string.
+  const safeId = escHtml(j.id);
   const cancelBtn = isRunning
     ? `<button class="btn-secondary flex-shrink-0" style="padding:3px 8px;font-size:11px;color:#f87171;"
-        onclick="event.stopPropagation();cancelJob('${escHtml(j.id)}')" title="Cancel job">⏹ Cancel</button>`
+        data-job-id="${safeId}"
+        onclick="event.stopPropagation();cancelJob(this.dataset.jobId)" title="Cancel job">⏹ Cancel</button>`
     : '';
   const deleteBtn = !isRunning
     ? `<button class="btn-danger flex-shrink-0" style="padding:3px 8px;font-size:11px;"
-        onclick="event.stopPropagation();deleteJob('${escHtml(j.id)}')" title="Delete job">✕</button>`
+        data-job-id="${safeId}"
+        onclick="event.stopPropagation();deleteJob(this.dataset.jobId)" title="Delete job">✕</button>`
     : '';
   return `
   <div class="job-row ${sel} p-3 fade-in" role="button" tabindex="0"
-    onclick="openResultsById('${escHtml(j.id)}')"
-    onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openResultsById('${escHtml(j.id)}');}">
+    data-job-id="${safeId}"
+    onclick="openResultsById(this.dataset.jobId)"
+    onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openResultsById(this.dataset.jobId);}">
     <div class="flex items-center justify-between gap-3">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
@@ -1000,14 +1026,18 @@ function applyJobFilters() {
 }
 
 function badgeHtml(status) {
+  // UX-05: decorative symbols are wrapped in aria-hidden="true" so screen
+  // readers announce only the status text (e.g. "PENDING"), not the bullet
+  // character name ("bullet").
   const map = {
-    pending:   { cls: 'badge-pending',   label: '● PENDING' },
-    running:   { cls: 'badge-running',   label: '▶ RUNNING' },
-    completed: { cls: 'badge-completed', label: '✓ COMPLETED' },
-    failed:    { cls: 'badge-failed',    label: '✗ FAILED' },
+    pending:   { cls: 'badge-pending',   sym: '●', text: 'PENDING'   },
+    running:   { cls: 'badge-running',   sym: '▶', text: 'RUNNING'   },
+    completed: { cls: 'badge-completed', sym: '✓', text: 'COMPLETED' },
+    failed:    { cls: 'badge-failed',    sym: '✗', text: 'FAILED'    },
+    cancelled: { cls: 'badge-failed',    sym: '⏹', text: 'CANCELLED' },
   };
-  const entry = map[status] || { cls: 'badge-pending', label: `● ${String(status).toUpperCase()}` };
-  return `<span class="badge ${entry.cls}">${entry.label}</span>`;
+  const entry = map[status] || { cls: 'badge-pending', sym: '●', text: String(status).toUpperCase() };
+  return `<span class="badge ${entry.cls}"><span aria-hidden="true">${entry.sym}</span> ${entry.text}</span>`;
 }
 
 // ── Results panel ─────────────────────────────────────────────────────────────
@@ -1357,6 +1387,10 @@ async function loadAlerts() {
       // into innerHTML as a CSS class name — prevents XSS via a malicious server.
       const sevClass = ['error', 'warn', 'info'].includes(a.severity)
         ? `sev-${a.severity}` : 'sev-info';
+      // UX-02: map severity to a human-readable accessible label so screen
+      // readers announce "critical", "warning", or "information" rather than
+      // reading out the emoji character name (e.g. "red circle").
+      const iconLabel = { error: 'critical', warn: 'warning', info: 'information' }[a.severity] || 'information';
       const catLabel = a.category === 'review' ? 'Review' : 'System health';
       const detailHtml = a.detail && a.detail.length
         ? `<ul class="alert-detail">${a.detail.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul>`
@@ -1365,7 +1399,7 @@ async function loadAlerts() {
         ? `<span class="text-xs opacity-50 cursor-pointer hover:opacity-100 underline" onclick="openResultsById('${escHtml(a.job_id)}')"> → job ${escHtml(a.job_id.slice(0,8))}…</span>`
         : '';
       return `<div class="alert-item ${sevClass}">
-        <span class="alert-icon">${icon}</span>
+        <span class="alert-icon" role="img" aria-label="${iconLabel}">${icon}</span>
         <div class="alert-body">
           <div class="alert-msg">${escHtml(a.message)}${jobLink}</div>
           <div class="alert-cat">${catLabel}</div>
