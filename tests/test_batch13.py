@@ -28,8 +28,15 @@ _CONFIG_PATH = _REPO / "taxspine_orchestrator" / "config.py"
 _MAIN_PATH = _REPO / "taxspine_orchestrator" / "main.py"
 
 
+_ENTRYPOINT = _REPO / "entrypoint.sh"
+
+
 def _dockerfile() -> str:
     return _DOCKERFILE.read_text(encoding="utf-8")
+
+
+def _entrypoint() -> str:
+    return _ENTRYPOINT.read_text(encoding="utf-8")
 
 
 def _services() -> str:
@@ -281,10 +288,16 @@ class TestINFRA07NonRootUser:
     """INFRA-07: Container must run as a non-root user."""
 
     def test_dockerfile_has_user_directive(self):
-        """Dockerfile must contain a USER directive."""
+        """Dockerfile must run as non-root: either via a USER directive or via an
+        entrypoint.sh that drops privileges with gosu before exec-ing the CMD."""
         src = _dockerfile()
-        assert "\nUSER app" in src or "\nUSER 1000" in src, (
-            "Dockerfile must have a USER directive to run as non-root (INFRA-07)"
+        has_user = "\nUSER app" in src or "\nUSER 1000" in src
+        # Entrypoint-based privilege drop: gosu app inside entrypoint.sh is
+        # equally secure and handles bind-mount ownership at runtime.
+        has_gosu_drop = "gosu app" in _entrypoint()
+        assert has_user or has_gosu_drop, (
+            "Dockerfile must have a USER directive OR entrypoint.sh must drop "
+            "privileges via 'gosu app' to run as non-root (INFRA-07)"
         )
 
     def test_dockerfile_creates_app_user(self):
@@ -309,22 +322,42 @@ class TestINFRA07NonRootUser:
         )
 
     def test_dockerfile_creates_data_directories(self):
-        """Dockerfile must create /data subdirectories before USER switch."""
-        src = _dockerfile()
-        assert "mkdir -p" in src, (
-            "Dockerfile must mkdir -p /data/* directories before switching "
-            "to non-root user so the container works without a bind-mount"
+        """Data directories must be created either in the Dockerfile (build time)
+        or in entrypoint.sh (runtime — required when /data is a bind-mount that
+        masks build-time directories)."""
+        has_mkdir_dockerfile = "mkdir -p" in _dockerfile()
+        has_mkdir_entrypoint = "mkdir -p" in _entrypoint()
+        assert has_mkdir_dockerfile or has_mkdir_entrypoint, (
+            "Dockerfile or entrypoint.sh must mkdir -p /data/* so the container "
+            "works with and without an external bind-mount"
         )
 
     def test_user_directive_comes_after_all_build_steps(self):
-        """USER directive must appear after all RUN/COPY/pip install steps."""
+        """Non-root enforcement must come after all build steps.
+
+        Accepted patterns:
+        - Classic: USER directive in Dockerfile after the last RUN step.
+        - Entrypoint: ENTRYPOINT ["/entrypoint.sh"] in Dockerfile + gosu app
+          in entrypoint.sh (privilege drop happens at container start, after
+          all build steps by definition).
+        """
         src = _dockerfile()
+        # Classic USER directive path.
         user_pos = src.rfind("\nUSER app") if "\nUSER app" in src else src.rfind("\nUSER 1000")
-        assert user_pos > 0, "USER directive not found"
-        # pip install and COPY steps should all appear before USER
-        last_run_pos = src.rfind("\nRUN ")
-        assert last_run_pos < user_pos, (
-            "USER directive must come after the last RUN step"
+        if user_pos > 0:
+            last_run_pos = src.rfind("\nRUN ")
+            assert last_run_pos < user_pos, (
+                "USER directive must come after the last RUN step"
+            )
+            return
+        # Entrypoint-based path: ENTRYPOINT must reference the script and the
+        # script must drop to the app user via gosu.
+        assert "ENTRYPOINT" in src and "entrypoint.sh" in src, (
+            "Dockerfile must have USER directive or ENTRYPOINT [entrypoint.sh] "
+            "for non-root enforcement (INFRA-07)"
+        )
+        assert "gosu app" in _entrypoint(), (
+            "entrypoint.sh must exec via 'gosu app' to drop privileges (INFRA-07)"
         )
 
 
