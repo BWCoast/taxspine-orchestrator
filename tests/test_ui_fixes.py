@@ -162,41 +162,53 @@ class TestFE09TimestampEscaping:
 
 
 class TestUX16ConfirmOnRemove:
-    """removeCsv() and removeAccount() must guard with confirm() before deleting."""
+    """removeCsv() and removeAccount() must guard with a confirmation dialog before deleting.
+
+    UX-14 upgraded the native confirm() call to the in-page showConfirm() modal;
+    these tests accept either form so they remain valid after the upgrade.
+    """
 
     def test_remove_account_has_confirm(self, html: str) -> None:
         # Find the removeAccount function body.
         start = html.find("async function removeAccount(")
         assert start >= 0, "removeAccount function must exist"
-        snippet = html[start: start + 300]
-        assert "confirm(" in snippet, (
-            "removeAccount must call confirm() before sending the DELETE request"
+        snippet = html[start: start + 400]
+        # Accept either the old confirm() or the new in-page showConfirm().
+        assert "confirm(" in snippet or "showConfirm(" in snippet, (
+            "removeAccount must call confirm() or showConfirm() before sending the DELETE request"
         )
 
     def test_remove_csv_has_confirm(self, html: str) -> None:
         start = html.find("async function removeCsv(")
         assert start >= 0, "removeCsv function must exist"
-        snippet = html[start: start + 300]
-        assert "confirm(" in snippet, (
-            "removeCsv must call confirm() before sending the DELETE request"
+        snippet = html[start: start + 400]
+        assert "confirm(" in snippet or "showConfirm(" in snippet, (
+            "removeCsv must call confirm() or showConfirm() before sending the DELETE request"
         )
 
     def test_remove_account_confirm_before_fetch(self, html: str) -> None:
         start = html.find("async function removeAccount(")
-        snippet = html[start: start + 400]
-        confirm_pos = snippet.find("confirm(")
-        fetch_pos   = snippet.find("fetch(")
-        assert confirm_pos < fetch_pos, (
-            "confirm() must appear before fetch() in removeAccount"
+        snippet = html[start: start + 600]
+        # Accept showConfirm (in-page modal) or confirm (native).
+        confirm_pos = min(
+            p for p in [snippet.find("confirm("), snippet.find("showConfirm(")]
+            if p >= 0
+        ) if any(p >= 0 for p in [snippet.find("confirm("), snippet.find("showConfirm(")]) else -1
+        fetch_pos = snippet.find("fetch(")
+        assert 0 <= confirm_pos < fetch_pos, (
+            "confirm()/showConfirm() must appear before fetch() in removeAccount"
         )
 
     def test_remove_csv_confirm_before_fetch(self, html: str) -> None:
         start = html.find("async function removeCsv(")
-        snippet = html[start: start + 400]
-        confirm_pos = snippet.find("confirm(")
-        fetch_pos   = snippet.find("fetch(")
-        assert confirm_pos < fetch_pos, (
-            "confirm() must appear before fetch() in removeCsv"
+        snippet = html[start: start + 600]
+        confirm_pos = min(
+            p for p in [snippet.find("confirm("), snippet.find("showConfirm(")]
+            if p >= 0
+        ) if any(p >= 0 for p in [snippet.find("confirm("), snippet.find("showConfirm(")]) else -1
+        fetch_pos = snippet.find("fetch(")
+        assert 0 <= confirm_pos < fetch_pos, (
+            "confirm()/showConfirm() must appear before fetch() in removeCsv"
         )
 
 
