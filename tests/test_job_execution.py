@@ -13,6 +13,15 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# TestCarryForwardLots patches tax_spine.pipeline.lot_store.LotPersistenceStore
+# directly, which requires tax_spine to be importable at patch __enter__ time.
+# Guard identically to test_dedup_api.py so CI without tax-nor stays green.
+try:
+    import tax_spine.pipeline.lot_store as _ts_lot  # noqa: F401
+    _TAX_SPINE_AVAILABLE = True
+except ImportError:
+    _TAX_SPINE_AVAILABLE = False
 from fastapi.testclient import TestClient
 
 from taxspine_orchestrator.main import app
@@ -475,7 +484,16 @@ class TestCarryForwardLots:
     _maybe_write_carry_forward_csv reads the lot persistence store and
     writes a generic-events CSV that the CLI treats as opening positions
     for the current tax year.
+
+    Skipped when ``tax_spine`` is not installed (CI without tax-nor).
+    patch() targets ``tax_spine.pipeline.lot_store.LotPersistenceStore``
+    which requires the package to be importable at context-manager entry.
     """
+
+    pytestmark = pytest.mark.skipif(
+        not _TAX_SPINE_AVAILABLE,
+        reason="tax_spine not installed — skipping carry-forward lot tests",
+    )
 
     def _make_lot(self, asset: str, qty: str, basis_nok, lot_id: str = "lot1"):
         lot = MagicMock()
