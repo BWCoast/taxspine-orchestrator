@@ -43,6 +43,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         git \
+        gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Python deps: orchestrator ─────────────────────────────────────────────────
@@ -183,20 +184,17 @@ ENV OUTPUT_DIR=/data/output \
 # INFRA-07: Run as a non-root user (UID 1000) to limit the blast radius of a
 # container escape and avoid creating root-owned files on bind-mounted volumes.
 #
-# Data directories are created here with app ownership so the container works
-# correctly even without an external bind-mount (e.g. in CI / tests).
-# In production (Synology bind-mount), ensure the host directories are owned
-# by UID 1000 — or set PUID/PGID via environment and adjust accordingly.
+# The entrypoint.sh script runs as root, (re-)creates the /data subdirectories,
+# chowns them to app:app, then execs the CMD as the app user via gosu.
+# This handles the common case where /data is a bind-mount owned by root on the
+# host — the Dockerfile-time mkdir/chown would be masked by the mount.
 RUN useradd -r -u 1000 -s /sbin/nologin -d /app app \
-    && mkdir -p \
-        /data/output \
-        /data/tmp \
-        /data/uploads \
-        /data/state/dedup \
-        /data/prices \
-    && chown -R app:app /app /data
+    && chown -R app:app /app
 
-USER app
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 
 # ── Port ─────────────────────────────────────────────────────────────────────
 EXPOSE 8000
