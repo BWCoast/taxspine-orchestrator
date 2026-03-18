@@ -15,8 +15,9 @@
     fallback loads the CDN play-script when the local file is absent (local dev
     without running the download step).
 
-    For local development, run once:
-      python -c "import urllib.request; urllib.request.urlretrieve('https://cdn.jsdelivr.net/npm/tailwindcss@3.4.17/dist/tailwind.min.css','ui/tailwind.min.css')"
+    For local development, download the standalone CLI and generate once:
+      curl -sL https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-linux-x64 -o /tmp/tw && chmod +x /tmp/tw
+      /tmp/tw --content ui/index.html --output ui/tailwind.min.css --minify
   -->
   <link id="tw-css" rel="stylesheet" href="tailwind.min.css">
   <script>
@@ -211,9 +212,16 @@
             <option value="per_file">Per file — one report per source (default)</option>
             <option value="nor_multi">NOR MULTI — unified FIFO pool, single report</option>
           </select>
+          <!-- UX-15: explain tax consequence of each mode so users understand
+               the cost-basis impact, not just the output format difference. -->
           <p class="text-xs text-gray-600 mt-1 leading-snug">
-            <em>nor_multi</em> combines all CSV sources into one FIFO lot pool.
-            Use when you want a single combined report across all exchange files.
+            <strong>Per file</strong> — each CSV source maintains an independent
+            FIFO lot pool and cost basis. Use when exchanges should be reported
+            separately.<br>
+            <strong>NOR MULTI</strong> — all sources share a single FIFO lot pool.
+            Acquisitions on one exchange offset disposals on another, which
+            <em>affects your taxable gain/loss figures</em>.
+            Use when you want a single combined report with unified cost basis.
           </p>
         </div>
         <div>
@@ -226,9 +234,12 @@
         <!-- F-14: warning shown when built-in estimates are selected -->
         <!-- UX-03: aria-live="polite" + aria-atomic="true" ensure screen readers
              announce this warning when the valuation mode dropdown toggles it. -->
+        <!-- UX-24: jurisdiction-neutral wording — the warning previously
+             referenced Skatteetaten (Norway-only) but also appears for UK
+             jobs where HMRC is the relevant authority. -->
         <div id="dummy-valuation-warning" class="rounded border border-yellow-600 bg-yellow-900/30 px-3 py-2 text-xs text-yellow-300" role="alert" aria-live="polite" aria-atomic="true">
-          <strong>⚠ Not for filing</strong> — Built-in estimates are <em>not</em> accepted by Skatteetaten.
-          Select <strong>Price table CSV</strong> and fetch authoritative NOK prices before generating a report you intend to submit.
+          <strong>⚠ Not for filing</strong> — Built-in estimates are <em>not</em> suitable for tax filing.
+          Select <strong>Price table CSV</strong> and upload authoritative prices before generating a report you intend to submit.
         </div>
         <div id="prices-field" class="hidden">
           <label for="run-prices-path" class="text-xs text-gray-400 mb-1 block">Price table</label>
@@ -246,8 +257,11 @@
           <label for="run-trades" class="text-xs text-gray-400 cursor-pointer">Include DEX trades (XRPL OfferCreate swaps)</label>
         </div>
         <div class="flex items-center gap-2">
+          <!-- UX-22: added parenthetical so users know what "Debug valuation output"
+               actually does — it prints NOK price diagnostics to stderr (visible in
+               the execution log), which helps troubleshoot missing or zero prices. -->
           <input type="checkbox" id="run-debug" class="accent-blue-500 w-4 h-4">
-          <label for="run-debug" class="text-xs text-gray-400 cursor-pointer">Debug valuation output</label>
+          <label for="run-debug" class="text-xs text-gray-400 cursor-pointer">Debug valuation output <span class="text-gray-600">(prints NOK price diagnostics to the execution log)</span></label>
         </div>
         <div class="flex flex-col gap-1">
           <div class="flex items-center gap-2">
@@ -354,7 +368,10 @@
       <div id="results-downloads" class="flex flex-wrap gap-2 mb-4"></div>
 
       <!-- Inline HTML report -->
-      <div id="results-iframe-wrap" class="hidden">
+      <!-- UX-23: position:relative on the wrapper enables the gradient overlay
+           that visually signals the report continues beyond the visible fold.
+           The iframe also carries an accessible title for screen readers. -->
+      <div id="results-iframe-wrap" class="hidden" style="position:relative;">
         <p class="text-xs text-gray-500 mb-2">Inline preview:</p>
         <!--
           UX-01 security model:
@@ -369,7 +386,12 @@
           A restrictive CSP is also injected into every blob before loading
           (see loadReportInIframe) to add a second layer of defence.
         -->
-        <iframe id="results-iframe" class="w-full rounded-lg border border-gray-700" style="height:600px; background:white;" sandbox="allow-scripts allow-downloads"></iframe>
+        <iframe id="results-iframe" class="w-full rounded-lg border border-gray-700"
+          style="height:600px; background:white;" sandbox="allow-scripts allow-downloads"
+          title="Tax report preview — scroll to see full content"></iframe>
+        <!-- UX-23: gradient fade at the bottom indicates content continues below the viewport -->
+        <div aria-hidden="true" style="position:absolute;bottom:0;left:0;right:0;height:36px;pointer-events:none;background:linear-gradient(transparent,rgba(17,24,39,0.9));border-radius:0 0 0.5rem 0.5rem;"></div>
+        <p class="text-xs text-center text-gray-600 mt-1">↕ Scroll inside the preview to see the full report</p>
       </div>
 
       <!-- Execution log -->
@@ -393,40 +415,45 @@
           <option value="">— select year —</option>
         </select>
         <button onclick="loadTaxCenter()" class="btn-secondary text-xs">↻ Refresh</button>
-        <span id="tc-loading" class="text-xs text-blue-400 hidden">Loading…</span>
+        <!-- UX-13: spinner icon alongside "Loading…" text for visual feedback -->
+        <span id="tc-loading" class="text-xs text-blue-400 hidden"><span class="inline-block animate-spin" aria-hidden="true">⟳</span> Loading…</span>
       </div>
     </div>
 
-    <!-- Tabs -->
-    <div class="flex gap-2 mb-5">
-      <button class="tc-tab active" onclick="tcTab('holdings',this)">📊 Holdings</button>
-      <button class="tc-tab" onclick="tcTab('lots',this)">📦 Carry-Forward Lots</button>
-      <button class="tc-tab" onclick="tcTab('dedup',this)">🔁 Ingestion Sources</button>
+    <!-- Tabs — UX-20: role=tablist/tab/tabpanel so screen readers understand
+         the tabbed relationship and announce which panel is active. -->
+    <div role="tablist" aria-label="Tax Center sections" class="flex gap-2 mb-5">
+      <button role="tab" id="tc-tab-holdings" aria-selected="true"  aria-controls="tc-panel-holdings" class="tc-tab active" onclick="tcTab('holdings',this)">📊 Holdings</button>
+      <button role="tab" id="tc-tab-lots"     aria-selected="false" aria-controls="tc-panel-lots"     class="tc-tab" onclick="tcTab('lots',this)">📦 Carry-Forward Lots</button>
+      <!-- UX-21: renamed from "Ingestion Sources" → "Data Sources" (user-friendly) -->
+      <button role="tab" id="tc-tab-dedup"    aria-selected="false" aria-controls="tc-panel-dedup"    class="tc-tab" onclick="tcTab('dedup',this)">🔁 Data Sources</button>
     </div>
 
     <!-- Panel: Holdings -->
-    <div class="tc-panel active" id="tc-panel-holdings">
+    <div class="tc-panel active" id="tc-panel-holdings" role="tabpanel" aria-labelledby="tc-tab-holdings">
       <div id="tc-holdings-stats" class="tc-stat-row hidden">
         <div class="tc-stat"><div class="num" id="tc-h-assets">—</div><div class="lbl">Assets</div></div>
         <div class="tc-stat"><div class="num" id="tc-h-lots" style="color:#93c5fd">—</div><div class="lbl">Active lots</div></div>
         <div class="tc-stat"><div class="num" id="tc-h-basis" style="color:#6ee7b7;font-size:1rem">—</div><div class="lbl">Total cost basis</div></div>
       </div>
       <div class="tc-empty hidden" id="tc-holdings-empty">No lot snapshots yet. Run a Norway pipeline job first.</div>
+      <!-- UX-11: scope="col" on every <th> so assistive technologies correctly
+           associate header cells with data cells in each column. -->
       <table class="tc-table hidden" id="tc-holdings-table">
         <thead><tr>
-          <th>Asset</th>
-          <th style="text-align:right">Quantity</th>
-          <th style="text-align:right">Cost Basis (NOK)</th>
-          <th style="text-align:right">Avg Cost / Unit</th>
-          <th style="text-align:right">Lots</th>
-          <th>Basis</th>
+          <th scope="col">Asset</th>
+          <th scope="col" style="text-align:right">Quantity</th>
+          <th scope="col" style="text-align:right">Cost Basis (NOK)</th>
+          <th scope="col" style="text-align:right">Avg Cost / Unit</th>
+          <th scope="col" style="text-align:right">Lots</th>
+          <th scope="col">Basis</th>
         </tr></thead>
         <tbody id="tc-holdings-tbody"></tbody>
       </table>
     </div>
 
     <!-- Panel: Lots -->
-    <div class="tc-panel" id="tc-panel-lots">
+    <div class="tc-panel" id="tc-panel-lots" role="tabpanel" aria-labelledby="tc-tab-lots">
       <div id="tc-lots-stats" class="tc-stat-row hidden">
         <div class="tc-stat"><div class="num" id="tc-l-total">—</div><div class="lbl">Total lots</div></div>
         <div class="tc-stat"><div class="num" id="tc-l-active" style="color:#6ee7b7">—</div><div class="lbl">Active</div></div>
@@ -436,28 +463,30 @@
       <div class="tc-empty hidden" id="tc-lots-empty">No lot snapshots yet. Run a Norway pipeline job first.</div>
       <table class="tc-table hidden" id="tc-lots-table">
         <thead><tr>
-          <th>Asset</th>
-          <th style="text-align:right">Total lots</th>
-          <th style="text-align:right">Active</th>
-          <th style="text-align:right">Depleted</th>
-          <th>Status</th>
+          <th scope="col">Asset</th>
+          <th scope="col" style="text-align:right">Total lots</th>
+          <th scope="col" style="text-align:right">Active</th>
+          <th scope="col" style="text-align:right">Depleted</th>
+          <th scope="col">Status</th>
         </tr></thead>
         <tbody id="tc-lots-tbody"></tbody>
       </table>
     </div>
 
-    <!-- Panel: Dedup -->
-    <div class="tc-panel" id="tc-panel-dedup">
+    <!-- Panel: Data Sources (UX-21: renamed from "Ingestion Sources") -->
+    <div class="tc-panel" id="tc-panel-dedup" role="tabpanel" aria-labelledby="tc-tab-dedup">
+      <!-- UX-21: one-sentence description to orient non-developer users. -->
+      <p class="text-xs text-gray-400 mb-3">Each exchange or wallet you have imported shows here. "Last seen" is how recently that source was synced.</p>
       <div class="flex items-center gap-2 mb-4">
         <button onclick="loadDedupSources()" class="btn-secondary text-xs">↻ Refresh sources</button>
-        <span id="tc-dedup-loading" class="text-xs text-blue-400 hidden">Loading…</span>
+        <span id="tc-dedup-loading" class="text-xs text-blue-400 hidden"><span class="inline-block animate-spin" aria-hidden="true">⟳</span> Loading…</span>
       </div>
-      <div class="tc-empty hidden" id="tc-dedup-empty">No dedup sources found. Sources appear here after the first ingestion run.</div>
+      <div class="tc-empty hidden" id="tc-dedup-empty">No import sources found yet. Data sources will appear here after the first sync or pipeline run.</div>
       <table class="tc-table hidden" id="tc-dedup-table">
         <thead><tr>
-          <th>Source</th>
-          <th style="text-align:right">Size</th>
-          <th>Last modified</th>
+          <th scope="col">Source</th>
+          <th scope="col" style="text-align:right">Size</th>
+          <th scope="col">Last modified</th>
         </tr></thead>
         <tbody id="tc-dedup-tbody"></tbody>
       </table>
@@ -467,6 +496,9 @@
 </div>
 
 <!-- Loading spinner overlay (during run) -->
+<!-- UX-18: overlay now includes a Dismiss button that aborts the in-flight
+     fetch via AbortController and re-enables the form. The 120-second
+     AbortController timeout also fires automatically for very long runs. -->
 <div id="run-overlay" class="hidden fixed inset-0 flex items-center justify-center z-50" style="background:rgba(0,0,0,.65)">
   <div class="card p-8 flex flex-col items-center gap-4">
     <svg class="spin w-10 h-10 text-blue-500" fill="none" viewBox="0 0 24 24">
@@ -475,6 +507,7 @@
     </svg>
     <p class="text-white font-semibold" id="overlay-text">Running pipeline…</p>
     <p class="text-gray-400 text-sm">This can take a minute. Please wait.</p>
+    <button onclick="dismissRun()" class="btn-secondary text-sm mt-2" id="overlay-dismiss-btn">Dismiss</button>
   </div>
 </div>
 
@@ -488,6 +521,26 @@
 // Falls back to localhost:8000 when opened directly as a file:// URL (dev).
 const API = document.querySelector('meta[name="api-base"]')?.content
   ?? ((location.protocol === 'file:') ? 'http://localhost:8000' : '');
+
+// ── UX-18: AbortController for the in-flight run request ─────────────────────
+// Holds the active AbortController while a pipeline fetch is in progress.
+// Set to null when no request is running.  dismissRun() aborts it and
+// restores the form to its idle state so the user is never stuck waiting.
+let _runController = null;
+// FE-14: Track the most-recently created blob URL so we can revoke it before
+// creating a new one.  Without revocation every loadReportInIframe() call leaks
+// an object URL, causing unbounded memory growth across the session.
+let _lastBlobUrl = null;
+
+function dismissRun() {
+  // UX-18: abort the in-flight fetch (if any) and reset overlay + button.
+  if (_runController) {
+    _runController.abort();
+    _runController = null;
+  }
+  document.getElementById('run-overlay').classList.add('hidden');
+  document.getElementById('run-btn').disabled = false;
+}
 
 // ── Dynamic defaults ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -575,10 +628,19 @@ function renderWorkspace() {
   if (!workspace.csv_files.length) {
     cl.innerHTML = '<p class="text-gray-600 text-xs italic">No CSV files registered yet.</p>';
   } else {
+    // UX-12: human-readable labels for all supported source types so the job
+    // list never shows raw API values like "bybit_uta" to end users.
     const SOURCE_LABELS = {
-      coinbase_csv: 'Coinbase',
-      firi_csv: 'Firi',
-      generic_events: '',
+      generic_events:           '',
+      coinbase_csv:             'Coinbase',
+      firi_csv:                 'Firi',
+      kraken_spot:              'Kraken (spot)',
+      bybit_uta:                'Bybit (UTA)',
+      bybit_fund:               'Bybit (funding)',
+      bybit_withdraw_deposit:   'Bybit (withdrawals/deposits)',
+      nbx_ada:                  'NBX',
+      uphold:                   'Uphold',
+      xrpl_bithomp:             'XRPL (Bithomp)',
     };
     for (const spec of workspace.csv_files) {
       const filePath = spec.path || spec;  // backward compat if server sends bare string
@@ -665,7 +727,7 @@ async function addAccount() {
 
 async function removeAccount(account) {
   // UX-16: confirm before removing — matches the existing deleteJob() pattern.
-  if (!confirm(`Remove account ${account} from the workspace?\n\nThis only removes the registration; no on-chain data is deleted.`)) return;
+  if (!await showConfirm(`Remove account ${account} from the workspace?\n\nThis only removes the registration; no on-chain data is deleted.`)) return;
   try {
     const r = await fetch(`${API}/workspace/accounts/${encodeURIComponent(account)}`, { method: 'DELETE' });
     if (!r.ok) return;
@@ -676,7 +738,7 @@ async function removeAccount(account) {
 
 async function removeCsv(path) {
   // UX-16: confirm before removing — matches the existing deleteJob() pattern.
-  if (!confirm(`Remove this CSV file from the workspace?\n\n${path}\n\nThe file on disk is not deleted.`)) return;
+  if (!await showConfirm(`Remove this CSV file from the workspace?\n\n${path}\n\nThe file on disk is not deleted.`)) return;
   try {
     const r = await fetch(`${API}/workspace/csv`, {
       method: 'DELETE',
@@ -722,7 +784,9 @@ async function handleCsvFile(file) {
     return;
   }
 
-  statusEl.textContent = `Uploading ${file.name}…`;
+  // UX-13: animated spinner during upload so users have a visual loading indicator
+  // rather than a plain text string that could be mistaken for a static label.
+  statusEl.innerHTML = `<span class="inline-block animate-spin" aria-hidden="true">⟳</span> Uploading ${escHtml(file.name)}…`;
   statusEl.className = 'mt-2 text-xs text-blue-400';
   statusEl.classList.remove('hidden');
 
@@ -835,6 +899,13 @@ async function runReport() {
   document.getElementById('overlay-text').textContent = `Running ${country.toUpperCase()} ${taxYear} pipeline…`;
   document.getElementById('run-btn').disabled = true;
 
+  // UX-18: create an AbortController so the user can dismiss the overlay and
+  // abort the in-flight request at any time.  The controller is also used to
+  // apply an automatic 120-second timeout so the browser never hangs
+  // indefinitely waiting for a slow or stuck pipeline run.
+  _runController = new AbortController();
+  const _runTimeoutId = setTimeout(() => _runController && _runController.abort(), 120_000);
+
   // FE-01 fix: overlay and button are managed exclusively in `finally` so they
   // are *always* cleaned up — whether the fetch throws, the server returns an
   // error, or a secondary follow-up call (loadJobs / openResults) throws after
@@ -844,6 +915,7 @@ async function runReport() {
     const r = await fetch(`${API}/workspace/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: _runController.signal,
       body: JSON.stringify({
         tax_year: taxYear,
         country,
@@ -864,9 +936,15 @@ async function runReport() {
     }
     successJob = job;
   } catch (e) {
-    alert('Request failed — is the server running?');
+    // UX-18: AbortError means the user clicked Dismiss or the 120 s timeout
+    // fired — do not show a "server down" alert in this case.
+    if (e && e.name !== 'AbortError') {
+      alert('Request failed — is the server running?');
+    }
   } finally {
-    // Guaranteed cleanup regardless of success, server error, or early return.
+    // Guaranteed cleanup regardless of success, server error, abort, or early return.
+    clearTimeout(_runTimeoutId);
+    _runController = null;
     document.getElementById('run-overlay').classList.add('hidden');
     document.getElementById('run-btn').disabled = false;
   }
@@ -923,13 +1001,14 @@ function _jobRowHtml(j) {
   // encodeURIComponent() for the URL.  This eliminates the dual-escaping problem
   // that arose from embedding the ID in an onclick="" attribute string.
   const safeId = escHtml(j.id);
+  // UX-09: minimum padding increased so touch targets approach WCAG 2.5.5 (44×44 px).
   const cancelBtn = isRunning
-    ? `<button class="btn-secondary flex-shrink-0" style="padding:3px 8px;font-size:11px;color:#f87171;"
+    ? `<button class="btn-secondary flex-shrink-0" style="padding:6px 10px;font-size:12px;color:#f87171;"
         data-job-id="${safeId}"
         onclick="event.stopPropagation();cancelJob(this.dataset.jobId)" title="Cancel job">⏹ Cancel</button>`
     : '';
   const deleteBtn = !isRunning
-    ? `<button class="btn-danger flex-shrink-0" style="padding:3px 8px;font-size:11px;"
+    ? `<button class="btn-danger flex-shrink-0" style="padding:6px 10px;font-size:12px;"
         data-job-id="${safeId}"
         onclick="event.stopPropagation();deleteJob(this.dataset.jobId)" title="Delete job">✕</button>`
     : '';
@@ -1014,7 +1093,11 @@ function _filteredJobs() {
     if (country && j.input?.country !== country) return false;
     if (q) {
       const name = (j.input?.case_name || '').toLowerCase();
-      if (!name.includes(q)) return false;
+      // FE-16: fall back to job ID when case_name is absent or does not match,
+      // so users can search by job ID prefix for jobs that were created without
+      // a case name.
+      const id   = (j.id || '').toLowerCase();
+      if (!name.includes(q) && !id.includes(q)) return false;
     }
     return true;
   });
@@ -1036,7 +1119,9 @@ function badgeHtml(status) {
     failed:    { cls: 'badge-failed',    sym: '✗', text: 'FAILED'    },
     cancelled: { cls: 'badge-failed',    sym: '⏹', text: 'CANCELLED' },
   };
-  const entry = map[status] || { cls: 'badge-pending', sym: '●', text: String(status).toUpperCase() };
+  // FE-06: escape unknown status strings before injecting into HTML to prevent
+  // XSS if the server ever returns a malicious status value.
+  const entry = map[status] || { cls: 'badge-pending', sym: '●', text: escHtml(String(status)).toUpperCase() };
   return `<span class="badge ${entry.cls}"><span aria-hidden="true">${entry.sym}</span> ${entry.text}</span>`;
 }
 
@@ -1113,6 +1198,10 @@ async function openResults(job) {
     if (fr.ok) {
       const files = await fr.json();
       const icons = { gains: '📈', wealth: '💰', summary: '🗂️', log: '📋', rf1159: '🇳🇴', review: '🔍' };
+      // UX-19: format badges clarify file type; primary artifacts use btn-primary styling.
+      const formatBadge = { gains: 'CSV', wealth: 'CSV', summary: 'JSON', log: 'TXT', rf1159: 'JSON', review: 'JSON' };
+      // RF-1159 is the primary tax-filing document — styled distinctly.
+      const primaryKinds = new Set(['rf1159']);
 
       // Non-report files (gains, wealth, summary, log buttons)
       for (const [kind, path] of Object.entries(files)) {
@@ -1120,8 +1209,12 @@ async function openResults(job) {
         const btn = document.createElement('a');
         btn.href = `${API}/jobs/${job.id}/files/${kind}`;
         btn.download = '';
-        btn.className = 'btn-secondary text-xs flex items-center gap-1';
-        btn.innerHTML = `${icons[kind] || '📎'} Download ${kind}`;
+        // UX-19: primary artifacts (RF-1159) use btn-primary to stand out.
+        btn.className = primaryKinds.has(kind)
+          ? 'btn-primary text-xs flex items-center gap-1'
+          : 'btn-secondary text-xs flex items-center gap-1';
+        const fmt = formatBadge[kind] || '';
+        btn.innerHTML = `${icons[kind] || '📎'} Download ${kind}${fmt ? ` <span class="opacity-60 text-xs font-mono">${fmt}</span>` : ''}`;
         dlEl.appendChild(btn);
       }
 
@@ -1148,15 +1241,15 @@ async function openResults(job) {
               }
             }
             const reportUrl = `${API}${rep.url}`;
-            // Download anchor
+            // Download anchor — UX-19: HTML report is a primary artifact.
             const btn = document.createElement('a');
             btn.href = reportUrl;
             btn.download = '';
-            btn.className = 'btn-secondary text-xs flex items-center gap-1';
+            btn.className = 'btn-primary text-xs flex items-center gap-1';
             const label = multi
               ? `📄 Report — ${escHtml(sourceLabel)}`
               : '📄 Download report';
-            btn.innerHTML = label;
+            btn.innerHTML = `${label} <span class="opacity-60 text-xs font-mono">HTML</span>`;
             dlEl.appendChild(btn);
             // Open ↗ button
             const openBtn = document.createElement('button');
@@ -1225,13 +1318,22 @@ async function loadReportInIframe(jobId, iframe, index = null) {
       'navigate-to \'none\';">';
     const safeHtml = html.replace(/<head(\s[^>]*)?>/i, (m) => m + cspTag);
     // Write HTML into iframe via blob URL to avoid CSP issues
+    // FE-14: Revoke the previous blob URL before creating a new one so the
+    // browser can reclaim the memory.  Without this, every report load leaks
+    // an object URL for the lifetime of the page.
+    if (_lastBlobUrl) { URL.revokeObjectURL(_lastBlobUrl); _lastBlobUrl = null; }
     const blob = new Blob([safeHtml], { type: 'text/html' });
     const blobUrl = URL.createObjectURL(blob);
+    _lastBlobUrl = blobUrl;
     // Check for draft/provisional content and show advisory if found
     if (html.includes('provisional-banner') || html.includes('DRAFT')) {
       const iframeWrap = document.getElementById('results-iframe-wrap');
+      // FE-15: Remove any prior advisory banner before inserting a new one so
+      // that switching between reports does not stack duplicate banners.
+      const _existingAdvisory = iframeWrap.querySelector('.advisory-banner');
+      if (_existingAdvisory) _existingAdvisory.remove();
       const advisory = document.createElement('div');
-      advisory.className = 'text-yellow-400 text-sm bg-yellow-900/30 border border-yellow-700 rounded p-2 mb-2';
+      advisory.className = 'advisory-banner text-yellow-400 text-sm bg-yellow-900/30 border border-yellow-700 rounded p-2 mb-2';
       advisory.textContent = '\u26a0 This is a provisional report \u2014 unresolved items remain. Do not file with Skatteetaten until all warnings are resolved.';
       iframeWrap.insertBefore(advisory, iframe);
     }
@@ -1300,7 +1402,7 @@ async function fetchJobsList() {
 }
 
 async function deleteJob(jobId) {
-  if (!confirm('Delete this job record? Output files on disk are kept.')) return;
+  if (!await showConfirm('Delete this job record? Output files on disk are kept.')) return;
   try {
     const r = await fetch(`${API}/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
     if (!r.ok) {
@@ -1321,7 +1423,7 @@ async function deleteJob(jobId) {
 }
 
 async function cancelJob(jobId) {
-  if (!confirm('Cancel this running job?')) return;
+  if (!await showConfirm('Cancel this running job?')) return;
   try {
     const r = await fetch(`${API}/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
     const data = await r.json().catch(() => ({}));
@@ -1350,6 +1452,30 @@ function escHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+// UX-14: Promise-based in-page confirmation modal replacing window.confirm().
+// Returns a Promise<boolean> — true when the user clicks Confirm, false on Cancel.
+// Each call registers one-shot listeners so concurrent calls are safe.
+function showConfirm(message) {
+  return new Promise(resolve => {
+    const modal   = document.getElementById('confirm-modal');
+    const msgEl   = document.getElementById('confirm-modal-msg');
+    const okBtn   = document.getElementById('confirm-modal-ok');
+    const cancelBtn = document.getElementById('confirm-modal-cancel');
+    msgEl.textContent = message;
+    modal.style.display = 'flex';
+    okBtn.focus();
+    function cleanup() {
+      modal.style.display = 'none';
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+    }
+    function onOk()     { cleanup(); resolve(true);  }
+    function onCancel() { cleanup(); resolve(false); }
+    okBtn.addEventListener('click', onOk, { once: true });
+    cancelBtn.addEventListener('click', onCancel, { once: true });
+  });
 }
 
 // Enter key on account input
@@ -1391,6 +1517,9 @@ async function loadAlerts() {
       // readers announce "critical", "warning", or "information" rather than
       // reading out the emoji character name (e.g. "red circle").
       const iconLabel = { error: 'critical', warn: 'warning', info: 'information' }[a.severity] || 'information';
+      // UX-10: visible severity text label so severity is not conveyed by
+      // colour alone — important for colour-blind users.
+      const sevLabel = { error: 'CRITICAL', warn: 'WARNING', info: 'INFO' }[a.severity] || 'INFO';
       const catLabel = a.category === 'review' ? 'Review' : 'System health';
       const detailHtml = a.detail && a.detail.length
         ? `<ul class="alert-detail">${a.detail.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul>`
@@ -1402,7 +1531,7 @@ async function loadAlerts() {
         <span class="alert-icon" role="img" aria-label="${iconLabel}">${icon}</span>
         <div class="alert-body">
           <div class="alert-msg">${escHtml(a.message)}${jobLink}</div>
-          <div class="alert-cat">${catLabel}</div>
+          <div class="alert-cat"><span class="alert-sev">${sevLabel}</span> · ${catLabel}</div>
           ${detailHtml}
         </div>
       </div>`;
@@ -1425,21 +1554,26 @@ async function loadReviewBadge(jobId) {
     if (!r.ok) return;  // not a Norway job or no data — silently skip
     const rv = await r.json();
 
-    let cls, icon, title;
+    // UX-06: each icon carries role="img" + aria-label so screen readers
+    // announce the review outcome rather than the emoji character name.
+    let cls, icon, title, iconAriaLabel;
     if (rv.clean) {
       cls = 'clean'; icon = '✅'; title = 'Review clean — no warnings';
+      iconAriaLabel = 'Review clean';
     } else if (rv.has_unlinked_transfers) {
       cls = 'unlinked'; icon = '🔗';
       title = `${rv.warning_count} warning(s) · unlinked transfers detected`;
+      iconAriaLabel = 'Warning: unlinked transfers detected';
     } else {
       cls = 'warn'; icon = '⚠️';
       title = `${rv.warning_count} warning(s)`;
+      iconAriaLabel = 'Warning';
     }
     const listHtml = rv.warnings && rv.warnings.length
       ? `<ul class="rb-list">${rv.warnings.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul>`
       : '';
     wrap.innerHTML = `<div class="review-badge ${cls}">
-      <span class="rb-icon">${icon}</span>
+      <span class="rb-icon" role="img" aria-label="${escHtml(iconAriaLabel)}">${icon}</span>
       <div class="flex-1">
         <div class="rb-title">${escHtml(title)}</div>
         ${listHtml}
@@ -1456,9 +1590,15 @@ function _fmtNok(s) { const v = parseFloat(s); return isNaN(v) ? '—' : 'kr ' +
 function _fmtQty(s) { const v = parseFloat(s); return isNaN(v) ? '—' : _qtyFmt.format(v); }
 
 function tcTab(name, btn) {
-  document.querySelectorAll('.tc-tab').forEach(b => b.classList.remove('active'));
+  // UX-20: keep aria-selected in sync with the visual active state so screen
+  // readers correctly announce which tab is selected.
+  document.querySelectorAll('.tc-tab').forEach(b => {
+    b.classList.remove('active');
+    b.setAttribute('aria-selected', 'false');
+  });
   document.querySelectorAll('.tc-panel').forEach(p => p.classList.remove('active'));
   btn.classList.add('active');
+  btn.setAttribute('aria-selected', 'true');
   document.getElementById(`tc-panel-${name}`).classList.add('active');
 }
 
@@ -1613,16 +1753,33 @@ async function loadDedupSources() {
   finally { loading.classList.add('hidden'); }
 }
 
+// UX-21: relative time helper — converts ISO timestamp to "2 hours ago" etc.
+// so the Data Sources tab shows human-friendly "last seen" values instead of
+// raw UTC timestamps that are opaque to non-developer users.
+function _relativeTime(isoStr) {
+  if (!isoStr) return '—';
+  const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+  if (diff < 0)   return 'just now';
+  if (diff < 60)  return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`;
+  if (diff < 86400 * 365) return `${Math.floor(diff / (86400 * 30))}mo ago`;
+  return `${Math.floor(diff / (86400 * 365))}yr ago`;
+}
+
 function _renderDedupSources(sources) {
   if (!sources || !sources.length) { _showDedupEmpty(true); return; }
   const tbody = document.getElementById('tc-dedup-tbody');
   tbody.innerHTML = sources.map(s => {
     const kb = (s.size_bytes / 1024).toFixed(1);
-    const mtime = s.last_modified ? s.last_modified.replace('T', ' ').replace('Z', ' UTC') : '—';
+    // UX-21: show relative time ("2 days ago") instead of raw UTC timestamp.
+    const rel = _relativeTime(s.last_modified);
+    const abs = s.last_modified ? s.last_modified.replace('T', ' ').replace('Z', ' UTC') : '—';
     return `<tr>
       <td><strong>${escHtml(s.source)}</strong></td>
       <td style="text-align:right;font-family:monospace">${kb} KB</td>
-      <td style="font-family:monospace;font-size:12px">${escHtml(mtime)}</td>
+      <td title="${escHtml(abs)}" style="font-size:12px">${escHtml(rel)}</td>
     </tr>`;
   }).join('');
   _showDedupEmpty(false);
@@ -1643,5 +1800,21 @@ function _showDedupEmpty(show) {
   window._alertsTimer = setInterval(loadAlerts,  60_000);
 })();
 </script>
+
+<!-- UX-14: in-page confirmation modal — replaces native browser confirm() dialogs
+     with a consistently styled dark-theme overlay.  Native confirm() is visually
+     jarring (light OS dialog in a dark UI), blocks the event loop in some browsers,
+     and cannot be unit-tested without mocking window.confirm. -->
+<div id="confirm-modal"
+  style="display:none;position:fixed;inset:0;z-index:50;align-items:center;justify-content:center;background:rgba(0,0,0,0.72);"
+  role="dialog" aria-modal="true" aria-labelledby="confirm-modal-msg">
+  <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:1.5rem;max-width:22rem;width:calc(100% - 2rem);">
+    <p id="confirm-modal-msg" style="color:#e5e7eb;font-size:0.875rem;line-height:1.5;margin-bottom:1.25rem;"></p>
+    <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+      <button id="confirm-modal-cancel" class="btn-secondary" style="font-size:0.875rem;padding:0.5rem 1rem;">Cancel</button>
+      <button id="confirm-modal-ok"     class="btn-primary"   style="font-size:0.875rem;padding:0.5rem 1rem;">Confirm</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

@@ -46,11 +46,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Python deps: orchestrator ─────────────────────────────────────────────────
-# Copy only the dependency manifest first so Docker can cache this layer
-# independently of source changes.
+# INFRA-04: copy the lockfile first and install exact pinned versions before
+# installing the orchestrator package itself.  This ensures every Docker image
+# build uses the same transitive dependency tree regardless of upstream releases,
+# eliminating the "works on Monday, breaks on Tuesday" failure mode caused by a
+# floating-version pip install silently upgrading a transitive dep.
+#
+# To update the lockfile after changing pyproject.toml:
+#   pip install -e ".[dev]" && pip freeze | grep -v taxspine-orchestrator > requirements.lock
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
+# Now install the orchestrator package itself (deps already satisfied above).
 COPY pyproject.toml .
 COPY taxspine_orchestrator/ ./taxspine_orchestrator/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --no-deps .
 
 # ── Python deps: tax-spine CLIs ───────────────────────────────────────────────
 # Installs taxspine-xrpl-nor, taxspine-nor-report, taxspine-uk-report
@@ -77,8 +86,11 @@ RUN pip install --no-cache-dir .
 # TAXNOR_SHA: HEAD commit SHA used only for Docker layer cache-busting.
 ARG TAXNOR_TAG=v0.1.0
 ARG TAXNOR_SHA=unknown
+# SEC-04: version info is recorded as image LABEL metadata (accessible via
+# `docker inspect`) rather than echoed to build output (which would appear in
+# CI/CD logs and help an attacker identify pinned dependency versions).
+LABEL taxnor.tag="${TAXNOR_TAG}" taxnor.sha="${TAXNOR_SHA}"
 RUN --mount=type=secret,id=gh_token,required=false \
-    echo "# tax-nor tag: ${TAXNOR_TAG}  HEAD: ${TAXNOR_SHA}" && \
     TOKEN=$(cat /run/secrets/gh_token 2>/dev/null || echo "") && \
     if [ -n "$TOKEN" ]; then \
         pip install --no-cache-dir "git+https://${TOKEN}@github.com/BWCoast/tax-nor.git@${TAXNOR_TAG}"; \
@@ -117,6 +129,15 @@ RUN --mount=type=secret,id=gh_token,required=false \
         pip install --no-cache-dir "git+https://github.com/BWCoast/blockchain-reader.git@${BLOCKCHAIN_READER_SHA}"; \
     fi
 
+# ── INFRA-10: remove build-time OS deps ───────────────────────────────────────
+# build-essential and git were needed only to compile native extensions and to
+# install packages directly from GitHub via pip.  Both tasks are now complete,
+# so purging them shrinks the final image and reduces the attack surface of the
+# running container.  --auto-remove also removes any automatically-installed
+# packages that are no longer required.
+RUN apt-get purge -y --auto-remove build-essential git \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Application source ────────────────────────────────────────────────────────
 # Copied after deps so that source edits don't invalidate the dep layers.
 COPY ui/         ./ui/
@@ -124,19 +145,28 @@ COPY main.py     .
 COPY scripts/    ./scripts/
 
 # ── SEC-18: self-host Tailwind CSS ────────────────────────────────────────────
-# Replace the CDN play-script with a locally-served static CSS file so that
-# Subresource Integrity (SRI) concerns do not apply — the file is fetched once
-# at build time and baked into the image, not loaded from an external CDN on
-# every page load.
+# Tailwind CSS v3 no longer ships a prebuilt dist/tailwind.min.css in the npm
+# package — that file was dropped after v2.  Downloading from jsDelivr returns
+# HTTP 404 regardless of version.
 #
-# The version is pinned here; bump deliberately when upgrading Tailwind.
+# Instead we use the official standalone Tailwind CLI binary (published on
+# GitHub Releases) to generate a minified CSS file scanned from index.html.
+# This keeps the file locally-served (no external CDN on each page load) while
+# including only the utility classes actually used in the markup.
+#
+# The CLI binary is deleted after the build step so it does not appear in the
+# final image.  Pin the version deliberately when upgrading Tailwind.
 ARG TAILWIND_VERSION=3.4.17
 RUN python3 -c "\
-import urllib.request, sys; \
-url = 'https://cdn.jsdelivr.net/npm/tailwindcss@${TAILWIND_VERSION}/dist/tailwind.min.css'; \
-print(f'Downloading Tailwind CSS {url}', file=sys.stderr); \
-urllib.request.urlretrieve(url, '/app/ui/tailwind.min.css'); \
-print('tailwind.min.css downloaded', file=sys.stderr) \
+import urllib.request, os, stat, subprocess, sys, shutil; \
+cli = '/tmp/tailwindcss-cli'; \
+url = f'https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWIND_VERSION}/tailwindcss-linux-x64'; \
+print(f'Downloading Tailwind CLI {url}', file=sys.stderr); \
+urllib.request.urlretrieve(url, cli); \
+os.chmod(cli, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH); \
+subprocess.run([cli, '--content', '/app/ui/index.html', '--output', '/app/ui/tailwind.min.css', '--minify'], check=True); \
+os.unlink(cli); \
+print('tailwind.min.css generated', file=sys.stderr) \
 "
 
 # ── Runtime configuration ─────────────────────────────────────────────────────
