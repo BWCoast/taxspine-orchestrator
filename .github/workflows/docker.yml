@@ -40,20 +40,33 @@ jobs:
   # a published image.  The build-and-push job declares `needs: test` to
   # enforce this ordering.
   test:
-    name: pytest
+    # INFRA-25: matrix across Python 3.11 and 3.12 so that regressions on
+    # newer interpreters are caught before a broken image can be published.
+    # pyproject.toml declares requires-python = ">=3.11", so both versions
+    # must be green for the build-and-push job to proceed.
+    name: pytest (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
 
       - name: Install orchestrator + dev dependencies
         run: pip install -e ".[dev]"
+
+      # INFRA-20: lint with ruff before running tests so style and type-annotation
+      # regressions are caught in CI before a broken image could be published.
+      # ruff is already a dev dependency (see pyproject.toml [project.optional-dependencies]).
+      - name: Lint with ruff
+        run: python -m ruff check .
 
       - name: Run tests
         run: python -m pytest --tb=short -q
@@ -174,6 +187,7 @@ jobs:
           cache-to:   type=gha,mode=max
           build-args: |
             TAXNOR_SHA=${{ steps.taxnor_sha.outputs.sha }}
+            TAXNOR_TAG=${{ steps.taxnor_sha.outputs.sha }}
             BLOCKCHAIN_READER_SHA=${{ steps.blockchain_reader_sha.outputs.sha }}
           # ── tax-nor auth ────────────────────────────────────────────────────
           # GH_READ_TOKEN is a repository secret containing a GitHub PAT with

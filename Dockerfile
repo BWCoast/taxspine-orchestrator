@@ -82,10 +82,10 @@ RUN pip install --no-cache-dir --no-deps .
 # gets new commits, the SHA changes → Docker cannot reuse the cached layer
 # → pip installs the fresh version.  Defaults to "unknown" for local builds
 # where the SHA is not passed (triggering a fresh install every time locally).
-# TAXNOR_TAG: semver tag to install (default v0.1.0).  Override at build time
-# to deploy a different release:  --build-arg TAXNOR_TAG=v0.2.0
-# TAXNOR_SHA: HEAD commit SHA used only for Docker layer cache-busting.
-ARG TAXNOR_TAG=v0.1.0
+# TAXNOR_TAG: git ref to install — commit SHA, tag, or branch (default main).
+# The CI workflow passes the HEAD SHA of tax-nor so builds are deterministic.
+# TAXNOR_SHA: same SHA, used only for Docker layer cache-busting.
+ARG TAXNOR_TAG=main
 ARG TAXNOR_SHA=unknown
 # SEC-04: version info is recorded as image LABEL metadata (accessible via
 # `docker inspect`) rather than echoed to build output (which would appear in
