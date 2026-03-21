@@ -58,15 +58,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
+          cache-dependency-path: "pyproject.toml"
 
       - name: Install orchestrator + dev dependencies
         run: pip install -e ".[dev]"
 
       # INFRA-20: lint with ruff before running tests so style and type-annotation
       # regressions are caught in CI before a broken image could be published.
-      # ruff is already a dev dependency (see pyproject.toml [project.optional-dependencies]).
       - name: Lint with ruff
-        run: python -m ruff check .
+        run: ruff check .
 
       - name: Run tests
         run: python -m pytest --tb=short -q
