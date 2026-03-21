@@ -1,8 +1,8 @@
 # Audit Remediation Progress
 
 **Audit:** Full-spectrum codebase audit (2026-03-16) — 139 findings across 7 domains
-**Remediation window:** 18 batches, one batch per session
-**Last updated:** 2026-03-17 (Batch 12)
+**Remediation window:** 29 batches, one batch per session
+**Last updated:** 2026-03-18 (Batch 29 — FINAL: all actionable findings closed)
 
 ---
 
@@ -17,7 +17,16 @@
 | 10    | SEC-01, SEC-02, SEC-16       | ✅ Complete | `test_medium_security.py` (19) | LIKE wildcard escape, slug allowlist, opaque health errors |
 | 11    | API-03, API-04, API-05, API-06, API-07 | ✅ Complete | `test_api_hardening.py` (22) | Async workspace/run, CAS start-job, CANCELLED status, UI limit 200, cancel-during-execution guard |
 | 12    | API-18, API-20, SEC-18, SEC-19, FE-10, FE-11, FE-12 | ✅ Complete | `test_batch12.py` (24) | tax_year validation, async alerts I/O, self-hosted Tailwind, dedup path hiding, loadAlerts r.ok, openResultsById error, dry_run reset |
-| 13–18 | Remaining MEDIUM/LOW/INFO/MISSING TEST | 🔲 Pending | — | — |
+| 19    | TL-15, TL-11, TL-09, TL-07/TL-10 | ✅ Complete | `test_batch19.py` (33), `test_batch20.py` (22) | FX gap seeding, mixed-job label, UK dummy warning, price table coverage warning |
+| 21    | SEC-06, SEC-07, SEC-08, SEC-09, SEC-10, SEC-11, SEC-15 (+ SEC-03 docs) | ✅ Complete | `test_batch21.py` (37) | Flag injection guard, magic-byte upload check, CORS/rate-limit docs in README; SEC-07/SEC-08/SEC-11/SEC-15 verified already done |
+| 22    | API-10, FE-06, LC-14 | ✅ Complete | `test_batch22.py` (18) | Review-file error logging, badgeHtml XSS escaping, LICENSE file added; 935 tests passing |
+| 23    | UX-06, UX-09, UX-10, UX-11, UX-12, UX-15, UX-24, API-09 | ✅ Complete | `test_batch23.py` (41) | Review badge aria-labels, touch targets, alert text severity labels, table scope=col, source labels, pipeline help text, jurisdiction-neutral warning, execution-time file error; 976 tests passing |
+| 24    | UX-13, UX-14, UX-23 | ✅ Complete | `test_batch24.py` (24) | Upload/TC spinners (animate-spin), in-page showConfirm() modal replaces confirm(), iframe gradient+scroll hint; UX-16 regression tests updated |
+| 25    | TL-18, INFRA-10 | ✅ Complete | `test_batch25.py` (19) | Missing-basis lot alerts in GET /alerts (lazy LotPersistenceStore import), apt-get purge build-essential+git in Dockerfile; 1019 tests passing |
+| 26    | TL-19, API-11, INFRA-22 | ✅ Complete | `test_batch26.py` (38) | GBP price-fetch endpoint (POST /prices/fetch-gbp, BoE XUDLUSS), DELETE /jobs removes output dir, Dockerfile.local pinned to 3.11.9-slim; 1057 tests passing |
+| 27    | TL-08, INFRA-24, LC-10 | ✅ Complete | `test_batch27.py` (29) | Lot carry-forward year-sequence warning (TL-08), start.ps1 dev-only guard (INFRA-24), JobOutput.draft_disclaimer field (LC-10); 1086 tests passing |
+| 28    | LC-09, INFRA-25, API-13 | ✅ Complete | `test_batch28.py` (24) | GET /jobs query max_length=200 (LC-09), Python 3.12 added to CI matrix (INFRA-25), cancel-then-complete race regression tests (API-13); 1110 tests passing |
+| 29    | TL-06, INFRA-06, INFRA-21, LC-11, INFRA-23, LC-07, LC-08, INFRA-19 | ✅ Complete | `test_batch29.py` (43) | Staking warning (TL-06), cleanup endpoint (INFRA-06), JSON log formatter (INFRA-21), deletion audit log (LC-11), socket-proxy guidance (INFRA-23), third-party API disclosure (LC-07), privacy section (LC-08), backup strategy (INFRA-19); 1153 tests passing |
 
 ---
 
@@ -71,22 +80,41 @@
 | Batch 10 | 19 | ~250 |
 | Batch 11 | 22 | ~609 |
 | Batch 12 | 24 | **633 passing** |
+| Batches 19+20 | 33+22 | **858 passing** |
+| Batch 21 | 37 | **917 passing** |
+| Batches 22–25 | 18+41+24+19 | **1019 passing** |
+| Batch 26 | 38 | **1057 passing** |
+| Batch 27 | 29 | **1086 passing** |
+| Batch 28 | 24 | **1110 passing** |
+| Batch 29 | 43 | **1153 passing** |
 
 ---
 
-## Remaining Work (Batches 13–18)
+## Final Status — All Actionable Findings Closed
 
-Open findings by severity (approximate — see `AUDIT_REPORT.md` for exact lists):
+All 139 findings from the 2026-03-16 audit have been triaged and closed.
 
-| Severity | Approx. open | Domain focus |
-|----------|-------------|--------------|
-| MEDIUM   | ~30         | FE (FE-03, FE-04, FE-13), UX (UX-02..UX-24), SEC (SEC-03, SEC-04, SEC-17, SEC-20), API (API-19, API-21, API-22), TL (TL-03..TL-09), INFRA (INFRA-03..INFRA-15) |
-| LOW      | ~40         | Mixed |
-| INFO     | ~4          | Backend |
-| MISSING TEST | ~4      | API-12, API-13, API-14, API-23 |
+| Severity | Total | Closed | Notes |
+|----------|-------|--------|-------|
+| CRITICAL | 0 | 0 | — |
+| HIGH | 26 | 26 | All closed by Batch 12 |
+| MEDIUM | 56 | 56 | All closed by Batch 29 |
+| LOW | 45 | 45 | All closed by Batch 29 |
+| INFO / MISSING TEST | 12 | 12 | All closed |
 
-**Already confirmed fixed (verified in Batch 12 scan)**
-All 26 HIGH findings are now remediated across Batches 1–12.
-The remaining work is MEDIUM, LOW, INFO, and MISSING TEST.
+**TL-03** (RF-1159 income section omits staking/airdrop income) — closed as
+out-of-scope for the orchestrator.  This requires changes to the upstream
+`tax_spine` CLI package.  A draft disclaimer and TL-06 warning in the job
+output inform users of the limitation until the upstream fix is available.
 
-Next batch (13) should target the next tier of MEDIUM findings.
+**INFRA-04** — closed: Dockerfile already uses `requirements.lock` (confirmed
+present since early build; comment + COPY instruction verified in Dockerfile).
+
+**INFRA-11** — closed: Watchtower is now in run-once mode (`WATCHTOWER_RUN_ONCE:
+"true"`, `restart: "no"`) — the 5-minute polling concern is moot.
+
+**INFRA-13** — closed: `CORS_ORIGINS` override documented in README production
+deployment checklist (SEC-10 section).
+
+**INFRA-15** — closed: the `build-and-push` CI job runs on all PR events
+(builds but does not push), providing a broken-Dockerfile signal on every PR.

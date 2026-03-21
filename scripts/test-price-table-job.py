@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-import requests, sys, json
+import requests
+import sys
+import json
 from pathlib import Path
 
 ORCHESTRATOR_URL = "http://localhost:8000"
@@ -11,7 +13,7 @@ with open("prices-2025-nok.csv", "rb") as f:
 
 # Create job for your real XRPL wallet
 job = requests.post(f"{ORCHESTRATOR_URL}/jobs", json={
-    "xrpl_accounts": ["rYourMainWallet"], 
+    "xrpl_accounts": ["rYourMainWallet"],
     "tax_year": 2025,
     "country": "norway",
     "valuation_mode": "price_table",

@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # XRPL address validation
@@ -255,6 +255,21 @@ class JobOutput(BaseModel):
     )
     log_path: Optional[str] = None
     error_message: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _sync_singular_from_plural(self) -> "JobOutput":
+        # API-21: keep the backward-compat singular alias fields in sync with
+        # their plural counterparts.  When only the plural list is populated
+        # (e.g. by a code path that sets report_html_paths without explicitly
+        # setting report_html_path), the singular is derived from index 0 so
+        # the two representations are always consistent.
+        if self.report_html_paths and self.report_html_path is None:
+            self.report_html_path = self.report_html_paths[0]
+        if self.rf1159_json_paths and self.rf1159_json_path is None:
+            self.rf1159_json_path = self.rf1159_json_paths[0]
+        if self.review_json_paths and self.review_json_path is None:
+            self.review_json_path = self.review_json_paths[0]
+        return self
     # TL-01 / TL-02: provenance metadata — which valuation engine and price
     # source were used.  Surfaced in the job response so callers can detect
     # dummy-valuation output without inspecting the RF-1159 JSON directly.
@@ -276,6 +291,48 @@ class JobOutput(BaseModel):
         default=None,
         description="Path to the CSV price table used, if valuation_mode=price_table.",
     )
+    # TL-05: UK tax year boundaries.  Populated only for country=uk jobs so that
+    # callers know which April-to-April window was used (e.g. tax_year=2025 →
+    # 2025-04-06 to 2026-04-05).  None for Norway jobs (calendar year = obvious).
+    tax_period_start: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO-8601 date of the first day of the tax period (UK jobs only). "
+            "For tax_year=2025 this is '2025-04-06'. None for Norway."
+        ),
+    )
+    tax_period_end: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO-8601 date of the last day of the tax period (UK jobs only). "
+            "For tax_year=2025 this is '2026-04-05'. None for Norway."
+        ),
+    )
+    # LC-10: Draft disclaimer for RF-1159 output.  Populated whenever an
+    # RF-1159 JSON is produced so API clients can surface the disclaimer
+    # without reading the report file.  None for jobs that produce no
+    # RF-1159 output (UK jobs, jobs where the pipeline found no virtual
+    # currency activity, etc.).
+    draft_disclaimer: Optional[str] = Field(
+        default=None,
+        description=(
+            "Populated for Norway jobs that produce RF-1159 output. "
+            "This disclaimer MUST be shown to users before any filing."
+        ),
+    )
+    # TL-06: Warning for jobs that include events with complex tax treatment
+    # (staking rewards, airdrops, DeFi yield, etc.) that require manual review.
+    # Populated at execution time by scanning the input generic-events CSV files.
+    # None when no complex treatment events are detected.
+    complex_treatment_warning: Optional[str] = Field(
+        default=None,
+        description=(
+            "Populated when input CSV files contain events with a non-standard "
+            "complex_tax_treatment label (e.g. STAKING, AIRDROP, DEFI_YIELD). "
+            "These events may require specialist tax advice and manual review "
+            "before filing. None when all events use standard treatment."
+        ),
+    )
 
 
 class Job(BaseModel):
@@ -291,6 +348,43 @@ class Job(BaseModel):
 
 
 # ── Workspace ────────────────────────────────────────────────────────────────
+
+
+# ── API-22: typed response models for previously-untyped endpoints ────────────
+
+
+class StartJobResponse(BaseModel):
+    """Response body for POST /jobs/{id}/start (HTTP 202 Accepted)."""
+
+    status: str = Field(description="'accepted' or the current job status value")
+    job_id: str = Field(description="The job ID that was accepted for execution")
+
+
+class CancelledJobResponse(BaseModel):
+    """Response body for POST /jobs/{id}/cancel."""
+
+    status: str = Field(description="Always 'cancelled'")
+    job_id: str = Field(description="The job ID that was cancelled")
+
+
+class DeletedJobResponse(BaseModel):
+    """Response body for DELETE /jobs/{id}."""
+
+    deleted: bool = Field(description="Always True on success")
+    id: str = Field(description="The job ID that was deleted")
+    files_removed: int = Field(description="Number of output/input files removed from disk")
+
+
+class JobReviewResponse(BaseModel):
+    """Response body for GET /jobs/{id}/review — aggregated pipeline review summary."""
+
+    has_unlinked_transfers: bool = Field(
+        description="True if any invocation detected unlinked cross-venue transfers"
+    )
+    warning_count: int = Field(description="Total number of warnings across all invocations")
+    warnings: List[str] = Field(description="Flat list of warning strings")
+    clean: bool = Field(description="True when there are no warnings and no unlinked transfers")
+    source_count: int = Field(description="Number of review JSON files successfully read")
 
 
 class WorkspaceConfig(BaseModel):

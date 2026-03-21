@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import json as _json
 import logging
 import os
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Security, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, Security, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security.api_key import APIKeyHeader
@@ -22,10 +23,43 @@ from pydantic import BaseModel, Field, field_validator
 from .config import settings
 from .dedup import router as dedup_router
 from .lots import router as lots_router
-from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, PipelineMode, ValuationMode, WorkspaceConfig, _XRPL_ADDRESS_RE
+from .models import (
+    CancelledJobResponse, Country, CsvFileSpec, CsvSourceType,
+    DeletedJobResponse, Job, JobInput, JobOutput, JobReviewResponse,
+    JobStatus, PipelineMode, StartJobResponse, ValuationMode, WorkspaceConfig,
+    _XRPL_ADDRESS_RE,
+)
 from .prices import router as prices_router
 from .services import JobService
 from .storage import SqliteJobStore, WorkspaceStore
+
+# ── INFRA-21: optional structured JSON logging ────────────────────────────────
+# Activated by setting LOG_FORMAT=json in the environment (e.g. in production
+# Compose files).  Emits one JSON object per log line so that Synology Log
+# Center and SIEM tools can filter by level, logger, and message fields.
+# Left as plain text by default so local dev / test output remains readable.
+
+
+class _JsonLogFormatter(logging.Formatter):
+    """Emit log records as compact JSON lines with structured fields."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        entry: dict = {
+            "ts":     self.formatTime(record),
+            "level":  record.levelname,
+            "logger": record.name,
+            "msg":    record.getMessage(),
+        }
+        if record.exc_info:
+            entry["exc"] = self.formatException(record.exc_info)
+        return _json.dumps(entry, ensure_ascii=False)
+
+
+if os.environ.get("LOG_FORMAT", "").lower() == "json":
+    _json_handler = logging.StreamHandler()
+    _json_handler.setFormatter(_JsonLogFormatter())
+    logging.basicConfig(handlers=[_json_handler], level=logging.INFO, force=True)
+
 
 # ── Application ───────────────────────────────────────────────────────────────
 
@@ -238,20 +272,34 @@ def create_job(job_input: JobInput) -> Job:
 
 @app.get("/jobs", response_model=list[Job], tags=["jobs"], dependencies=[Depends(_require_key)])
 def list_jobs(
+    response: Response,  # API-19: FastAPI injects Response so we can set X-Total-Count header
     status: Optional[JobStatus] = Query(default=None, description="Filter by job status"),
     country: Optional[Country] = Query(default=None, description="Filter by country"),
     query: Optional[str] = Query(
         default=None,
-        description="Free-text search against case_name (case-insensitive substring match)",
+        max_length=200,
+        # LC-09: cap query string length to prevent disproportionate
+        # server-side LIKE pattern expansion.  SQL metacharacters are already
+        # escaped (SEC-01); this limit ensures the DB cannot be asked to scan
+        # an arbitrarily large pattern string.
+        description="Free-text search against case_name (case-insensitive substring match). Max 200 chars.",
     ),
     limit: int = Query(default=50, ge=1, le=200, description="Max jobs to return"),
     offset: int = Query(default=0, ge=0, description="Number of jobs to skip"),
 ) -> list[Job]:
-    """List jobs, sorted newest-first, with filtering and paging."""
-    return _job_service.list_jobs(
+    """List jobs, sorted newest-first, with filtering and paging.
+
+    API-19: the ``X-Total-Count`` response header carries the total number
+    of matching jobs ignoring ``limit``/``offset``, allowing clients to
+    compute the number of pages without a separate count request.
+    """
+    jobs = _job_service.list_jobs(
         status=status, country=country, query=query,
         limit=limit, offset=offset,
     )
+    total = _job_service.count_jobs(status=status, country=country, query=query)
+    response.headers["X-Total-Count"] = str(total)
+    return jobs
 
 
 @app.get("/jobs/{job_id}", response_model=Job, tags=["jobs"], dependencies=[Depends(_require_key)])
@@ -263,7 +311,7 @@ def get_job(job_id: str) -> Job:
     return job
 
 
-@app.post("/jobs/{job_id}/start", tags=["jobs"], dependencies=[Depends(_require_key)])
+@app.post("/jobs/{job_id}/start", response_model=StartJobResponse, tags=["jobs"], dependencies=[Depends(_require_key)])
 async def start_job(job_id: str) -> JSONResponse:
     """Accept a pending job for background execution and return 202 immediately.
 
@@ -296,7 +344,7 @@ async def start_job(job_id: str) -> JSONResponse:
     return JSONResponse({"status": "accepted", "job_id": job_id}, status_code=202)
 
 
-@app.post("/jobs/{job_id}/cancel", tags=["jobs"], dependencies=[Depends(_require_key)])
+@app.post("/jobs/{job_id}/cancel", response_model=CancelledJobResponse, tags=["jobs"], dependencies=[Depends(_require_key)])
 async def cancel_job(job_id: str) -> dict:
     """Cancel a PENDING or RUNNING job by marking it CANCELLED.
 
@@ -392,7 +440,7 @@ def _delete_job_files(job: Job) -> int:
     return removed
 
 
-@app.delete("/jobs/{job_id}", tags=["jobs"], dependencies=[Depends(_require_key)])
+@app.delete("/jobs/{job_id}", response_model=DeletedJobResponse, tags=["jobs"], dependencies=[Depends(_require_key)])
 def delete_job(
     job_id: str,
     delete_files: bool = Query(
@@ -427,7 +475,22 @@ def delete_job(
             detail="Cannot delete a running job — cancel it first",
         )
     files_removed = _delete_job_files(job) if delete_files else 0
+    # API-11: remove the job output directory after deleting individual files.
+    # Individual file paths are removed by _delete_job_files(); the parent
+    # OUTPUT_DIR/{job_id}/ directory is a leftover directory that accumulates
+    # indefinitely without this cleanup.
+    if delete_files:
+        _job_output_dir = settings.OUTPUT_DIR / job_id
+        if _job_output_dir.is_dir():
+            try:
+                shutil.rmtree(_job_output_dir)
+            except OSError as _e:
+                _log.debug("API-11: could not remove output dir %s: %s", _job_output_dir, _e)
     _job_store.delete(job_id)
+    # LC-11: append deletion event to the audit log so that a record of which
+    # jobs were removed (and when) survives across server restarts.
+    if hasattr(_job_store, "log_deletion"):
+        _job_store.log_deletion(job_id, files_removed)
     return {"deleted": True, "id": job_id, "files_removed": files_removed}
 
 
@@ -577,7 +640,7 @@ def get_job_report_by_index(job_id: str, index: int) -> FileResponse:
 # ── Review summary ────────────────────────────────────────────────────────────
 
 
-@app.get("/jobs/{job_id}/review", tags=["jobs"], dependencies=[Depends(_require_key)])
+@app.get("/jobs/{job_id}/review", response_model=JobReviewResponse, tags=["jobs"], dependencies=[Depends(_require_key)])
 def get_job_review(job_id: str) -> dict:
     """Return an aggregated review summary for a completed Norway job.
 
@@ -619,8 +682,10 @@ def get_job_review(job_id: str) -> dict:
             if data.get("has_unlinked_transfers"):
                 has_unlinked = True
             loaded += 1
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as exc:
+            # API-10: log unreadable review files so operators can diagnose
+            # partial failures instead of silently losing data.
+            _log.warning("API-10: could not read review file %s: %s", p, exc)
 
     if loaded == 0:
         raise HTTPException(
@@ -638,6 +703,25 @@ def get_job_review(job_id: str) -> dict:
 
 
 # ── CSV uploads ───────────────────────────────────────────────────────────────
+
+# SEC-09: magic-byte signatures for binary file formats that are never valid CSVs.
+# These bytes appear at the very start of the file regardless of extension or MIME type.
+_BINARY_MAGIC_SIGNATURES: tuple[bytes, ...] = (
+    b"\x50\x4b",            # ZIP-based formats (XLSX, DOCX, JAR, …)
+    b"\x4d\x5a",            # PE executable / DLL (Windows MZ header)
+    b"\x7f\x45\x4c\x46",    # ELF binary (Linux executable / shared lib)
+    b"\x25\x50\x44\x46",    # %PDF
+    b"\xff\xd8\xff",         # JPEG
+    b"\x89\x50\x4e\x47",    # PNG
+    b"\x47\x49\x46\x38",    # GIF
+    b"\x42\x4d",            # BMP
+    b"\xd0\xcf\x11\xe0",    # MS-CFB (legacy .xls / .doc)
+)
+
+
+def _is_binary_upload(header: bytes) -> bool:
+    """Return True if *header* matches a known non-text binary file signature."""
+    return any(header.startswith(sig) for sig in _BINARY_MAGIC_SIGNATURES)
 
 
 _CSV_CONTENT_TYPES = {"text/csv", "application/vnd.ms-excel"}
@@ -704,7 +788,22 @@ async def upload_csv(
     filename = f"{upload_id}.csv"
     dest = settings.UPLOAD_DIR / filename
 
+    # SEC-09: Read the first chunk before writing so we can inspect magic bytes.
+    # A crafted file with a .csv extension but binary content (PE, ELF, ZIP, PDF…)
+    # is rejected early rather than forwarded to the taxspine CLI.
+    first_chunk = await file.read(8192)
+    if first_chunk and _is_binary_upload(first_chunk[:16]):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Uploaded file '{original_name}' appears to be a binary file, not a CSV. "
+                "Please upload a plain-text CSV (comma-separated values) file."
+            ),
+        )
+
     with dest.open("wb") as out:
+        if first_chunk:
+            out.write(first_chunk)
         while chunk := await file.read(8192):
             out.write(chunk)
 
@@ -1089,8 +1188,151 @@ async def get_alerts(
                 "detail": all_warnings,
             })
 
+    # ── 3. Lot quality alerts (TL-18) ───────────────────────────────────────
+    # Scan the FIFO carry-forward lot store for lots whose cost basis could not
+    # be resolved (basis_status != "known").  These lots indicate missing-basis
+    # events that will produce incorrect gain/loss figures if not resolved before
+    # filing.  Import is lazy so the orchestrator still works when the tax_spine
+    # package is absent (e.g. in a stripped Docker environment without CLIs).
+    import datetime as _dt
+    try:
+        from tax_spine.pipeline import LotPersistenceStore  # type: ignore[import]
+
+        _lot_db = settings.DATA_DIR / "lots.db"
+        if _lot_db.is_file():
+            _current_year = _dt.date.today().year
+            with LotPersistenceStore(_lot_db) as _lot_store:
+                for _yr in range(_current_year - 2, _current_year + 1):
+                    _lots = await asyncio.to_thread(_lot_store.load_all_lots, _yr)
+                    _non_known = [
+                        _l for _l in _lots
+                        if str(getattr(_l, "basis_status", "known")).lower() not in ("known",)
+                    ]
+                    if _non_known:
+                        _detail = [
+                            f"{getattr(_l, 'asset_symbol', '?')}: {getattr(_l, 'basis_status', '?')}"
+                            for _l in _non_known[:10]
+                        ]
+                        alerts.append({
+                            "severity": "warn",
+                            "category": "lot_quality",
+                            "message": (
+                                f"{len(_non_known)} lot(s) with unresolved cost basis "
+                                f"in {_yr} — review before filing"
+                            ),
+                            "job_id": None,
+                            "detail": _detail,
+                        })
+    except ImportError:
+        pass  # TL-18: tax_spine not installed — lot quality check skipped
+    except Exception as _exc:  # noqa: BLE001
+        _log.debug("TL-18: lot quality check skipped: %s", _exc)
+
     # ── Sort: error → warn → info ───────────────────────────────────────────
     _order = {"error": 0, "warn": 1, "info": 2}
     alerts.sort(key=lambda a: _order.get(a["severity"], 9))
 
     return alerts
+
+
+# ── Admin — cleanup and audit ─────────────────────────────────────────────────
+
+
+@app.post("/admin/cleanup", tags=["admin"], dependencies=[Depends(_require_key)])
+def cleanup_old_jobs(
+    older_than_days: int = Query(
+        default=90,
+        ge=1,
+        le=3650,
+        description=(
+            "INFRA-06: Remove COMPLETED / FAILED / CANCELLED jobs (and their output "
+            "files) last updated more than this many days ago.  RUNNING and PENDING "
+            "jobs are never touched."
+        ),
+    ),
+    dry_run: bool = Query(
+        default=False,
+        description=(
+            "When True, return what *would* be removed without deleting anything. "
+            "Use this to preview before committing to a cleanup run."
+        ),
+    ),
+) -> dict:
+    """TTL-based job cleanup — prevents unbounded disk growth on a NAS.
+
+    INFRA-06: Scans all terminal-state jobs and removes any that were last
+    updated more than ``older_than_days`` days ago.  For each eligible job
+    the endpoint:
+
+    1. Deletes the individual output files via ``_delete_job_files``.
+    2. Removes the ``OUTPUT_DIR/{job_id}/`` directory.
+    3. Deletes the job record from the database.
+
+    Returns a summary of what was (or would be) removed.
+    """
+    cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=older_than_days)
+    # Scan all jobs in batches — there may be thousands.
+    all_jobs = _job_store.list(limit=10_000, offset=0)
+    terminal = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+    eligible = [
+        j for j in all_jobs
+        if j.status in terminal and j.updated_at < cutoff
+    ]
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "jobs_would_remove": len(eligible),
+            "job_ids": [j.id for j in eligible],
+        }
+
+    jobs_removed = 0
+    files_removed = 0
+    for job in eligible:
+        files_removed += _delete_job_files(job)
+        out_dir = settings.OUTPUT_DIR / job.id
+        if out_dir.is_dir():
+            try:
+                shutil.rmtree(out_dir)
+            except OSError as _e:
+                _log.debug("INFRA-06: cleanup could not remove dir %s: %s", out_dir, _e)
+        _job_store.delete(job.id)
+        if hasattr(_job_store, "log_deletion"):
+            _job_store.log_deletion(job.id, 0)  # files already counted above
+        jobs_removed += 1
+
+    _log.info(
+        "INFRA-06: cleanup complete — removed %d jobs, %d files (older_than_days=%d)",
+        jobs_removed, files_removed, older_than_days,
+    )
+    return {
+        "dry_run": False,
+        "jobs_removed": jobs_removed,
+        "files_removed": files_removed,
+        "older_than_days": older_than_days,
+    }
+
+
+@app.get("/admin/audit", tags=["admin"], dependencies=[Depends(_require_key)])
+def get_audit_log(
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Maximum number of deletion log entries to return (newest first).",
+    ),
+) -> list:
+    """LC-11: Return the deletion audit log — records which jobs were removed and when.
+
+    Each entry contains:
+
+    - ``job_id``       — ID of the deleted job.
+    - ``deleted_at``   — ISO-8601 UTC timestamp of the deletion.
+    - ``files_removed``— Number of output/input files removed alongside the job.
+
+    Entries are ordered newest-first.  The log persists across server restarts.
+    Returns an empty list when no deletions have been recorded yet.
+    """
+    if not hasattr(_job_store, "list_deletions"):
+        return []
+    return _job_store.list_deletions(limit=limit)

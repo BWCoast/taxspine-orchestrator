@@ -399,7 +399,7 @@ class TestCaseName:
 
     def test_query_combined_with_status_and_country(self, client: TestClient) -> None:
         j1 = _create_job(client, country="norway", case_name="2025 Norway wallets")
-        j2 = _create_job(client, country="norway", case_name="2025 Norway cold")
+        _create_job(client, country="norway", case_name="2025 Norway cold")
         _force_status(j1["id"], JobStatus.COMPLETED)
         # j2 stays PENDING
 

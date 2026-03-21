@@ -16,7 +16,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # syntax=docker/dockerfile:1
-FROM python:3.11-slim
+# INFRA-22: pin to the same patch version as the production Dockerfile to prevent
+# silent divergence between local and production builds.
+FROM python:3.11.9-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -34,18 +36,31 @@ COPY taxspine_orchestrator/ ./taxspine_orchestrator/
 RUN pip install --no-cache-dir .
 
 # ── Python deps: tax-spine CLIs from local vendor copy ────────────────────────
-# The build-local.ps1 script copies the tax-nor source to vendor/tax-nor/
-# before calling docker build, so it is available in the build context here.
-COPY vendor/tax-nor/ /tmp/tax-nor/
-RUN pip install --no-cache-dir /tmp/tax-nor \
-    && rm -rf /tmp/tax-nor
-
-# ── Python deps: blockchain-reader from local vendor copy ─────────────────────
-# The build-local.ps1 script copies blockchain-reader to vendor/blockchain-reader/
-# before calling docker build.  Must be installed AFTER tax-spine (its dependency).
-COPY vendor/blockchain-reader/ /tmp/blockchain-reader/
-RUN pip install --no-cache-dir /tmp/blockchain-reader \
-    && rm -rf /tmp/blockchain-reader
+# The build-local.ps1 script copies the tax-nor source to vendor/tax-nor/ and
+# blockchain-reader to vendor/blockchain-reader/ before calling docker build.
+#
+# INFRA-09: copy vendor/ as a whole so that the RUN guard below can produce a
+# meaningful error message when build-local.ps1 was not run first.  If the
+# entire vendor/ directory is missing, Docker reports it clearly.
+COPY vendor/ /tmp/vendor/
+# INFRA-09: validate that both expected sub-directories are present.  Without
+# this check, a partial vendor/ copy (only one repo) would fail with a
+# confusing "No such file" error from pip rather than a helpful message.
+RUN test -d /tmp/vendor/tax-nor \
+    || (echo "" \
+        && echo "ERROR: vendor/tax-nor/ not found in build context." \
+        && echo "Run '.\\scripts\\build-local.ps1' before calling docker build." \
+        && echo "" \
+        && exit 1)
+RUN test -d /tmp/vendor/blockchain-reader \
+    || (echo "" \
+        && echo "ERROR: vendor/blockchain-reader/ not found in build context." \
+        && echo "Run '.\\scripts\\build-local.ps1' before calling docker build." \
+        && echo "" \
+        && exit 1)
+RUN pip install --no-cache-dir /tmp/vendor/tax-nor \
+    && pip install --no-cache-dir /tmp/vendor/blockchain-reader \
+    && rm -rf /tmp/vendor
 
 # ── Application source ────────────────────────────────────────────────────────
 COPY ui/         ./ui/

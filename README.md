@@ -342,3 +342,143 @@ All settings are controlled via environment variables:
 
 In all failure cases `job.output.log_path` points to `execution.log` with
 captured commands and stderr.
+
+---
+
+## Production deployment checklist (SEC-03, SEC-08, SEC-10)
+
+Before exposing the orchestrator on any network-reachable host:
+
+### 1. Set an API key (SEC-08)
+
+```bash
+# Generate a strong random key
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+export ORCHESTRATOR_KEY=<generated-value>
+```
+
+Without `ORCHESTRATOR_KEY` the entire API is publicly accessible.  The server
+logs a `WARNING` at startup when this variable is unset, so check startup logs
+before deploying.
+
+### 2. Set allowed CORS origins (SEC-10)
+
+```bash
+export CORS_ORIGINS=https://your-dashboard.example.com
+```
+
+The default `CORS_ORIGINS=http://localhost:8000,http://127.0.0.1:8000` blocks
+browser requests from any other origin.  Update it to match the actual hostname
+where you serve `ui/index.html`.  Note: CORS only restricts *browser* clients;
+command-line tools such as `curl` are unaffected, which is why `ORCHESTRATOR_KEY`
+is the primary access control.
+
+### 3. Consider a reverse proxy for rate limiting (SEC-03)
+
+The orchestrator has no built-in rate limiter.  In production, place it behind
+nginx, Caddy, or another reverse proxy and configure per-IP or per-key request
+limits on mutating endpoints (`POST /jobs`, `POST /uploads/csv`, etc.) to
+prevent resource exhaustion.
+
+See `.env.example` for the full list of configurable variables.
+
+---
+
+## Third-Party Data Sources (LC-07)
+
+This service makes outbound HTTP requests to third-party APIs on behalf of the
+operator.  No personal data is transmitted; only the requested asset ticker and
+date range are included in each call.
+
+| Service | Endpoint | Purpose | Data sent |
+|---------|----------|---------|-----------|
+| **CoinGecko** | `https://api.coingecko.com/api/v3/coins/{id}/market_chart` | Fetch historical USD prices for NOK valuation | Asset ticker + date range |
+| **Bank of England** | `https://www.bankofengland.co.uk/boeapps/database/_iadb-...` | Fetch USD/GBP exchange rate (XUDLUSS series) | Date range only |
+| **XRPL public nodes** | `wss://xrplcluster.com` (or configured node) | Fetch account transaction history | XRPL r-address |
+| **jsDelivr CDN** | `https://cdn.jsdelivr.net/npm/tailwindcss@...` | Download Tailwind CSS at Docker build time | None (build-time only) |
+
+**Operator responsibility:** By running this software you acknowledge that it
+will make network calls to the above services.  For deployments processing data
+on behalf of third parties (e.g. clients), ensure that your data-processing
+agreements permit outbound API calls to external price data providers.
+
+---
+
+## Data Handling & Privacy (LC-08)
+
+This service processes personal financial data — transaction records that may
+identify individuals.  The following data handling practices apply:
+
+### What data is stored
+
+| Data | Location | Retention |
+|------|----------|-----------|
+| Uploaded CSV files | `UPLOAD_DIR` | Until job is deleted |
+| Pipeline output (HTML, JSON, CSV) | `OUTPUT_DIR` | Until job is deleted |
+| Job metadata | `DATA_DIR/jobs.db` | Until job is deleted |
+| FIFO carry-forward lots | `DATA_DIR/lots.db` | Until explicitly purged |
+| Dedup keys (tx hashes only) | `DATA_DIR/dedup/` | Until explicitly purged |
+| XRPL addresses in execution logs | `OUTPUT_DIR/{id}/execution.log` | Redacted (replaced with `[XRPL-ADDRESS]`) |
+
+### Deletion
+
+`DELETE /jobs/{id}` removes the job record **and** all associated output and
+input files from disk.  Use `POST /admin/cleanup?older_than_days=N` to purge
+old jobs automatically.
+
+### Statutory retention period
+
+Norwegian Bokføringsloven § 13 requires tax records to be kept for **7 years**.
+Do not delete jobs within 7 years of the tax year they relate to unless advised
+by a qualified accountant.
+
+### GDPR
+
+If you process data for other people (e.g. a tax adviser running this service
+for clients), you act as a data processor under GDPR.  Ensure you have a lawful
+basis, a data processing agreement with any sub-processors, and a documented
+retention-and-deletion procedure.
+
+---
+
+## Backup Strategy (INFRA-19)
+
+The service relies on three SQLite databases under `DATA_DIR` (default
+`/data/state/`).  Loss of these files means loss of job history, carry-forward
+lots, and deduplication records.
+
+### Recommended daily backup (cron or Synology Task Scheduler)
+
+```bash
+#!/bin/bash
+# Run on the NAS host — adjust paths to match your bind-mount.
+BACKUP_DIR=/volume1/taxspine/backups
+DATA_DIR=/volume1/docker/taxspine/data/state
+DATE=$(date +%Y%m%d)
+
+mkdir -p "$BACKUP_DIR"
+
+# Hot backup using the SQLite online backup API (safe while the server runs).
+sqlite3 "$DATA_DIR/jobs.db"  ".backup $BACKUP_DIR/jobs-$DATE.db"
+sqlite3 "$DATA_DIR/lots.db"  ".backup $BACKUP_DIR/lots-$DATE.db"
+
+# Backup each per-source dedup database.
+for db in "$DATA_DIR/dedup/"*.db; do
+    name=$(basename "$db" .db)
+    sqlite3 "$db" ".backup $BACKUP_DIR/dedup-${name}-$DATE.db"
+done
+
+# Remove backups older than 30 days.
+find "$BACKUP_DIR" -name "*.db" -mtime +30 -delete
+echo "Backup complete: $BACKUP_DIR"
+```
+
+**Synology:** Use DSM Task Scheduler → Create → Scheduled Task → User-defined script,
+or enable Synology Hyper Backup on the `/volume1/docker/taxspine/` folder.
+
+**Restore test:** verify a restore at least once:
+```bash
+sqlite3 /tmp/jobs-restore-test.db ".restore $BACKUP_DIR/jobs-$(date +%Y%m%d).db"
+sqlite3 /tmp/jobs-restore-test.db "SELECT COUNT(*) FROM jobs;"
+```

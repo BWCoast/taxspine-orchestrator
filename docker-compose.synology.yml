@@ -113,6 +113,21 @@ services:
       retries:  3
       start_period: 20s
 
+    # ── Resource limits ──────────────────────────────────────────────────────
+    # INFRA-18: prevent a runaway pipeline job from consuming all NAS memory
+    # or CPU and causing DSM services to become unresponsive.
+    # Tune mem_limit to the RAM available on your NAS model:
+    #   DS218+  (2 GB RAM)  → 1G limit leaves headroom for DSM
+    #   DS920+  (4 GB RAM)  → 2G limit is reasonable
+    #   DS1621+ (4-32 GB)   → adjust accordingly
+    # cpus: "1.5" leaves at least 0.5 cores for DSM background tasks
+    # on a 2-core NAS; increase on 4+ core models.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+
     # ── Logging ──────────────────────────────────────────────────────────────
     # Keeps log files small — visible in Container Manager → Project → Logs.
     logging:
@@ -152,13 +167,30 @@ services:
   # triggered manually via:
   #   docker run containrrr/watchtower --run-once taxspine-orchestrator
   # if a one-shot update is needed without editing the Compose file.
+  #
+  # ── INFRA-23: Docker socket security ─────────────────────────────────────────
+  # Watchtower mounts /var/run/docker.sock directly.  A compromised Watchtower
+  # container would have root-equivalent control over every container on the host.
+  #
+  # RECOMMENDED HARDENING (advanced):
+  #   Replace the direct socket mount with a docker-socket-proxy that restricts
+  #   Watchtower to only the Docker API calls it actually needs.  See the
+  #   commented-out "socket-proxy" service below.
+  #
+  # To enable the hardened mode:
+  #   1. Uncomment the "socket-proxy" service below.
+  #   2. In the "watchtower" service, comment out the /var/run/docker.sock volume.
+  #   3. Add DOCKER_HOST: tcp://socket-proxy:2375 to watchtower's environment.
+  # ─────────────────────────────────────────────────────────────────────────────
   watchtower:
     image: containrrr/watchtower
     container_name: taxspine-watchtower
     # Do not auto-restart — run-once exits after a single pass.
     restart: "no"
     volumes:
-      # Needs the Docker socket to manage containers.
+      # INFRA-23: direct Docker socket mount — grants root-equivalent container
+      # control.  Replace with socket-proxy (see comments above) for hardened
+      # production environments where the NAS is network-reachable.
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       TZ: Europe/Oslo
@@ -174,3 +206,22 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
+
+  # ── INFRA-23: Optional docker-socket-proxy (hardened Watchtower) ─────────────
+  # Uncomment this block and follow the INFRA-23 instructions above to restrict
+  # Watchtower to only the Docker API endpoints it needs, eliminating root-
+  # equivalent host access through the raw Docker socket.
+  #
+  # socket-proxy:
+  #   image: tecnativa/docker-socket-proxy:latest
+  #   container_name: taxspine-socket-proxy
+  #   restart: unless-stopped
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   environment:
+  #     # Allow Watchtower to list containers and pull/restart images.
+  #     CONTAINERS: 1
+  #     IMAGES: 1
+  #     # Deny everything else — no exec, no swarm, no networks, no volumes.
+  #     POST: 1
+  #   ports: []  # internal only — Watchtower connects via the Docker network

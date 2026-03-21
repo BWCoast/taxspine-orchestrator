@@ -437,7 +437,7 @@ class TestNorMultiDryRun:
         body = start_and_wait(client, job_id)
 
         log_text = Path(body["output"]["log_path"]).read_text(encoding="utf-8")
-        would_run_lines = [l for l in log_text.splitlines() if "[would run]" in l]
+        would_run_lines = [ln for ln in log_text.splitlines() if "[would run]" in ln]
         assert len(would_run_lines) == 1
 
 

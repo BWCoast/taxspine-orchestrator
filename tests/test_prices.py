@@ -484,10 +484,19 @@ class TestFillCalendarGapsDecimal:
         filled = _fill_calendar_gaps(rates, 2025)
         assert filled["2025-01-04"] == Decimal("10.5")
 
-    def test_empty_before_first_rate(self):
+    def test_early_days_seeded_from_first_rate(self):
+        # TL-15: days before the first Norges Bank publication must be seeded
+        # from the earliest available rate (not left blank as before the fix).
         rates: dict[str, Decimal] = {"2025-03-01": Decimal("11.0")}
         filled = _fill_calendar_gaps(rates, 2025)
-        assert "2025-01-01" not in filled
+        # Jan 1 must now be present — seeded from the March-1 rate
+        assert "2025-01-01" in filled, (
+            "TL-15: _fill_calendar_gaps must seed early-Jan days from the "
+            "first available rate; 2025-01-01 should be present"
+        )
+        assert filled["2025-01-01"] == Decimal("11.0"), (
+            "TL-15: seeded early-Jan rate must equal the first available rate"
+        )
 
     def test_covers_full_year_after_first_rate(self):
         rates: dict[str, Decimal] = {"2025-01-01": Decimal("10.0")}

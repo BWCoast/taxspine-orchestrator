@@ -19,6 +19,21 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",           # required by fastapi.testclient
+    # INFRA-20: ruff for lint in CI (python -m ruff check .)
+    "ruff>=0.4",
+]
+
+# INFRA-20: ruff configuration — permissive baseline so existing code passes.
+# Extend the selected rules as the codebase matures.
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501",   # line too long — handled by line-length above
+    "F401",   # unused imports — some are re-exports
+    "E402",   # module level import not at top — services.py deferred imports
 ]
 
 [tool.setuptools.packages.find]

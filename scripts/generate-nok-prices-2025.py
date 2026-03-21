@@ -1,3 +1,5 @@
+from pathlib import Path
+
 # Tiny CSV with BTC, XRP, ETH prices for a few days in 2025
 prices = [
     ["date", "asset_id", "fiat_currency", "price_fiat", "source"],

@@ -106,6 +106,31 @@ class InMemoryJobStore:
         self._jobs[job_id] = updated
         return updated
 
+    def count(
+        self,
+        *,
+        status: "JobStatus | None" = None,
+        country: "Country | None" = None,
+        query: "str | None" = None,
+    ) -> int:
+        """Return total matching job count without applying limit/offset.
+
+        API-19: used to populate the X-Total-Count response header on
+        GET /jobs so that clients can implement correct pagination.
+        """
+        jobs: list[Job] = list(self._jobs.values())
+        if status is not None:
+            jobs = [j for j in jobs if j.status == status]
+        if country is not None:
+            jobs = [j for j in jobs if j.input.country == country]
+        if query is not None:
+            q = query.lower()
+            jobs = [
+                j for j in jobs
+                if j.input.case_name is not None and q in j.input.case_name.lower()
+            ]
+        return len(jobs)
+
     def delete(self, job_id: str) -> bool:
         """Remove a single job.  Returns True if it existed, False otherwise."""
         if job_id in self._jobs:
@@ -141,6 +166,17 @@ class SqliteJobStore:
         )
     """
 
+    # LC-11: Separate DDL for the deletion audit log so it can be created
+    # independently of the jobs table (both run in _init_db on startup).
+    _DELETION_LOG_DDL = """
+        CREATE TABLE IF NOT EXISTS deletion_log (
+            id            TEXT PRIMARY KEY,
+            job_id        TEXT NOT NULL,
+            deleted_at    TEXT NOT NULL,
+            files_removed INTEGER NOT NULL DEFAULT 0
+        )
+    """
+
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._lock = threading.Lock()
@@ -157,6 +193,8 @@ class SqliteJobStore:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute(self._DDL)
+            # LC-11: create the deletion audit log table alongside the jobs table.
+            conn.execute(self._DELETION_LOG_DDL)
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -369,11 +407,80 @@ class SqliteJobStore:
 
         return [Job.model_validate_json(r[0]) for r in rows]
 
+    def count(
+        self,
+        *,
+        status: "JobStatus | None" = None,
+        country: "Country | None" = None,
+        query: "str | None" = None,
+    ) -> int:
+        """Return total matching job count without limit/offset.
+
+        API-19: used to populate the X-Total-Count response header on
+        GET /jobs so that clients can implement correct pagination.
+        """
+        conditions: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status.value)
+        if country is not None:
+            conditions.append("country = ?")
+            params.append(country.value)
+        if query is not None:
+            escaped = (
+                query
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            conditions.append("case_name LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = f"SELECT COUNT(*) FROM jobs {where}"
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return row[0] if row else 0
+
     def delete(self, job_id: str) -> bool:
         """Remove a single job.  Returns True if it existed, False otherwise."""
         with self._lock, self._connect() as conn:
             cursor = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
             return cursor.rowcount > 0
+
+    def log_deletion(self, job_id: str, files_removed: int = 0) -> None:
+        """LC-11: Append a deletion event to the audit log.
+
+        Called by the DELETE /jobs/{id} endpoint after a job and its files
+        have been removed.  The audit log survives across server restarts
+        (WAL-mode SQLite) and is accessible via GET /admin/audit.
+        """
+        import uuid as _uuid
+        entry_id = str(_uuid.uuid4())
+        deleted_at = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO deletion_log (id, job_id, deleted_at, files_removed) "
+                "VALUES (?, ?, ?, ?)",
+                (entry_id, job_id, deleted_at, files_removed),
+            )
+
+    def list_deletions(self, limit: int = 100) -> list[dict]:
+        """LC-11: Return recent deletion audit log entries (newest first).
+
+        Each entry has ``job_id``, ``deleted_at`` (ISO-8601 UTC), and
+        ``files_removed`` (count of files deleted alongside the job record).
+        """
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT job_id, deleted_at, files_removed FROM deletion_log "
+                "ORDER BY deleted_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {"job_id": r[0], "deleted_at": r[1], "files_removed": r[2]}
+            for r in rows
+        ]
 
     def clear(self) -> None:
         """Delete all jobs — used by tests to reset state between runs."""

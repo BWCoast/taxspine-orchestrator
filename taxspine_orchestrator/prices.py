@@ -121,6 +121,16 @@ def _combined_csv_path(year: int) -> Path:
     return settings.PRICES_DIR / f"combined_nok_{year}.csv"
 
 
+def _asset_csv_path_gbp(asset: str, year: int) -> Path:
+    """Per-asset GBP cache file: ``xrp_gbp_2025.csv``."""
+    return settings.PRICES_DIR / f"{asset.lower()}_gbp_{year}.csv"
+
+
+def _combined_csv_path_gbp(year: int) -> Path:
+    """Merged GBP file passed to the CLI: ``combined_gbp_{year}.csv``."""
+    return settings.PRICES_DIR / f"combined_gbp_{year}.csv"
+
+
 def _file_age_hours(path: Path) -> float:
     """Return the age of *path* in hours, or infinity if it does not exist."""
     if not path.exists():
@@ -327,11 +337,26 @@ def _fetch_norges_bank_usd_nok(year: int) -> dict[str, Decimal]:
 
 
 def _fill_calendar_gaps(rates: dict[str, Decimal], year: int) -> dict[str, Decimal]:
-    """Fill weekend/public-holiday gaps by carrying the last known rate forward."""
+    """Fill weekend/public-holiday gaps by carrying the last known rate forward.
+
+    TL-15: seeds ``last_rate`` from the earliest available rate in the dataset
+    so that early-January days before the first Norges Bank publication are not
+    left blank.  When January 1–2 fall on a weekend the first publication date
+    is typically January 3; seeding from that value ensures January 1 and 2
+    receive a rate rather than being omitted entirely (which would cause
+    UNRESOLVED valuations for any transactions on those days).
+
+    Using the chronologically-first available rate as a backward-fill seed is a
+    reasonable approximation consistent with how financial data providers handle
+    bank-holiday gaps at the start of a year.
+    """
     start   = datetime.date(year, 1, 1)
     end     = datetime.date(year, 12, 31)
     filled: dict[str, Decimal] = {}
-    last_rate: Decimal | None = None
+    # TL-15: seed from the earliest known rate so pre-publication days
+    # (e.g. 1–2 Jan when the first Norges Bank business day is 3 Jan) are
+    # covered instead of being silently omitted.
+    last_rate: Decimal | None = rates[min(rates)] if rates else None
 
     current = start
     while current <= end:
@@ -343,6 +368,64 @@ def _fill_calendar_gaps(rates: dict[str, Decimal], year: int) -> dict[str, Decim
         current += datetime.timedelta(days=1)
 
     return filled
+
+
+def _fetch_bank_of_england_usd_gbp(year: int) -> dict[str, Decimal]:
+    """Return {date_str: usd_per_gbp_rate} from Bank of England for business days in *year*.
+
+    TL-19: Bank of England XUDLUSS series = USD per 1 GBP (spot rate).
+    To convert a USD price to GBP: gbp_price = usd_price / usd_per_gbp_rate.
+
+    Uses the public IADB CSV API — no API key required.
+    Only business days are published; call ``_fill_calendar_gaps`` to extend.
+    Rates are returned as ``Decimal`` to avoid float rounding artefacts.
+    """
+    start = f"01/Jan/{year}"
+    end   = f"31/Dec/{year}"
+    url = (
+        "https://www.bankofengland.co.uk/boeapps/database/_iadb-FromShowColumns.asp"
+        f"?csv.x=yes&Datefrom={start}&Dateto={end}"
+        "&SeriesCodes=XUDLUSS&UsingCodes=Y&CSVF=TN&html.x=1&html.y=1"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "taxspine-orchestrator/1.0", "Accept": "text/csv,text/plain"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        raise RuntimeError(f"Could not reach Bank of England API: {exc}") from exc
+
+    rates: dict[str, Decimal] = {}
+    lines = text.splitlines()
+    if len(lines) < 2:
+        raise RuntimeError(
+            f"Bank of England returned insufficient data for {year}."
+        )
+    # Header row is "Date,XUDLUSS" (or similar) — skip it.
+    for line in lines[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(",")
+        if len(parts) < 2:
+            continue
+        date_raw = parts[0].strip().strip('"')
+        val_raw  = parts[1].strip().strip('"')
+        if not val_raw or val_raw.lower() in ("n/a", "na", ""):
+            continue
+        try:
+            # BoE date format: "02 Jan 2025"
+            dt = datetime.datetime.strptime(date_raw, "%d %b %Y")
+            date_str = dt.strftime("%Y-%m-%d")
+            rates[date_str] = Decimal(val_raw)
+        except (ValueError, Exception):
+            continue  # skip unparseable rows
+
+    if not rates:
+        raise RuntimeError(f"Bank of England returned no USD/GBP rates for {year}.")
+    return rates
 
 
 def _fetch_and_write(pair_usd: str, asset: str, year: int, dest: Path) -> None:
@@ -370,6 +453,112 @@ def _fetch_and_write(pair_usd: str, asset: str, year: int, dest: Path) -> None:
         writer.writerow(["date", "asset_id", "fiat_currency", "price_fiat"])
         for date_str, price in rows:
             writer.writerow([date_str, asset, "NOK", price])
+
+
+def _fetch_and_write_gbp(pair_usd: str, asset: str, year: int, dest: Path) -> None:
+    """Fetch USD prices from Kraken + FX from Bank of England → write GBP CSV.
+
+    TL-19: mirrors _fetch_and_write() but uses BoE XUDLUSS (USD/GBP) rates.
+    GBP price = USD price / (USD per GBP rate).
+    """
+    usd_prices  = _fetch_kraken_usd_prices(pair_usd, year)
+    raw_fx      = _fetch_bank_of_england_usd_gbp(year)
+    gbp_rates   = _fill_calendar_gaps(raw_fx, year)
+
+    rows: list[tuple[str, str]] = []
+    for date_str, usd_price in sorted(usd_prices.items()):
+        usd_per_gbp = gbp_rates.get(date_str)
+        if usd_per_gbp is None or usd_per_gbp == Decimal("0"):
+            continue
+        gbp_price = (usd_price / usd_per_gbp).quantize(
+            Decimal("0.0001"), rounding=ROUND_HALF_UP
+        )
+        rows.append((date_str, str(gbp_price)))
+
+    if not rows:
+        raise RuntimeError(
+            f"No GBP prices computed for {asset} {year}: "
+            "no overlap between Kraken candles and Bank of England rates."
+        )
+
+    with dest.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["date", "asset_id", "fiat_currency", "price_fiat"])
+        for date_str, price in rows:
+            writer.writerow([date_str, asset, "GBP", price])
+
+
+def fetch_all_gbp_prices_for_year(year: int) -> FetchPricesResponse:
+    """Fetch (or return cached) daily GBP prices for all supported assets.
+
+    TL-19: UK jobs require GBP-denominated price tables.  This function
+    mirrors ``fetch_all_prices_for_year()`` but uses Bank of England
+    XUDLUSS (USD/GBP) rates instead of Norges Bank USD/NOK rates.
+
+    Fetches XRP, BTC, ETH, ADA from Kraken (USD) × Bank of England (USD/GBP),
+    writes individual per-asset GBP CSVs (cached), then merges into one
+    ``combined_gbp_{year}.csv`` file for ``--csv-prices``.
+
+    RLUSD is always reported as unsupported (no direct Kraken USD pair).
+    """
+    settings.PRICES_DIR.mkdir(parents=True, exist_ok=True)
+
+    any_fetched = False
+    available_paths: list[Path] = []
+    failed_assets: list[str] = []
+
+    for asset in _ALL_ASSETS:
+        dest = _asset_csv_path_gbp(asset, year)
+        if _needs_fetch(dest, year):
+            pair_usd = _KRAKEN_USD_PAIR[asset]
+            try:
+                _fetch_and_write_gbp(pair_usd, asset, year, dest)
+                any_fetched = True
+            except RuntimeError:
+                failed_assets.append(asset)
+                continue
+        if dest.exists():
+            available_paths.append(dest)
+
+    if not available_paths:
+        raise RuntimeError(
+            f"Could not fetch GBP price data for any asset in {year}. "
+            "Check network connectivity."
+        )
+
+    combined = _combined_csv_path_gbp(year)
+    total_rows = _write_combined_csv(available_paths, combined)
+
+    unsupported: list[UnsupportedAssetNote] = [
+        UnsupportedAssetNote(
+            asset="RLUSD",
+            reason=(
+                "Not available on Kraken; source GBP prices manually via the "
+                "RLUSD/USD pair on XRPL DEX and convert using BoE USD/GBP rate."
+            ),
+        ),
+    ]
+    for failed_asset in failed_assets:
+        unsupported.append(
+            UnsupportedAssetNote(
+                asset=failed_asset,
+                reason=(
+                    f"{failed_asset} could not be fetched from Kraken for {year}. "
+                    "The pair may not have been listed that year; "
+                    "source prices manually."
+                ),
+            )
+        )
+
+    return FetchPricesResponse(
+        asset="COMBINED",
+        year=year,
+        path=str(combined),
+        rows=total_rows,
+        age_hours=round(_file_age_hours(combined), 2),
+        cached=not any_fetched,
+        unsupported_assets=unsupported,
+    )
 
 
 def _write_combined_csv(source_paths: list[Path], dest: Path) -> int:
@@ -433,15 +622,54 @@ def fetch_prices(body: FetchPricesRequest) -> FetchPricesResponse:
     return info
 
 
+@router.post("/fetch-gbp", response_model=FetchPricesResponse, tags=["prices"])
+def fetch_prices_gbp(body: FetchPricesRequest) -> FetchPricesResponse:
+    """Fetch (or return cached) daily GBP prices for all supported assets.
+
+    TL-19: UK jobs require GBP price tables.  This endpoint fetches XRP, BTC,
+    ETH, and ADA using Kraken USD prices × official Bank of England (XUDLUSS)
+    USD/GBP rates.  No API key required for either source.
+
+    Writes individual per-asset CSVs (cached) and merges them into a single
+    ``combined_gbp_{year}.csv``.  The returned ``path`` is the combined file —
+    paste it into the "Price table path" field when running a UK job.
+
+    Past years are cached indefinitely.  Current year is re-fetched if
+    the cached files are older than 24 hours.
+    """
+    current_year = datetime.date.today().year
+    if body.year < 2013 or body.year > current_year:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Year must be between 2013 and {current_year}.",
+        )
+
+    try:
+        info = fetch_all_gbp_prices_for_year(body.year)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return info
+
+
 @router.get("", response_model=list[PriceFileInfo], tags=["prices"])
 def list_prices() -> list[PriceFileInfo]:
     """List all cached price CSV files in PRICES_DIR."""
     settings.PRICES_DIR.mkdir(parents=True, exist_ok=True)
     result: list[PriceFileInfo] = []
 
-    for csv_path in sorted(settings.PRICES_DIR.glob("*_nok_*.csv")):
-        stem  = csv_path.stem   # e.g. "xrp_nok_2025" or "combined_nok_2025"
-        parts = stem.split("_nok_")
+    # List both NOK and GBP price files.
+    all_csv_paths = sorted(
+        list(settings.PRICES_DIR.glob("*_nok_*.csv"))
+        + list(settings.PRICES_DIR.glob("*_gbp_*.csv"))
+    )
+    for csv_path in all_csv_paths:
+        stem  = csv_path.stem
+        # Detect currency separator: _nok_ or _gbp_
+        sep = "_nok_" if "_nok_" in stem else "_gbp_" if "_gbp_" in stem else None
+        if sep is None:
+            continue
+        parts = stem.split(sep)
         if len(parts) != 2:
             continue
         asset = parts[0].upper()

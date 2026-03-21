@@ -16,6 +16,18 @@ param(
 $Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
 
+# ── INFRA-24: dev-only guard ───────────────────────────────────────────────────
+# start.ps1 binds to 0.0.0.0 with --reload enabled — NOT safe for production.
+# Set TAXSPINE_ENV=development to suppress this warning in a known-dev context.
+if ($env:TAXSPINE_ENV -ne "development") {
+    Write-Warning ""
+    Write-Warning "  start.ps1 is for LOCAL DEVELOPMENT ONLY"
+    Write-Warning "  The server binds to 0.0.0.0 with --reload enabled."
+    Write-Warning "  DO NOT run this on a network-connected production host."
+    Write-Warning "  Set TAXSPINE_ENV=development to suppress this message."
+    Write-Warning ""
+}
+
 # ── 0. Ensure tax-spine CLIs are on PATH ──────────────────────────────────────
 # taxspine-xrpl-nor and taxspine-nor-report are installed as user-level scripts
 # by pip install (tax-spine package from Project F / tax-nor repo).

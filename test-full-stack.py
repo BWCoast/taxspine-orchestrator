@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import requests, json
+import requests
+import json
 from pathlib import Path
 
 URL = "http://localhost:8000"

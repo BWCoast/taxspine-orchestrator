@@ -140,7 +140,6 @@ class TestCrashRecovery:
         store = SqliteJobStore(db_path)
 
         # Create a job and force it to RUNNING.
-        from taxspine_orchestrator.models import Country
         from datetime import datetime, timezone
         import uuid
 
@@ -169,7 +168,6 @@ class TestCrashRecovery:
         db_path = tmp_path / "jobs2.db"
         store = SqliteJobStore(db_path)
 
-        from taxspine_orchestrator.models import Country
         from datetime import datetime, timezone
         import uuid
 
@@ -191,7 +189,6 @@ class TestCrashRecovery:
         db_path = tmp_path / "jobs3.db"
         store = SqliteJobStore(db_path)
 
-        from taxspine_orchestrator.models import Country
         from datetime import datetime, timezone
         import uuid
 
@@ -212,7 +209,6 @@ class TestCrashRecovery:
         db_path = tmp_path / "jobs4.db"
         store = SqliteJobStore(db_path)
 
-        from taxspine_orchestrator.models import Country
         from datetime import datetime, timezone
         import uuid
 

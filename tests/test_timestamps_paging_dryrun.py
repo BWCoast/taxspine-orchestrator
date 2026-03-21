@@ -207,7 +207,10 @@ class TestDryRun:
         assert body["output"]["gains_csv_path"] is None
         assert body["output"]["wealth_csv_path"] is None
         assert body["output"]["summary_json_path"] is None
-        assert body["output"]["error_message"] is None
+        # TL-17: dry_run jobs now carry a [DRY RUN] marker in error_message to
+        # distinguish them from authoritative tax computations.
+        assert body["output"]["error_message"] is not None
+        assert "[DRY RUN]" in body["output"]["error_message"]
         assert mock_run.call_count == 0
 
     @patch("taxspine_orchestrator.services.subprocess.run")

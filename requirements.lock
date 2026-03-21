@@ -1,9 +1,13 @@
-# requirements.lock — F-17 pinned transitive dependency snapshot
+# requirements.lock — INFRA-04: pinned transitive dependency snapshot
 # Generated: 2026-03-12  Python 3.11  pip freeze (orchestrator venv)
 # Regenerate with:
 #   pip install -e .[dev] && pip freeze | grep -v taxspine-orchestrator > requirements.lock
-# Do NOT install this file directly in Docker — use pyproject.toml for the build.
-# This file serves as a reference baseline for auditing dependency drift.
+#
+# INFRA-04: This file IS used by the Dockerfile to pin production deps to exact
+# versions, preventing Docker image builds from silently picking up a new upstream
+# release between CI runs.  The full venv freeze (including dev tools) is used so
+# the production image is an exact replica of the tested environment.
+# Exclude taxspine-orchestrator itself (installed via `pip install .` afterwards).
 #
 PyYAML==6.0.3
 Pygments==2.19.2

@@ -79,6 +79,19 @@ services:
       retries:  3
       start_period: 15s
 
+    # ── Resource limits ──────────────────────────────────────────────────────
+    # INFRA-18: cap CPU and memory so a runaway job cannot OOM-kill the host
+    # (especially important on a constrained Synology NAS).
+    # Tune these to available hardware:
+    #   mem_limit: 1g    →  sufficient for a few concurrent pipeline runs
+    #   cpus: "1.5"      →  leave headroom for DSM background services
+    # Override in a .env file or via environment variable if you need more.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+
     # ── Logging ──────────────────────────────────────────────────────────────
     # Container Manager shows logs in the project detail view.
     logging:
