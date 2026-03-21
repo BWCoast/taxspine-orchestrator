@@ -24,12 +24,28 @@ import pytest
 from taxspine_orchestrator.models import JobOutput
 from taxspine_orchestrator.services import JobService
 
+try:
+    import tax_spine.pipeline.lot_store as _ts_lot  # noqa: F401
+    _TAX_SPINE_AVAILABLE = True
+except ImportError:
+    _TAX_SPINE_AVAILABLE = False
+
 
 # ── TL-08: lot carry-forward year-sequence warning ────────────────────────────
 
 class TestTL08LotYearSequenceWarning:
     """_build_lot_carry_forward_csv warns when running a prior year after a
-    newer year has already been persisted in the lot store."""
+    newer year has already been persisted in the lot store.
+
+    Skipped when ``tax_spine`` is not installed (CI without tax-nor).
+    patch() targets ``tax_spine.pipeline.lot_store.LotPersistenceStore``
+    which requires the package to be importable at context-manager entry.
+    """
+
+    pytestmark = pytest.mark.skipif(
+        not _TAX_SPINE_AVAILABLE,
+        reason="tax_spine not installed — skipping lot year-sequence tests",
+    )
 
     def _make_store(self, *, list_years_return: list[int], carry_lots: list | None = None):
         """Build a minimal LotPersistenceStore mock."""
