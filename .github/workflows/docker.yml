@@ -66,7 +66,9 @@ jobs:
       # INFRA-20: lint with ruff before running tests so style and type-annotation
       # regressions are caught in CI before a broken image could be published.
       - name: Lint with ruff
-        run: ruff check .
+        run: |
+          pip install --quiet "ruff>=0.4"
+          ruff check .
 
       - name: Run tests
         run: python -m pytest --tb=short -q
