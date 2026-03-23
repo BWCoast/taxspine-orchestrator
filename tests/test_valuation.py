@@ -54,30 +54,15 @@ def client():
     return TestClient(app)
 
 
-# ── Default behaviour (DUMMY) unchanged ──────────────────────────────────────
+# ── Default behaviour (PRICE_TABLE) ──────────────────────────────────────────
 
 
-class TestDefaultDummy:
-    """Jobs without valuation_mode behave exactly as before."""
+class TestDefaultPriceTable:
+    """Jobs without valuation_mode default to price_table (not dummy)."""
 
-    @patch("taxspine_orchestrator.services.subprocess.run")
-    def test_no_csv_prices_flag_by_default(self, mock_run, client):
-        # _NORWAY_BASE has 1 XRPL account → 1 subprocess call.
-        mock_run.side_effect = [_make_ok()]
-
+    def test_valuation_mode_defaults_to_price_table(self, client):
         resp = client.post("/jobs", json=_NORWAY_BASE)
-        job_id = resp.json()["id"]
-
-        body = start_and_wait(client, job_id)
-        assert body["status"] == "completed"
-
-        # The only CLI call (taxspine-xrpl-nor) should NOT contain --csv-prices.
-        xrpl_cmd = mock_run.call_args_list[0][0][0]
-        assert "--csv-prices" not in xrpl_cmd
-
-    def test_valuation_mode_defaults_to_dummy(self, client):
-        resp = client.post("/jobs", json=_NORWAY_BASE)
-        assert resp.json()["input"]["valuation_mode"] == "dummy"
+        assert resp.json()["input"]["valuation_mode"] == "price_table"
         assert resp.json()["input"]["csv_prices_path"] is None
 
     @patch("taxspine_orchestrator.services.subprocess.run")
@@ -183,27 +168,38 @@ class TestPriceTableSuccess:
 
 
 class TestPriceTableMissingPath:
-    """price_table mode without csv_prices_path → FAILED."""
+    """price_table mode without csv_prices_path → auto-fetch attempted → FAILED on network error.
+
+    Settings.PRICES_DIR is pointed at tmp_path so no cached combined_nok CSV exists,
+    ensuring the auto-fetch branch is always taken rather than the file being found on disk.
+    """
 
     @patch("taxspine_orchestrator.services.subprocess.run")
-    def test_fails_when_csv_prices_path_is_null(self, mock_run, client):
+    def test_fails_when_csv_prices_path_is_null(self, mock_run, client, tmp_path):
         payload = {
             **_NORWAY_BASE,
             "valuation_mode": "price_table",
-            # csv_prices_path omitted (defaults to None)
+            # csv_prices_path omitted (defaults to None) → auto-fetch triggered
         }
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        body = start_and_wait(client, job_id)
+        with (
+            patch("taxspine_orchestrator.services.settings") as mock_s,
+            patch("taxspine_orchestrator.prices.fetch_all_prices_for_year") as mock_fetch,
+        ):
+            mock_s.PRICES_DIR = tmp_path          # no combined_nok_2025.csv there
+            mock_s.OUTPUT_DIR = tmp_path          # writable for log file
+            mock_fetch.side_effect = RuntimeError("Kraken API unavailable")
+            body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
-        assert "csv_prices_path" in body["output"]["error_message"]
+        assert "Auto-fetch of NOK prices failed" in body["output"]["error_message"]
         # No subprocess calls should have been made.
         mock_run.assert_not_called()
 
     @patch("taxspine_orchestrator.services.subprocess.run")
-    def test_fails_when_csv_prices_path_explicit_null(self, mock_run, client):
+    def test_fails_when_csv_prices_path_explicit_null(self, mock_run, client, tmp_path):
         payload = {
             **_NORWAY_BASE,
             "valuation_mode": "price_table",
@@ -212,10 +208,17 @@ class TestPriceTableMissingPath:
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]
 
-        body = start_and_wait(client, job_id)
+        with (
+            patch("taxspine_orchestrator.services.settings") as mock_s,
+            patch("taxspine_orchestrator.prices.fetch_all_prices_for_year") as mock_fetch,
+        ):
+            mock_s.PRICES_DIR = tmp_path
+            mock_s.OUTPUT_DIR = tmp_path
+            mock_fetch.side_effect = RuntimeError("Norges Bank unavailable")
+            body = start_and_wait(client, job_id)
 
         assert body["status"] == "failed"
-        assert "csv_prices_path" in body["output"]["error_message"]
+        assert "Auto-fetch of NOK prices failed" in body["output"]["error_message"]
         mock_run.assert_not_called()
 
 
@@ -307,11 +310,11 @@ class TestDryRunWithPriceTable:
             mock_run.assert_not_called()
 
     def test_dry_run_dummy_no_csv_prices_in_log(self, client):
-        """Dry-run with dummy mode should NOT log --csv-prices."""
+        """Dry-run with explicit dummy mode should NOT log --csv-prices."""
         payload = {
             **_NORWAY_BASE,
             "dry_run": True,
-            # valuation_mode defaults to dummy
+            "valuation_mode": "dummy",  # explicit — default is now price_table
         }
         resp = client.post("/jobs", json=payload)
         job_id = resp.json()["id"]

@@ -324,11 +324,11 @@ class TestReviewJsonPaths:
 
 
 class TestCommandBuilderReviewFlag:
-    """--review-json is NOT passed to taxspine-nor-report or taxspine-nor-multi
-    (neither CLI supports the flag in the current installed version)."""
+    """--review-json IS passed to both taxspine-nor-report and taxspine-nor-multi
+    when review_json_path is provided (BE-02: both CLIs support the flag)."""
 
-    def test_build_csv_command_does_not_include_review_json(self, tmp_path: Path) -> None:
-        """taxspine-nor-report does not accept --review-json; flag must be absent."""
+    def test_build_csv_command_includes_review_json_when_provided(self, tmp_path: Path) -> None:
+        """taxspine-nor-report accepts --review-json; flag must be present when path given."""
         ji = JobInput(tax_year=2025, country=Country.NORWAY)
         spec = CsvFileSpec(path="/data/events.csv", source_type=CsvSourceType.GENERIC_EVENTS)
         html_path = tmp_path / "report.html"
@@ -340,10 +340,11 @@ class TestCommandBuilderReviewFlag:
             html_path=html_path,
             review_json_path=review_path,
         )
-        assert "--review-json" not in cmd
+        assert "--review-json" in cmd
+        assert str(review_path) in cmd
 
-    def test_build_nor_multi_command_does_not_include_review_json(self, tmp_path: Path) -> None:
-        """taxspine-nor-multi does not accept --review-json; flag must be absent."""
+    def test_build_nor_multi_command_includes_review_json_when_provided(self, tmp_path: Path) -> None:
+        """taxspine-nor-multi accepts --review-json; flag must be present when path given."""
         ji = JobInput(tax_year=2025, country=Country.NORWAY)
         specs = [CsvFileSpec(path="/data/events.csv", source_type=CsvSourceType.GENERIC_EVENTS)]
         html_path = tmp_path / "report.html"
@@ -355,4 +356,5 @@ class TestCommandBuilderReviewFlag:
             html_path=html_path,
             review_json_path=review_path,
         )
-        assert "--review-json" not in cmd
+        assert "--review-json" in cmd
+        assert str(review_path) in cmd

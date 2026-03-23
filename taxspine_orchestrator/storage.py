@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .models import Country, CsvFileSpec, Job, JobStatus, WorkspaceConfig
+
+_log = logging.getLogger(__name__)
 
 
 # ── In-memory store (development / testing) ──────────────────────────────────
@@ -39,6 +42,7 @@ class InMemoryJobStore:
         query: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        after_id: str | None = None,
     ) -> List[Job]:
         jobs: list[Job] = list(self._jobs.values())
         if status is not None:
@@ -52,6 +56,18 @@ class InMemoryJobStore:
                 if j.input.case_name is not None and q in j.input.case_name.lower()
             ]
         jobs.sort(key=lambda j: j.created_at, reverse=True)
+        # BE-06: keyset pagination — skip everything at or after the cursor job.
+        # An unknown after_id returns an empty list (mirrors SQLite NULL behaviour).
+        if after_id is not None:
+            cursor_job = self._jobs.get(after_id)
+            if cursor_job is None:
+                return []
+            cursor_ts = cursor_job.created_at
+            jobs = [
+                j for j in jobs
+                if j.created_at < cursor_ts
+                or (j.created_at == cursor_ts and j.id < after_id)
+            ]
         return jobs[offset: offset + limit]
 
     def update_status(self, job_id: str, status: JobStatus, *, error_message: str | None = None) -> Job | None:
@@ -372,6 +388,7 @@ class SqliteJobStore:
         query: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        after_id: str | None = None,
     ) -> List[Job]:
         conditions: list[str] = []
         params: list[Any] = []
@@ -394,6 +411,17 @@ class SqliteJobStore:
             )
             conditions.append("case_name LIKE ? ESCAPE '\\'")
             params.append(f"%{escaped_query}%")
+        # BE-06: keyset pagination — when after_id is supplied, restrict to rows
+        # that come *after* the cursor job in the newest-first sort order.
+        # The sub-condition (created_at, id) < (cursor_ts, after_id) avoids
+        # duplicate-timestamp gaps without requiring an extra index.
+        if after_id is not None:
+            conditions.append(
+                "(created_at < (SELECT created_at FROM jobs WHERE id = ?)"
+                " OR (created_at = (SELECT created_at FROM jobs WHERE id = ?)"
+                "     AND id < ?))"
+            )
+            params.extend([after_id, after_id, after_id])
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         params.extend([limit, offset])
@@ -505,6 +533,17 @@ class WorkspaceStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._lock = threading.Lock()
+        # SEC-01: Remove any stale .tmp file left by a previous crash between
+        # the write and the atomic rename in _save_locked().  This prevents
+        # the workspace from being stuck in a partially-written state on
+        # subsequent startups.
+        _stale_tmp = self._path.with_suffix(".tmp")
+        if _stale_tmp.exists():
+            _log.warning(
+                "WorkspaceStore: removing stale temp file %s left by a previous crash",
+                _stale_tmp,
+            )
+            _stale_tmp.unlink(missing_ok=True)
         # Initialise with empty config if file absent.
         if not self._path.exists():
             self._save_locked(WorkspaceConfig())
@@ -565,8 +604,33 @@ class WorkspaceStore:
                 self._save_locked(cfg)
             return cfg
 
+    def add_xrpl_asset(self, spec: str) -> WorkspaceConfig:
+        """Register an XRPL asset spec (no-op if already present).
+
+        *spec* must be in 'SYMBOL.rIssuerAddress' format, e.g.
+        ``'SOLO.rHXuEaRYZBzZzb4vDiJFi8KRpU2mQhBpL'``.
+        """
+        with self._lock:
+            cfg = self._load_locked()
+            if spec not in cfg.xrpl_assets:
+                cfg = cfg.model_copy(
+                    update={"xrpl_assets": [*cfg.xrpl_assets, spec]}
+                )
+                self._save_locked(cfg)
+            return cfg
+
+    def remove_xrpl_asset(self, spec: str) -> WorkspaceConfig:
+        """Remove an XRPL asset spec."""
+        with self._lock:
+            cfg = self._load_locked()
+            cfg = cfg.model_copy(
+                update={"xrpl_assets": [a for a in cfg.xrpl_assets if a != spec]}
+            )
+            self._save_locked(cfg)
+            return cfg
+
     def clear(self) -> WorkspaceConfig:
-        """Reset the workspace to an empty state (removes all accounts and CSV files)."""
+        """Reset the workspace to an empty state (removes all accounts, CSV files, and XRPL assets)."""
         with self._lock:
             empty = WorkspaceConfig()
             self._save_locked(empty)

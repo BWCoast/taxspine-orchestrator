@@ -7,6 +7,7 @@ import datetime as _dt
 import json as _json
 import logging
 import os
+import re
 import shutil
 from enum import Enum
 from pathlib import Path
@@ -30,6 +31,7 @@ from .models import (
     _XRPL_ADDRESS_RE,
 )
 from .prices import router as prices_router
+from .review import router as review_router
 from .services import JobService
 from .storage import SqliteJobStore, WorkspaceStore
 
@@ -59,6 +61,33 @@ if os.environ.get("LOG_FORMAT", "").lower() == "json":
     _json_handler = logging.StreamHandler()
     _json_handler.setFormatter(_JsonLogFormatter())
     logging.basicConfig(handlers=[_json_handler], level=logging.INFO, force=True)
+
+
+# ── SEC-03: Sensitive-header log scrub ────────────────────────────────────────
+# Defensive filter: if DEBUG-level HTTP middleware logging is ever enabled,
+# X-Orchestrator-Key and Authorization header values are replaced with
+# [REDACTED] before any handler emits the record.  Applied to the root logger
+# so it covers ALL handlers (plain-text and JSON) without further configuration.
+
+class _SensitiveHeaderFilter(logging.Filter):
+    """Redact API-key and bearer-token values from every log record."""
+
+    _PATTERNS = [
+        (re.compile(r'(?i)(x-orchestrator-key\s*[:=]\s*)\S+'), r'\1[REDACTED]'),
+        (re.compile(r'(?i)(authorization\s*[:=]\s*\S+\s*)\S+'), r'\1[REDACTED]'),
+    ]
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        msg = record.getMessage()
+        for pattern, replacement in self._PATTERNS:
+            if pattern.search(msg):
+                msg = pattern.sub(replacement, msg)
+        record.msg = msg
+        record.args = ()
+        return True
+
+
+logging.getLogger().addFilter(_SensitiveHeaderFilter())
 
 
 # ── Application ───────────────────────────────────────────────────────────────
@@ -135,10 +164,17 @@ for _cli in _CLI_NAMES:
 
 # Persistent SQLite job store — jobs survive server restarts.
 _job_store = SqliteJobStore(settings.DATA_DIR / "jobs.db")
-_job_service = JobService(_job_store)
 
-# Persistent workspace — accounts and CSV files survive server restarts.
+# Persistent workspace — accounts, CSV files, and XRPL assets survive server restarts.
 _workspace_store = WorkspaceStore(settings.DATA_DIR / "workspace.json")
+
+# JobService wired with workspace so auto-fetch includes registered XRPL assets.
+_job_service = JobService(_job_store, workspace_store=_workspace_store)
+
+# Wire workspace assets into the prices router so POST /prices/fetch also
+# auto-includes tokens registered via POST /workspace/xrpl-assets.
+import taxspine_orchestrator.prices as _prices_mod  # noqa: E402
+_prices_mod._workspace_assets_provider = lambda: _workspace_store.load().xrpl_assets
 
 # API-17: retain strong references to background tasks so the garbage collector
 # cannot discard them before they complete.  Each task removes itself from the
@@ -157,9 +193,10 @@ if _UI_DIR.is_dir():
 # Sub-routers: all endpoints require the same key as mutating endpoints.
 # When ORCHESTRATOR_KEY is empty (dev/local default) the dependency is a
 # no-op and every request is accepted — behaviour is unchanged.
-app.include_router(prices_router, dependencies=[Depends(_require_key)])
-app.include_router(dedup_router,  dependencies=[Depends(_require_key)])
-app.include_router(lots_router,   dependencies=[Depends(_require_key)])
+app.include_router(prices_router,  dependencies=[Depends(_require_key)])
+app.include_router(dedup_router,   dependencies=[Depends(_require_key)])
+app.include_router(lots_router,    dependencies=[Depends(_require_key)])
+app.include_router(review_router,  dependencies=[Depends(_require_key)])
 
 
 @app.get("/", include_in_schema=False)
@@ -286,6 +323,14 @@ def list_jobs(
     ),
     limit: int = Query(default=50, ge=1, le=200, description="Max jobs to return"),
     offset: int = Query(default=0, ge=0, description="Number of jobs to skip"),
+    after_id: Optional[str] = Query(
+        default=None,
+        description=(
+            "BE-06: Keyset pagination cursor — return only jobs older than the "
+            "job with this ID. More efficient than offset at large scale. "
+            "Use the last job ID from the previous page as the cursor."
+        ),
+    ),
 ) -> list[Job]:
     """List jobs, sorted newest-first, with filtering and paging.
 
@@ -295,7 +340,7 @@ def list_jobs(
     """
     jobs = _job_service.list_jobs(
         status=status, country=country, query=query,
-        limit=limit, offset=offset,
+        limit=limit, offset=offset, after_id=after_id,
     )
     total = _job_service.count_jobs(status=status, country=country, query=query)
     response.headers["X-Total-Count"] = str(total)
@@ -961,6 +1006,55 @@ def remove_workspace_account(account: str) -> WorkspaceConfig:
     return _workspace_store.remove_account(account)
 
 
+# ── Workspace XRPL assets ─────────────────────────────────────────────────────
+
+_XRPL_ASSET_SPEC_RE = re.compile(
+    r'^[A-Za-z0-9]{1,20}\.[rR][1-9A-HJ-NP-Za-km-z]{24,33}$'
+)
+
+
+class AddXrplAssetRequest(BaseModel):
+    """Request body for POST /workspace/xrpl-assets."""
+
+    spec: str = Field(
+        description=(
+            "XRPL token asset in 'SYMBOL.rIssuerAddress' format, "
+            "e.g. 'SOLO.rHXuEaRYZBzZzb4vDiJFi8KRpU2mQhBpL'. "
+            "Used to auto-include this token's NOK price in every price fetch."
+        )
+    )
+
+    @field_validator("spec")
+    @classmethod
+    def validate_spec(cls, v: str) -> str:
+        v = v.strip()
+        if not _XRPL_ASSET_SPEC_RE.match(v):
+            raise ValueError(
+                f"Invalid XRPL asset spec {v!r}. "
+                "Must be 'SYMBOL.rIssuerAddress' (e.g. 'SOLO.rHXuEaRYZBzZzb4vDiJFi8KRpU2mQhBpL')."
+            )
+        return v
+
+
+@app.post("/workspace/xrpl-assets", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])
+def add_workspace_xrpl_asset(body: AddXrplAssetRequest) -> WorkspaceConfig:
+    """Register an XRPL token asset for automatic NOK price tracking.
+
+    The spec is added to ``workspace.xrpl_assets`` and will be passed to every
+    subsequent price fetch (both explicit ``POST /prices/fetch`` calls and the
+    inline auto-fetch that fires when a job starts without a cached price table).
+
+    Idempotent — registering the same spec twice has no effect.
+    """
+    return _workspace_store.add_xrpl_asset(body.spec)
+
+
+@app.delete("/workspace/xrpl-assets/{spec:path}", response_model=WorkspaceConfig, tags=["workspace"], dependencies=[Depends(_require_key)])
+def remove_workspace_xrpl_asset(spec: str) -> WorkspaceConfig:
+    """Remove an XRPL token asset spec from the workspace."""
+    return _workspace_store.remove_xrpl_asset(spec)
+
+
 class AddCsvRequest(BaseModel):
     path: str
     source_type: str = "generic_events"
@@ -1107,6 +1201,9 @@ async def get_alerts(
     The response is sorted: ``"error"`` first, then ``"warn"``, then ``"info"``.
     Returns HTTP 200 with an empty list when no alerts are present.
     """
+    import datetime as _dt_alerts
+    _raised_at = _dt_alerts.datetime.now(_dt_alerts.timezone.utc).isoformat()
+
     alerts: list[dict] = []
 
     # ── 1. Health alerts ────────────────────────────────────────────────────
@@ -1130,11 +1227,12 @@ async def get_alerts(
         if check_val != "ok":
             severity = "error" if check_val == "error" else "warn"
             alerts.append({
-                "severity": severity,
-                "category": "health",
-                "message": f"{check_name}: {check_val}",
-                "job_id": None,
-                "detail": [],
+                "severity":  severity,
+                "category":  "health",
+                "message":   f"{check_name}: {check_val}",
+                "job_id":    None,
+                "detail":    [],
+                "raised_at": _raised_at,
             })
 
     # ── 2. Review alerts (recent completed + failed jobs) ───────────────────
@@ -1181,11 +1279,12 @@ async def get_alerts(
 
             severity = "error" if has_unlinked else "warn"
             alerts.append({
-                "severity": severity,
-                "category": "review",
-                "message": msg,
-                "job_id": job.id,
-                "detail": all_warnings,
+                "severity":  severity,
+                "category":  "review",
+                "message":   msg,
+                "job_id":    job.id,
+                "detail":    all_warnings,
+                "raised_at": _raised_at,
             })
 
     # ── 3. Lot quality alerts (TL-18) ───────────────────────────────────────
@@ -1214,14 +1313,15 @@ async def get_alerts(
                             for _l in _non_known[:10]
                         ]
                         alerts.append({
-                            "severity": "warn",
-                            "category": "lot_quality",
-                            "message": (
+                            "severity":  "warn",
+                            "category":  "lot_quality",
+                            "message":   (
                                 f"{len(_non_known)} lot(s) with unresolved cost basis "
                                 f"in {_yr} — review before filing"
                             ),
-                            "job_id": None,
-                            "detail": _detail,
+                            "job_id":    None,
+                            "detail":    _detail,
+                            "raised_at": _raised_at,
                         })
     except ImportError:
         pass  # TL-18: tax_spine not installed — lot quality check skipped
@@ -1336,3 +1436,248 @@ def get_audit_log(
     if not hasattr(_job_store, "list_deletions"):
         return []
     return _job_store.list_deletions(limit=limit)
+
+
+# ── Diagnostics ───────────────────────────────────────────────────────────────
+
+
+@app.get("/diagnostics", tags=["meta"], dependencies=[Depends(_require_key)])
+async def get_diagnostics() -> dict:
+    """System diagnostics snapshot — lot store, price cache, jobs, and dedup stats.
+
+    Intended for the dashboard Diagnostics panel.  All I/O is non-blocking
+    (wrapped in ``asyncio.to_thread``).  Never raises — errors are captured
+    per-section and reported as ``{"error": "<message>"}``.
+
+    Response sections:
+
+    - ``lots``   — lot store DB existence, years available, size.
+    - ``prices`` — cached price CSV files (count, age of combined CSV).
+    - ``jobs``   — total/running/failed/completed counts, last completed timestamp.
+    - ``dedup``  — number of dedup source databases, total skip-log entries.
+    """
+
+    def _lots_section() -> dict:
+        db = settings.LOT_STORE_DB
+        if not db.is_file():
+            return {"db_exists": False, "years": [], "size_kb": None}
+        try:
+            from tax_spine.pipeline.lot_store import LotPersistenceStore  # noqa: PLC0415
+            store = LotPersistenceStore(str(db))
+            with store:
+                years = store.list_years()
+            size_kb = round(db.stat().st_size / 1024, 1)
+            return {"db_exists": True, "years": years, "size_kb": size_kb}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def _prices_section() -> dict:
+        pdir = settings.PRICES_DIR
+        if not pdir.is_dir():
+            return {"csv_count": 0, "combined_csvs": []}
+        try:
+            import time as _time  # noqa: PLC0415
+            all_csvs = list(pdir.glob("*.csv"))
+            combined = [p for p in all_csvs if p.name.startswith("combined_")]
+            now = _time.time()
+            combined_info = []
+            for p in sorted(combined):
+                age_h = round((now - p.stat().st_mtime) / 3600, 1)
+                combined_info.append({"name": p.name, "age_hours": age_h})
+            return {
+                "csv_count":    len(all_csvs),
+                "combined_csvs": combined_info,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def _jobs_section() -> dict:
+        try:
+            all_jobs = _job_service.list_jobs(limit=10_000, offset=0)
+            total     = len(all_jobs)
+            running   = sum(1 for j in all_jobs if j.status == JobStatus.RUNNING)
+            failed    = sum(1 for j in all_jobs if j.status == JobStatus.FAILED)
+            completed = sum(1 for j in all_jobs if j.status == JobStatus.COMPLETED)
+            last_done = None
+            done_jobs = [j for j in all_jobs if j.status == JobStatus.COMPLETED]
+            if done_jobs:
+                last_done = max(j.updated_at for j in done_jobs if j.updated_at)
+            return {
+                "total":     total,
+                "running":   running,
+                "failed":    failed,
+                "completed": completed,
+                "last_completed_at": last_done,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def _dedup_section() -> dict:
+        ddir = settings.DEDUP_DIR
+        if not ddir.is_dir():
+            return {"source_count": 0, "total_skips": 0}
+        try:
+            dbs = list(ddir.glob("*.db"))
+            total_skips = 0
+            for db in dbs:
+                try:
+                    import sqlite3 as _sqlite3  # noqa: PLC0415
+                    con = _sqlite3.connect(str(db))
+                    cur = con.execute(
+                        "SELECT COUNT(*) FROM skip_log"
+                        if _table_exists(con, "skip_log") else "SELECT 0"
+                    )
+                    total_skips += cur.fetchone()[0]
+                    con.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            return {"source_count": len(dbs), "total_skips": total_skips}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def _workspace_section() -> dict:
+        try:
+            ws = _workspace_store.load()
+            return {
+                "xrpl_account_count": len(ws.xrpl_accounts or []),
+                "csv_file_count":     len(ws.csv_files or []),
+                "xrpl_asset_count":   len(ws.xrpl_assets or []),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    def _disk_section() -> dict:
+        """Summarise disk usage of OUTPUT_DIR, UPLOAD_DIR, and PRICES_DIR."""
+        def _sz(path: Path) -> dict:
+            if not path.is_dir():
+                return {"exists": False, "size_mb": 0.0, "file_count": 0}
+            try:
+                files = [f for f in path.rglob("*") if f.is_file()]
+                total = sum(f.stat().st_size for f in files)
+                return {
+                    "exists":     True,
+                    "size_mb":    round(total / 1_048_576, 2),
+                    "file_count": len(files),
+                }
+            except OSError:
+                return {"exists": True, "size_mb": None, "file_count": None}
+
+        try:
+            return {
+                "output_dir": _sz(settings.OUTPUT_DIR),
+                "upload_dir": _sz(settings.UPLOAD_DIR),
+                "prices_dir": _sz(settings.PRICES_DIR),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
+    lots, prices, jobs, dedup, workspace, disk_usage = await asyncio.gather(
+        asyncio.to_thread(_lots_section),
+        asyncio.to_thread(_prices_section),
+        asyncio.to_thread(_jobs_section),
+        asyncio.to_thread(_dedup_section),
+        asyncio.to_thread(_workspace_section),
+        asyncio.to_thread(_disk_section),
+    )
+    return {
+        "lots":       lots,
+        "prices":     prices,
+        "jobs":       jobs,
+        "dedup":      dedup,
+        "workspace":  workspace,
+        "disk_usage": disk_usage,
+    }
+
+
+def _table_exists(con, table: str) -> bool:
+    """Return True if *table* exists in the SQLite connection *con*."""
+    cur = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    )
+    return cur.fetchone() is not None
+
+
+# ── Maintenance ───────────────────────────────────────────────────────────────
+
+
+@app.get("/maintenance/disk-usage", tags=["meta"], dependencies=[Depends(_require_key)])
+async def disk_usage() -> dict:
+    """Return disk usage summary for data directories.
+
+    Reports file count and total size (bytes) for OUTPUT_DIR, UPLOAD_DIR,
+    and PRICES_DIR.  Useful for monitoring unbounded growth before running
+    cleanup.
+    """
+    def _dir_stats(path: Path) -> dict:
+        if not path.is_dir():
+            return {"exists": False, "file_count": 0, "total_bytes": 0}
+        files = [f for f in path.rglob("*") if f.is_file()]
+        total = sum(f.stat().st_size for f in files)
+        return {"exists": True, "file_count": len(files), "total_bytes": total}
+
+    return {
+        "output_dir":  {**_dir_stats(settings.OUTPUT_DIR),  "path": str(settings.OUTPUT_DIR)},
+        "upload_dir":  {**_dir_stats(settings.UPLOAD_DIR),  "path": str(settings.UPLOAD_DIR)},
+        "prices_dir":  {**_dir_stats(settings.PRICES_DIR),  "path": str(settings.PRICES_DIR)},
+    }
+
+
+@app.post("/maintenance/cleanup", tags=["meta"], dependencies=[Depends(_require_key)])
+async def cleanup_old_files(
+    max_age_days: int = Query(
+        default=90,
+        ge=1,
+        le=3650,
+        description="Delete files older than this many days from OUTPUT_DIR and UPLOAD_DIR.",
+    ),
+    dry_run: bool = Query(
+        default=True,
+        description="When true (default), list files that would be deleted without deleting them.",
+    ),
+) -> dict:
+    """Delete job output files and uploaded CSVs older than max_age_days.
+
+    Targets OUTPUT_DIR and UPLOAD_DIR only — never touches PRICES_DIR,
+    DATA_DIR (SQLite databases), or DEDUP_DIR.
+
+    Defaults to dry_run=true so the caller can preview the deletion list
+    before committing.  Pass dry_run=false to actually delete.
+
+    Returns a summary with the list of files affected and total bytes freed.
+    """
+    import time as _time
+
+    cutoff = _time.time() - (max_age_days * 86400)
+    affected: list[dict] = []
+
+    for scan_dir in (settings.OUTPUT_DIR, settings.UPLOAD_DIR):
+        if not scan_dir.is_dir():
+            continue
+        for fpath in scan_dir.rglob("*"):
+            if not fpath.is_file():
+                continue
+            try:
+                mtime = fpath.stat().st_mtime
+                size  = fpath.stat().st_size
+            except OSError:
+                continue
+            if mtime < cutoff:
+                affected.append({
+                    "path": str(fpath),
+                    "size_bytes": size,
+                    "age_days": round((_time.time() - mtime) / 86400, 1),
+                })
+                if not dry_run:
+                    try:
+                        fpath.unlink(missing_ok=True)
+                    except OSError as exc:
+                        _log.warning("cleanup: could not delete %s: %s", fpath, exc)
+
+    total_bytes = sum(f["size_bytes"] for f in affected)
+    return {
+        "dry_run":       dry_run,
+        "max_age_days":  max_age_days,
+        "files_affected": len(affected),
+        "bytes_affected": total_bytes,
+        "files":         affected,
+    }

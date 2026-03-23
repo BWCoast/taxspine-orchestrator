@@ -180,11 +180,12 @@ class JobInput(BaseModel):
         ),
     )
     valuation_mode: ValuationMode = Field(
-        default=ValuationMode.DUMMY,
+        default=ValuationMode.PRICE_TABLE,
         description=(
-            "Valuation strategy for the tax CLIs.  'dummy' uses the "
-            "built-in default; 'price_table' passes a CSV price table "
-            "via --csv-prices."
+            "Valuation strategy for the tax CLIs.  'price_table' (default) "
+            "fetches daily NOK prices automatically and passes them via "
+            "--csv-prices.  'dummy' skips price lookup and produces zero "
+            "valuations (useful for testing or when prices are not needed)."
         ),
     )
     csv_prices_path: Optional[str] = Field(
@@ -333,6 +334,29 @@ class JobOutput(BaseModel):
             "before filing. None when all events use standard treatment."
         ),
     )
+    # TL-05: pipeline mode actually used for this job execution.  Populated for
+    # Norway jobs; None for UK jobs (UK always uses PER_FILE).  Complements
+    # valuation_mode_used so callers can understand exactly which execution
+    # path produced the output.
+    pipeline_mode_used: Optional[str] = Field(
+        default=None,
+        description=(
+            "Pipeline mode used: 'per_file' or 'nor_multi'. "
+            "None for UK jobs. Determines FIFO lot pool scope."
+        ),
+    )
+    # TL-08: warn when a UK job is run before the tax year has fully elapsed.
+    # The UK tax year N runs 6 Apr N → 5 Apr N+1.  Running before 5 Apr N+1
+    # produces a partial-year result; transactions after the run date are not
+    # included.  None when the year is complete or for Norway jobs.
+    partial_year_warning: Optional[str] = Field(
+        default=None,
+        description=(
+            "Populated for UK jobs run before the tax year end (5 April of "
+            "tax_year + 1). Indicates that the report covers only transactions "
+            "up to the run date and must be re-run after the year closes."
+        ),
+    )
 
 
 class Job(BaseModel):
@@ -390,8 +414,8 @@ class JobReviewResponse(BaseModel):
 class WorkspaceConfig(BaseModel):
     """Persistent workspace state — survives server restarts.
 
-    Tracks the XRPL accounts and CSV file paths that are registered for
-    continuous year-over-year tracking.  Stored as JSON on disk.
+    Tracks the XRPL accounts, CSV file paths, and XRPL token assets that are
+    registered for continuous year-over-year tracking.  Stored as JSON on disk.
     """
 
     xrpl_accounts: List[str] = Field(
@@ -401,6 +425,15 @@ class WorkspaceConfig(BaseModel):
     csv_files: List[CsvFileSpec] = Field(
         default_factory=list,
         description="CSV files registered for tracking, each with a source type.",
+    )
+    xrpl_assets: List[str] = Field(
+        default_factory=list,
+        description=(
+            "XRPL token asset specs registered for price tracking, in "
+            "'SYMBOL.rIssuerAddress' format (e.g. 'SOLO.rHXuEaRYZBzZzb4vDiJFi8KRpU2mQhBpL'). "
+            "These are automatically included in every NOK price fetch so that "
+            "year-end reports cover all tracked tokens without per-job configuration."
+        ),
     )
 
     @field_validator("csv_files", mode="before")

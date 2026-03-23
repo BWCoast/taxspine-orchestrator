@@ -16,13 +16,25 @@ GET /lots/{year}
 GET /lots/{year}/carry-forward
     The actual carry-forward lots (remaining_quantity > 0) that would be
     fed into the FIFO engine as ``initial_lots`` for year+1.
+
+GET /lots/{year}/portfolio
+    Per-asset aggregated holdings.  Accepts ``?include_prices=true`` to
+    enrich each asset entry with year-end NOK market value and unrealised
+    gain/loss derived from the cached price CSV.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import csv
+import datetime
+import logging
+
+from decimal import Decimal
+from fastapi import APIRouter, HTTPException, Query
 
 from .config import settings
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/lots", tags=["lots"])
 
@@ -202,11 +214,84 @@ def get_carry_forward_lots(year: int) -> list[dict]:
     ]
 
 
+# ── Year-end price loading ─────────────────────────────────────────────────────
+
+
+def _load_year_end_prices(year: int) -> dict[str, Decimal]:
+    """Load NOK prices for *year* from the cached combined price CSV.
+
+    Reads ``combined_nok_{year}.csv`` from ``settings.PRICES_DIR``.  For each
+    asset, uses the Dec 31 price when available, otherwise the latest date
+    present in the file (useful for the current year where Dec 31 has not
+    yet occurred).
+
+    Returns a plain ``{asset_symbol: price_nok}`` dict.
+    Returns ``{}`` on any error (missing file, parse error, etc.).
+    """
+    csv_path = settings.PRICES_DIR / f"combined_nok_{year}.csv"
+    if not csv_path.is_file():
+        return {}
+
+    target_date = f"{year}-12-31"
+    # Two-pass: collect all rows, then select the best date per asset.
+    # {asset: {date_str: price}}
+    rows_by_asset: dict[str, dict[str, Decimal]] = {}
+
+    try:
+        with csv_path.open(encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                asset = (row.get("asset_id") or "").strip().upper()
+                date  = (row.get("date") or "").strip()
+                price_str = (row.get("price_fiat") or "").strip()
+                if not asset or not date or not price_str:
+                    continue
+                try:
+                    price = Decimal(price_str)
+                except Exception:  # noqa: BLE001
+                    continue
+                if asset not in rows_by_asset:
+                    rows_by_asset[asset] = {}
+                rows_by_asset[asset][date] = price
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("lots: could not read price CSV %s: %s", csv_path, exc)
+        return {}
+
+    # Select Dec 31 when available; fall back to the latest date in the file.
+    result: dict[str, Decimal] = {}
+    for asset, dates in rows_by_asset.items():
+        if target_date in dates:
+            result[asset] = dates[target_date]
+        elif dates:
+            result[asset] = dates[max(dates)]
+
+    return result
+
+
 # ── Portfolio (per-asset aggregated holdings) ─────────────────────────────────
 
 
 @router.get("/{year}/portfolio", summary="Per-asset holdings portfolio for a tax year")
-def get_portfolio(year: int) -> dict:
+def get_portfolio(
+    year: int,
+    include_prices: bool = Query(
+        default=False,
+        description=(
+            "When true, enrich each asset entry with NOK market value "
+            "and unrealised gain/loss.  Use ``price_type`` to control the price source."
+        ),
+    ),
+    price_type: str = Query(
+        default="year_end",
+        description=(
+            "Price source when ``include_prices=true``. "
+            "``year_end`` (default) reads Dec 31 prices from the cached "
+            "``combined_nok_{year}.csv`` file. "
+            "``current`` fetches live spot prices from Kraken Ticker × Norges Bank "
+            "(Tier-1 assets only: BTC, ETH, XRP, ADA, LTC; 5-minute cache)."
+        ),
+    ),
+) -> dict:
     """Return per-asset aggregated holdings from carry-forward lots.
 
     Aggregates all active (remaining_quantity > 0) lots for *year* into one
@@ -225,10 +310,15 @@ def get_portfolio(year: int) -> dict:
     - ``avg_cost_nok_per_unit``— total_cost_basis_nok / total_quantity (nullable)
     - ``has_missing_basis``    — true when one or more lots lack a cost basis
 
+    When ``include_prices=true`` the following fields are added:
+
+    - ``year_end_price_nok``   — Dec 31 (or latest) NOK price per unit (nullable)
+    - ``market_value_nok``     — total_quantity × year_end_price (nullable)
+    - ``unrealized_gain_nok``  — market_value − cost_basis (nullable)
+    - ``has_missing_price``    — true when no price is available for this asset
+
     Raises 404 when no snapshot exists for *year*.
     """
-    from decimal import Decimal  # noqa: PLC0415 – avoid module-level import cycle risk
-
     store = _open_store()
     if store is None:
         raise HTTPException(
@@ -254,6 +344,24 @@ def get_portfolio(year: int) -> dict:
             detail=f"Could not read portfolio for {year}: {exc}",
         ) from exc
 
+    # Optionally load prices — source depends on price_type.
+    prices: dict[str, Decimal] = {}
+    prices_as_of: str | None = None
+    if include_prices:
+        if price_type == "current":
+            from .prices import fetch_spot_prices_nok as _fetch_spot
+            all_assets = [lot.asset for lot in lots]
+            try:
+                prices, prices_as_of = _fetch_spot(all_assets)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("lots: could not fetch live spot prices: %s", exc)
+                # Fall back to year-end prices so the panel still shows data
+                prices = _load_year_end_prices(year)
+                prices_as_of = f"{year}-12-31T00:00:00+00:00"
+        else:
+            prices = _load_year_end_prices(year)
+            prices_as_of = f"{year}-12-31T00:00:00+00:00"
+
     # Aggregate per asset — accumulate resolved basis separately from total qty.
     aggregates: dict[str, dict] = {}
     for lot in lots:
@@ -276,21 +384,60 @@ def get_portfolio(year: int) -> dict:
     # Build sorted output list.
     result = []
     for key in sorted(aggregates):
-        agg = aggregates[key]
-        qty   = agg["total_quantity"]
-        basis = agg["total_cost_basis_nok"]
-        avg   = (basis / qty).quantize(Decimal("0.01")) if qty > 0 else None
-        result.append({
+        agg    = aggregates[key]
+        qty    = agg["total_quantity"]
+        basis  = agg["total_cost_basis_nok"]
+        avg    = (basis / qty).quantize(Decimal("0.01")) if qty > 0 else None
+
+        entry: dict = {
             "asset":                 agg["asset"],
             "lot_count":             agg["lot_count"],
             "total_quantity":        str(qty),
             "total_cost_basis_nok":  str(basis),
             "avg_cost_nok_per_unit": str(avg) if avg is not None else None,
             "has_missing_basis":     agg["has_missing_basis"],
-        })
+        }
 
-    return {
+        if include_prices:
+            symbol = agg["asset"]
+            price  = prices.get(symbol)
+            if price is not None and qty > 0:
+                market_val       = (qty * price).quantize(Decimal("0.01"))
+                unrealized_gain  = (market_val - basis).quantize(Decimal("0.01"))
+                entry["year_end_price_nok"]  = str(price)  # kept for backward compat
+                entry["price_nok"]           = str(price)  # canonical alias
+                entry["market_value_nok"]    = str(market_val)
+                entry["unrealized_gain_nok"] = str(unrealized_gain)
+                entry["has_missing_price"]   = False
+            else:
+                entry["year_end_price_nok"]  = None
+                entry["price_nok"]           = None
+                entry["market_value_nok"]    = None
+                entry["unrealized_gain_nok"] = None
+                entry["has_missing_price"]   = True
+
+        result.append(entry)
+
+    response: dict = {
         "tax_year":    year,
         "asset_count": len(result),
         "assets":      result,
+        "price_type":  price_type if include_prices else None,
+        "prices_as_of": prices_as_of,
     }
+
+    if include_prices:
+        # Aggregate market totals — only assets with resolved prices.
+        priced = [r for r in result if not r.get("has_missing_price")]
+        if priced:
+            total_market = sum(Decimal(r["market_value_nok"]) for r in priced)
+            total_basis  = sum(Decimal(r["total_cost_basis_nok"]) for r in priced)
+            response["total_market_value_nok"]   = str(total_market.quantize(Decimal("0.01")))
+            response["total_unrealized_gain_nok"] = str((total_market - total_basis).quantize(Decimal("0.01")))
+            response["prices_partial"] = len(priced) < len(result)
+        else:
+            response["total_market_value_nok"]    = None
+            response["total_unrealized_gain_nok"]  = None
+            response["prices_partial"]             = bool(result)
+
+    return response

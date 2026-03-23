@@ -90,6 +90,18 @@
     /* ── Tax Center tabs ── */
     .tc-tab { padding:6px 14px; border-radius:20px; font-size:12px; font-weight:500; cursor:pointer; border:1px solid rgba(255,255,255,.1); background:transparent; color:#6b7280; transition:all .15s; }
     .tc-tab.active { background:rgba(59,130,246,.2); border-color:rgba(59,130,246,.5); color:#93c5fd; }
+    /* UX-05: high-contrast focus ring for keyboard navigation (WCAG AA) */
+    .tc-tab:focus-visible { outline:2px solid #60a5fa; outline-offset:3px; }
+    /* Live mode toggle */
+    .live-badge { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; padding:2px 8px; border-radius:10px; cursor:pointer; border:1px solid rgba(167,139,250,.4); color:#a78bfa; background:rgba(167,139,250,.1); transition:all .15s; user-select:none; }
+    .live-badge.active { background:rgba(167,139,250,.25); border-color:#a78bfa; }
+    .live-badge .live-dot { width:6px; height:6px; border-radius:50%; background:#a78bfa; animation:live-pulse 1.5s ease-in-out infinite; }
+    @keyframes live-pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .prices-as-of { font-size:10px; color:#4b5563; margin-top:4px; text-align:center; }
+    /* UX-06: horizontally-scrollable single-row tablist on narrow viewports */
+    @media (max-width:640px) {
+      [role="tablist"] { overflow-x:auto; flex-wrap:nowrap; padding-bottom:4px; }
+    }
     .tc-panel { display:none; }
     .tc-panel.active { display:block; }
     .tc-table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -106,6 +118,65 @@
     .tc-stat .num { font-size:1.4rem; font-weight:700; color:#e2e8f0; }
     .tc-stat .lbl { font-size:11px; color:#4b5563; text-transform:uppercase; letter-spacing:.05em; margin-top:2px; }
     .tc-empty { color:#4b5563; font-size:13px; text-align:center; padding:20px 0; }
+    /* ── Alerts Center ── */
+    .al-group { margin-bottom:12px; }
+    .al-group:last-child { margin-bottom:0; }
+    .al-group-hdr { display:flex; align-items:center; gap:6px; font-size:10px; font-weight:700;
+                    letter-spacing:.07em; text-transform:uppercase; color:#4b5563;
+                    margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #1e2a3a; }
+    .al-sev-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+    .al-sev-dot.error { background:#ef4444; }
+    .al-sev-dot.warn  { background:#f59e0b; }
+    .al-sev-dot.info  { background:#60a5fa; }
+    .al-badge-sev { display:inline-flex; align-items:center; gap:4px; font-size:10px;
+                    font-weight:700; padding:2px 7px; border-radius:99px; }
+    .al-badge-err { background:rgba(239,68,68,.15); color:#fca5a5; }
+    .al-badge-wrn { background:rgba(245,158,11,.15); color:#fcd34d; }
+    /* ── Diagnostics ── */
+    .ds-tile { background:#111827; border-radius:10px; padding:12px 14px; }
+    .ds-tile-hdr { display:flex; align-items:center; gap:6px; font-size:10px; font-weight:700;
+                   letter-spacing:.06em; text-transform:uppercase; color:#4b5563; margin-bottom:8px; }
+    .ds-status { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+    .ds-status.ok    { background:#10b981; }
+    .ds-status.warn  { background:#f59e0b; }
+    .ds-status.error { background:#ef4444; }
+    .ds-status.off   { background:#374151; }
+    .ds-row { display:flex; align-items:baseline; justify-content:space-between;
+              font-size:12px; color:#9ca3af; padding:2px 0;
+              border-bottom:1px solid #1e2a3a; }
+    .ds-row:last-child { border-bottom:none; }
+    .ds-val { font-weight:600; color:#e2e8f0; font-variant-numeric:tabular-nums; }
+    .ds-val.ok    { color:#34d399; }
+    .ds-val.warn  { color:#fbbf24; }
+    .ds-val.error { color:#f87171; }
+    .ds-val.blue  { color:#60a5fa; }
+    /* ── Review Console ── */
+    .rv-cat-group { border-bottom:1px solid #1e2a3a; padding-bottom:4px; }
+    .rv-cat-group:last-child { border-bottom:none; }
+    .rv-cat-group summary { list-style:none; }
+    .rv-cat-group summary::-webkit-details-marker { display:none; }
+    .rv-job-card { background:#111827; border:1px solid #1e2a3a; border-radius:10px;
+                   padding:12px 14px; transition:border-color .15s; }
+    .rv-job-card:hover { border-color:#334155; }
+    .rv-dl-btn { display:inline-flex; align-items:center; gap:4px; background:#1e2130;
+                 border:1px solid #374151; color:#94a3b8; padding:3px 9px; border-radius:6px;
+                 font-size:11px; font-weight:500; text-decoration:none; transition:all .15s; }
+    .rv-dl-btn:hover { border-color:#3b82f6; color:#93c5fd; }
+    /* ── Alerts Center: filter tabs, dismiss, fix hints ── */
+    .al-filter-tabs { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:10px; }
+    .al-filter-btn { font-size:11px; padding:2px 9px; border-radius:12px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); color:#6b7280; cursor:pointer; transition:all .15s; white-space:nowrap; }
+    .al-filter-btn:hover { background:rgba(255,255,255,.1); color:#e5e7eb; }
+    .al-filter-btn.active { background:rgba(99,102,241,.2); border-color:rgba(99,102,241,.5); color:#a5b4fc; }
+    .al-dismiss-btn { font-size:12px; line-height:1; padding:2px 5px; border:none; background:none; color:#374151; cursor:pointer; flex-shrink:0; border-radius:4px; }
+    .al-dismiss-btn:hover { color:#ef4444; background:rgba(239,68,68,.1); }
+    .al-fix-hint { font-size:11px; color:#6b7280; margin-top:4px; padding:4px 8px; background:rgba(0,0,0,.2); border-radius:4px; border-left:2px solid #374151; }
+    /* ── Diagnostics: overall health badge, copy button ── */
+    .diag-health-badge { font-size:10px; font-weight:700; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:.05em; }
+    .diag-health-badge.ok    { background:rgba(16,185,129,.15); color:#34d399; }
+    .diag-health-badge.warn  { background:rgba(245,158,11,.15); color:#fbbf24; }
+    .diag-health-badge.error { background:rgba(239,68,68,.15); color:#f87171; }
+    .diag-copy-btn { font-size:10px; padding:2px 7px; border-radius:5px; border:1px solid #1e2a3a; background:transparent; color:#4b5563; cursor:pointer; transition:all .15s; }
+    .diag-copy-btn:hover { border-color:#374151; color:#9ca3af; }
   </style>
 </head>
 <body class="min-h-screen">
@@ -292,14 +363,21 @@
   <!-- RIGHT COLUMN: Alerts + Jobs + Results -->
   <div class="xl:col-span-2 flex flex-col gap-5">
 
-    <!-- Alerts card -->
+    <!-- Alerts Center -->
     <div class="card p-5" id="alerts-card">
-      <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-2">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2 flex-wrap">
           <h2 class="font-semibold text-white text-xs uppercase tracking-widest">🚨 Alerts</h2>
-          <span id="alerts-count-badge" class="badge text-xs" style="display:none"></span>
+          <div id="alerts-sev-badges" class="flex items-center gap-1" style="display:none!important"></div>
         </div>
-        <button onclick="loadAlerts()" class="btn-secondary text-xs">↻ Refresh</button>
+        <button onclick="loadAlerts()" class="btn-secondary text-xs" title="Refresh alerts">↻</button>
+      </div>
+      <!-- Category filter tabs -->
+      <div class="al-filter-tabs" id="alerts-filters">
+        <button class="al-filter-btn active" data-cat="all"         onclick="setAlertsFilter('all')">All <span id="afc-all" class="opacity-60"></span></button>
+        <button class="al-filter-btn"         data-cat="health"     onclick="setAlertsFilter('health')">Health <span id="afc-health" class="opacity-60"></span></button>
+        <button class="al-filter-btn"         data-cat="review"     onclick="setAlertsFilter('review')">Review <span id="afc-review" class="opacity-60"></span></button>
+        <button class="al-filter-btn"         data-cat="lot_quality" onclick="setAlertsFilter('lot_quality')">Lot Quality <span id="afc-lot_quality" class="opacity-60"></span></button>
       </div>
       <div id="alerts-list">
         <p class="text-gray-600 text-xs italic text-center py-2">Loading…</p>
@@ -422,19 +500,36 @@
 
     <!-- Tabs — UX-20: role=tablist/tab/tabpanel so screen readers understand
          the tabbed relationship and announce which panel is active. -->
-    <div role="tablist" aria-label="Tax Center sections" class="flex gap-2 mb-5">
+    <div role="tablist" aria-label="Tax Center sections" class="flex gap-2 mb-5 flex-wrap">
       <button role="tab" id="tc-tab-holdings" aria-selected="true"  aria-controls="tc-panel-holdings" class="tc-tab active" onclick="tcTab('holdings',this)">📊 Holdings</button>
       <button role="tab" id="tc-tab-lots"     aria-selected="false" aria-controls="tc-panel-lots"     class="tc-tab" onclick="tcTab('lots',this)">📦 Carry-Forward Lots</button>
       <!-- UX-21: renamed from "Ingestion Sources" → "Data Sources" (user-friendly) -->
       <button role="tab" id="tc-tab-dedup"    aria-selected="false" aria-controls="tc-panel-dedup"    class="tc-tab" onclick="tcTab('dedup',this)">🔁 Data Sources</button>
+      <!-- UX-03: aria-label strips the leading emoji so screen readers announce
+           the functional name ("Review Queue") rather than "Warning Review Queue". -->
+      <button role="tab" id="tc-tab-review"   aria-selected="false" aria-controls="tc-panel-review"   aria-label="Review Queue" class="tc-tab" onclick="tcTab('review',this)">⚠ Review Queue</button>
+      <button role="tab" id="tc-tab-audit"    aria-selected="false" aria-controls="tc-panel-audit"    aria-label="Audit Log"    class="tc-tab" onclick="tcTab('audit',this)">🗒 Audit Log</button>
     </div>
 
     <!-- Panel: Holdings -->
     <div class="tc-panel active" id="tc-panel-holdings" role="tabpanel" aria-labelledby="tc-tab-holdings">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-xs text-gray-500">Year-end positions and cost basis from saved lot snapshots.</span>
+        <button id="tc-live-toggle" class="live-badge" onclick="toggleLivePrices()" title="Toggle live spot prices (Kraken + Norges Bank, 5-min cache)">
+          <span class="live-dot" id="tc-live-dot" style="display:none"></span>
+          📈 Live
+        </button>
+      </div>
       <div id="tc-holdings-stats" class="tc-stat-row hidden">
         <div class="tc-stat"><div class="num" id="tc-h-assets">—</div><div class="lbl">Assets</div></div>
         <div class="tc-stat"><div class="num" id="tc-h-lots" style="color:#93c5fd">—</div><div class="lbl">Active lots</div></div>
         <div class="tc-stat"><div class="num" id="tc-h-basis" style="color:#6ee7b7;font-size:1rem">—</div><div class="lbl">Total cost basis</div></div>
+        <div class="tc-stat">
+          <div class="num" id="tc-h-market" style="color:#a78bfa;font-size:1rem">—</div>
+          <div class="lbl" id="tc-h-market-lbl">Market value</div>
+          <div class="prices-as-of" id="tc-h-prices-as-of"></div>
+        </div>
+        <div class="tc-stat"><div class="num" id="tc-h-pnl" style="font-size:1rem">—</div><div class="lbl">Unrealised P&amp;L</div></div>
       </div>
       <div class="tc-empty hidden" id="tc-holdings-empty">No lot snapshots yet. Run a Norway pipeline job first.</div>
       <!-- UX-11: scope="col" on every <th> so assistive technologies correctly
@@ -444,9 +539,10 @@
           <th scope="col">Asset</th>
           <th scope="col" style="text-align:right">Quantity</th>
           <th scope="col" style="text-align:right">Cost Basis (NOK)</th>
-          <th scope="col" style="text-align:right">Avg Cost / Unit</th>
+          <th scope="col" style="text-align:right">Market Value (NOK)</th>
+          <th scope="col" style="text-align:right">Unrealised P&amp;L</th>
           <th scope="col" style="text-align:right">Lots</th>
-          <th scope="col">Basis</th>
+          <th scope="col" title="Basis type for this asset's lots — indicates how the cost basis was determined (e.g. FIFO lot from a known purchase, or UNRESOLVED if the original price is missing)">Basis</th>
         </tr></thead>
         <tbody id="tc-holdings-tbody"></tbody>
       </table>
@@ -492,7 +588,163 @@
       </table>
     </div>
 
+    <!-- Panel: Review Console -->
+    <div class="tc-panel" id="tc-panel-review" role="tabpanel" aria-labelledby="tc-tab-review">
+      <p class="text-xs text-gray-400 mb-3">Aggregated unresolved items across all completed Norway jobs for the selected year. Select a year above to load.</p>
+
+      <!-- Loading / status banner -->
+      <div id="tc-review-banner" class="hidden mb-4 px-4 py-3 rounded-lg text-sm font-medium"></div>
+
+      <!-- Stats row -->
+      <div id="tc-review-stats" class="tc-stat-row hidden mb-4">
+        <div class="tc-stat"><div class="num" id="tc-rv-jobs">—</div><div class="lbl">Jobs reviewed</div></div>
+        <div class="tc-stat"><div class="num" id="tc-rv-warnings" style="color:#fbbf24">—</div><div class="lbl">Warnings</div></div>
+        <div class="tc-stat"><div class="num" id="tc-rv-transfers" style="color:#f87171">—</div><div class="lbl">Unlinked transfers</div></div>
+        <div class="tc-stat"><div class="num" id="tc-rv-missing" style="color:#fb923c">—</div><div class="lbl">Missing-basis assets</div></div>
+      </div>
+
+      <!-- Year-level issue sections -->
+      <div id="tc-review-sections" class="hidden space-y-4">
+        <!-- Unlinked transfers — UX-01: tooltip explains terminology -->
+        <div id="tc-rv-unlinked-section" class="hidden">
+          <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mb-2"
+              title="A transfer where the matching send or receive on another exchange could not be found. The cost basis of the transferred coins is unknown, which may cause incorrect gain/loss calculations. Match these manually before filing.">
+            🔗 Unlinked Transfers
+          </h4>
+          <ul id="tc-rv-unlinked-list" class="text-xs text-gray-300 space-y-1 ml-2"></ul>
+        </div>
+
+        <!-- Missing cost basis — per-asset lot detail -->
+        <div id="tc-rv-missing-section" class="hidden">
+          <h4 class="text-xs font-semibold text-orange-400 uppercase tracking-wider mb-2"
+              title="Assets where at least one acquisition event has no recorded purchase price. When you later sell these coins, the gain cannot be calculated correctly. You must supply the original cost or accept that gains will be overstated.">
+            💰 Missing Cost Basis
+          </h4>
+          <div id="tc-rv-missing-list" class="space-y-1 text-xs"></div>
+        </div>
+
+        <!-- Warnings grouped by category -->
+        <div id="tc-rv-warnings-section" class="hidden">
+          <h4 class="text-xs font-semibold text-yellow-400 uppercase tracking-wider mb-2"
+              title="Non-blocking issues flagged during tax calculation. Review each warning and confirm the figures are correct before submitting your tax return.">
+            ⚠ Warnings
+          </h4>
+          <div id="tc-rv-warnings-cats" class="space-y-1"></div>
+        </div>
+      </div>
+
+      <!-- Per-job cards -->
+      <div id="tc-review-jobs-section" class="hidden mt-6">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Per-Job Review</h3>
+          <span id="tc-rv-jobs-loading" class="text-xs text-blue-400 hidden">
+            <span class="inline-block animate-spin" aria-hidden="true">⟳</span> Loading…
+          </span>
+        </div>
+        <div id="tc-rv-jobs-list" class="space-y-3"></div>
+        <div id="tc-rv-jobs-empty" class="tc-empty hidden">No completed Norway jobs for this year.</div>
+      </div>
+
+      <div class="tc-empty" id="tc-review-empty">Select a year to see the review summary.</div>
+    </div>
+
+    <!-- Panel: Audit Log -->
+    <div class="tc-panel" id="tc-panel-audit" role="tabpanel" aria-labelledby="tc-tab-audit">
+      <p class="text-xs text-gray-400 mb-3">Records of deleted jobs. Newest entries first.</p>
+      <div class="flex items-center gap-2 mb-4">
+        <button onclick="loadAuditLog()" class="btn-secondary text-xs">↻ Refresh</button>
+        <span id="tc-audit-loading" class="text-xs text-blue-400 hidden"><span class="inline-block animate-spin" aria-hidden="true">⟳</span> Loading…</span>
+      </div>
+      <div class="tc-empty hidden" id="tc-audit-empty">No deletion records yet.</div>
+      <table class="tc-table hidden" id="tc-audit-table">
+        <thead><tr>
+          <th scope="col">Job ID</th>
+          <th scope="col">Deleted at</th>
+          <th scope="col" style="text-align:right">Files removed</th>
+        </tr></thead>
+        <tbody id="tc-audit-tbody"></tbody>
+      </table>
+    </div>
+
   </div>
+</div>
+
+<!-- ── Diagnostics panel ────────────────────────────────────────────────── -->
+<div class="max-w-7xl mx-auto px-6 pb-4">
+  <!-- UX-02: simplified health status in summary bar; grid expands on click -->
+  <details id="diagnostics-details" class="card">
+    <summary class="p-4 cursor-pointer flex items-center justify-between select-none">
+      <div class="flex items-center gap-3 flex-wrap">
+        <span class="text-xs font-semibold text-gray-400 uppercase tracking-widest">🔧 System Diagnostics</span>
+        <!-- Overall health badge -->
+        <span id="diag-health-badge" class="diag-health-badge hidden"></span>
+        <!-- Per-subsystem health dots shown in collapsed state -->
+        <div class="flex items-center gap-1.5" id="diag-dots" title="Lot store · Price cache · Jobs · Dedup · Workspace · Disk">
+          <span class="ds-status off" id="diag-dot-lots"   title="Lot Store"></span>
+          <span class="ds-status off" id="diag-dot-prices" title="Price Cache"></span>
+          <span class="ds-status off" id="diag-dot-jobs"   title="Jobs"></span>
+          <span class="ds-status off" id="diag-dot-dedup"  title="Dedup"></span>
+          <span class="ds-status off" id="diag-dot-ws"     title="Workspace"></span>
+          <span class="ds-status off" id="diag-dot-disk"   title="Disk"></span>
+        </div>
+        <span class="text-xs text-gray-600" id="diag-summary-line"></span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-gray-700" id="diag-last-refreshed"></span>
+        <button onclick="event.preventDefault();event.stopPropagation();_copyDiagnostics();"
+                class="diag-copy-btn" title="Copy diagnostics JSON to clipboard">⎘ Copy</button>
+        <button onclick="event.preventDefault();event.stopPropagation();_diagCacheData=null;loadDiagnostics();"
+                class="btn-secondary text-xs" style="padding:2px 8px" title="Force-refresh diagnostics">↻</button>
+      </div>
+    </summary>
+    <!-- UX-02: plain-language health summary -->
+    <div id="diag-health-summary" class="px-5 pt-3 pb-1 text-sm hidden"></div>
+    <!-- 5-tile detail grid -->
+    <div class="px-5 pb-5 pt-2 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3" id="diagnostics-grid">
+      <!-- Lot Store -->
+      <div class="ds-tile">
+        <div class="ds-tile-hdr">
+          <span class="ds-status off" id="ds-status-lots"></span>📦 Lot Store
+        </div>
+        <div id="diag-lots"><span class="text-gray-600 text-xs">—</span></div>
+      </div>
+      <!-- Price Cache -->
+      <div class="ds-tile">
+        <div class="ds-tile-hdr">
+          <span class="ds-status off" id="ds-status-prices"></span>💱 Price Cache
+        </div>
+        <div id="diag-prices"><span class="text-gray-600 text-xs">—</span></div>
+      </div>
+      <!-- Jobs -->
+      <div class="ds-tile">
+        <div class="ds-tile-hdr">
+          <span class="ds-status off" id="ds-status-jobs"></span>⚙ Jobs
+        </div>
+        <div id="diag-jobs"><span class="text-gray-600 text-xs">—</span></div>
+      </div>
+      <!-- Dedup -->
+      <div class="ds-tile">
+        <div class="ds-tile-hdr">
+          <span class="ds-status off" id="ds-status-dedup"></span>🔁 Dedup
+        </div>
+        <div id="diag-dedup"><span class="text-gray-600 text-xs">—</span></div>
+      </div>
+      <!-- Workspace -->
+      <div class="ds-tile">
+        <div class="ds-tile-hdr">
+          <span class="ds-status off" id="ds-status-ws"></span>🗂 Workspace
+        </div>
+        <div id="diag-workspace"><span class="text-gray-600 text-xs">—</span></div>
+      </div>
+      <!-- Disk Usage -->
+      <div class="ds-tile">
+        <div class="ds-tile-hdr">
+          <span class="ds-status off" id="ds-status-disk"></span>💾 Disk
+        </div>
+        <div id="diag-disk"><span class="text-gray-600 text-xs">—</span></div>
+      </div>
+    </div>
+  </details>
 </div>
 
 <!-- Loading spinner overlay (during run) -->
@@ -1483,64 +1735,190 @@ document.getElementById('add-account-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') addAccount();
 });
 
-// ── Alerts ────────────────────────────────────────────────────────────────────
-const _ALERT_ICONS = { error: '🔴', warn: '⚠️', info: 'ℹ️' };
+// ── Alerts Center ─────────────────────────────────────────────────────────────
+const _ALERT_ICONS     = { error: '🔴', warn: '⚠️', info: 'ℹ️' };
+const _ALERT_CAT_LABEL = {
+  health:      '⚙ System Health',
+  review:      '📋 Review Issues',
+  lot_quality: '📦 Lot Quality',
+};
+const _ALERT_CAT_ORDER = ['health', 'lot_quality', 'review'];
+
+// Fix hints shown beneath health alerts to guide remediation
+const _HEALTH_FIX_HINTS = {
+  'taxspine-nor-report': 'Ensure the taxspine package is installed in the same Python environment as the orchestrator.',
+  'taxspine-xrpl-nor':   'Ensure the taxspine package is installed in the same Python environment as the orchestrator.',
+  'db':                  'Check that DATA_DIR is writable and jobs.db is not corrupted.',
+  'output_dir':          'Ensure OUTPUT_DIR exists and the process has write permission.',
+};
+
+let _alertsFilter = 'all';       // current category filter
+let _cachedAlerts = [];           // last fetched alerts array
+let _dismissedAlertIds = new Set(); // session-level dismissed alerts
+
+// Derive a stable string key for an alert (used for dismiss tracking)
+function _alertKey(a) {
+  return a.job_id ? `review_${a.job_id}` : `${a.category}_${String(a.message).slice(0, 50)}`;
+}
+
+// Switch category filter and re-render from cache
+function setAlertsFilter(cat) {
+  _alertsFilter = cat;
+  document.querySelectorAll('.al-filter-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.cat === cat);
+  });
+  _renderAlerts(_cachedAlerts);
+}
 
 async function loadAlerts() {
-  const list  = document.getElementById('alerts-list');
-  const badge = document.getElementById('alerts-count-badge');
+  const list      = document.getElementById('alerts-list');
+  const sevBadges = document.getElementById('alerts-sev-badges');
   try {
-    // FE-10: check r.ok before parsing JSON — a server 500 returns a non-array
-    // JSON body that would otherwise fall through to the "all clear" empty state,
-    // masking a real backend failure from the operator.
+    // FE-10: check r.ok before parsing JSON so a 500 doesn't mask a real error
     const r = await fetch(`${API}/alerts`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const alerts = await r.json();
+    _cachedAlerts = Array.isArray(alerts) ? alerts : [];
+    _renderAlerts(_cachedAlerts);
 
-    if (!Array.isArray(alerts) || alerts.length === 0) {
-      badge.style.display = 'none';
-      list.innerHTML = '<p class="text-green-500 text-xs text-center py-1">✅ All clear — no active alerts</p>';
-      return;
+  } catch {
+    const sevBadges2 = document.getElementById('alerts-sev-badges');
+    if (sevBadges2) sevBadges2.style.cssText = 'display:none!important';
+    document.getElementById('alerts-list').innerHTML =
+      '<p class="text-gray-600 text-xs italic text-center py-2">Could not load alerts.</p>';
+  }
+}
+
+// ── Alert rendering (shared by loadAlerts + setAlertsFilter + dismissAlert) ──
+function _renderAlerts(allAlerts) {
+  const list      = document.getElementById('alerts-list');
+  const sevBadges = document.getElementById('alerts-sev-badges');
+  if (!list) return;
+
+  // ── Update filter tab counts ────────────────────────────────────────────
+  const cats = ['health', 'review', 'lot_quality'];
+  const totalNonDismissed = allAlerts.filter(a => !_dismissedAlertIds.has(_alertKey(a)));
+  document.getElementById('afc-all') &&
+    (document.getElementById('afc-all').textContent =
+      totalNonDismissed.length ? `(${totalNonDismissed.length})` : '');
+  for (const c of cats) {
+    const el = document.getElementById(`afc-${c}`);
+    if (el) {
+      const cnt = allAlerts.filter(a => (a.category || 'health') === c && !_dismissedAlertIds.has(_alertKey(a))).length;
+      el.textContent = cnt ? `(${cnt})` : '';
     }
+  }
 
-    badge.style.display = '';
-    badge.className = 'badge badge-failed text-xs';
-    badge.textContent = `${alerts.length} alert${alerts.length === 1 ? '' : 's'}`;
+  // ── Apply category filter and dismiss filter ───────────────────────────
+  const visible = allAlerts.filter(a => {
+    if (_dismissedAlertIds.has(_alertKey(a))) return false;
+    if (_alertsFilter !== 'all' && (a.category || 'health') !== _alertsFilter) return false;
+    return true;
+  });
 
-    list.innerHTML = alerts.map(a => {
-      const icon     = _ALERT_ICONS[a.severity] || 'ℹ️';
-      // FE-08: validate severity against the known allowlist before interpolating
-      // into innerHTML as a CSS class name — prevents XSS via a malicious server.
-      const sevClass = ['error', 'warn', 'info'].includes(a.severity)
-        ? `sev-${a.severity}` : 'sev-info';
-      // UX-02: map severity to a human-readable accessible label so screen
-      // readers announce "critical", "warning", or "information" rather than
-      // reading out the emoji character name (e.g. "red circle").
+  // ── Empty state ─────────────────────────────────────────────────────────
+  if (sevBadges) {
+    if (totalNonDismissed.length === 0) {
+      sevBadges.style.cssText = 'display:none!important';
+    } else {
+      const errCount  = totalNonDismissed.filter(a => a.severity === 'error').length;
+      const warnCount = totalNonDismissed.filter(a => a.severity === 'warn').length;
+      let badgeHtml = '';
+      if (errCount)  badgeHtml += `<span class="al-badge-sev al-badge-err">🔴 ${errCount}</span>`;
+      if (warnCount) badgeHtml += `<span class="al-badge-sev al-badge-wrn">⚠ ${warnCount}</span>`;
+      sevBadges.innerHTML = badgeHtml;
+      sevBadges.style.cssText = '';
+    }
+  }
+
+  if (visible.length === 0) {
+    list.innerHTML = allAlerts.length === 0
+      ? '<p class="text-green-500 text-xs text-center py-2">✅ All clear — no active alerts</p>'
+      : '<p class="text-gray-600 text-xs italic text-center py-2">No alerts in this category.</p>';
+    return;
+  }
+
+  // ── Group visible alerts by category ────────────────────────────────────
+  const byCategory = {};
+  for (const a of visible) {
+    const cat = a.category || 'health';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(a);
+  }
+  const allCats = [
+    ..._ALERT_CAT_ORDER.filter(c => byCategory[c]),
+    ...Object.keys(byCategory).filter(c => !_ALERT_CAT_ORDER.includes(c)),
+  ];
+
+  list.innerHTML = allCats.map(cat => {
+    const items    = byCategory[cat];
+    const catLabel = _ALERT_CAT_LABEL[cat] || cat;
+    const itemsHtml = items.map(a => {
+      // FE-08: allowlist severity before using as CSS class name
+      const sevClass  = ['error', 'warn', 'info'].includes(a.severity) ? `sev-${a.severity}` : 'sev-info';
+      // UX-02: human-readable label for screen readers
       const iconLabel = { error: 'critical', warn: 'warning', info: 'information' }[a.severity] || 'information';
-      // UX-10: visible severity text label so severity is not conveyed by
-      // colour alone — important for colour-blind users.
-      const sevLabel = { error: 'CRITICAL', warn: 'WARNING', info: 'INFO' }[a.severity] || 'INFO';
-      const catLabel = a.category === 'review' ? 'Review' : 'System health';
+      // UX-10: visible text severity label (WCAG 1.4.1)
+      const sevLabel  = { error: 'CRITICAL', warn: 'WARNING', info: 'INFO' }[a.severity] || 'INFO';
+      const icon      = _ALERT_ICONS[a.severity] || 'ℹ️';
+      const key       = escHtml(_alertKey(a));
+      const jobLink   = a.job_id
+        ? ` <span class="text-xs opacity-50 cursor-pointer hover:opacity-100 underline"
+              onclick="openResultsById('${escHtml(a.job_id)}')"
+            >→ job ${escHtml(a.job_id.slice(0, 8))}…</span>`
+        : '';
+      // Detail items collapse by default
       const detailHtml = a.detail && a.detail.length
-        ? `<ul class="alert-detail">${a.detail.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul>`
+        ? `<details class="mt-1">
+             <summary class="text-xs opacity-60 cursor-pointer select-none hover:opacity-90">
+               Show details (${a.detail.length})
+             </summary>
+             <ul class="alert-detail">${a.detail.slice(0, 20).map(w => `<li>${escHtml(w)}</li>`).join('')}${a.detail.length > 20 ? `<li class="opacity-40">…${a.detail.length - 20} more</li>` : ''}</ul>
+           </details>`
         : '';
-      const jobLink = a.job_id
-        ? `<span class="text-xs opacity-50 cursor-pointer hover:opacity-100 underline" onclick="openResultsById('${escHtml(a.job_id)}')"> → job ${escHtml(a.job_id.slice(0,8))}…</span>`
-        : '';
-      return `<div class="alert-item ${sevClass}">
+      // Fix hint for health alerts (matched on message keyword)
+      let fixHint = '';
+      if (cat === 'health') {
+        const msgLower = String(a.message).toLowerCase();
+        for (const [keyword, hint] of Object.entries(_HEALTH_FIX_HINTS)) {
+          if (msgLower.includes(keyword.toLowerCase())) {
+            fixHint = `<div class="al-fix-hint">💡 ${escHtml(hint)}</div>`;
+            break;
+          }
+        }
+      }
+      const raisedAt = a.raised_at ? `<span class="opacity-40 ml-2">${_relativeTime(a.raised_at)}</span>` : '';
+      return `<div class="alert-item ${sevClass}" id="alert-${key}">
         <span class="alert-icon" role="img" aria-label="${iconLabel}">${icon}</span>
-        <div class="alert-body">
-          <div class="alert-msg">${escHtml(a.message)}${jobLink}</div>
-          <div class="alert-cat"><span class="alert-sev">${sevLabel}</span> · ${catLabel}</div>
-          ${detailHtml}
+        <div class="alert-body" style="flex:1;min-width:0">
+          <div style="display:flex;align-items:flex-start;gap:6px">
+            <div style="flex:1;min-width:0">
+              <div class="alert-msg">${escHtml(a.message)}${jobLink}${raisedAt}</div>
+              <div class="alert-cat"><span class="alert-sev">${sevLabel}</span></div>
+            </div>
+            <button class="al-dismiss-btn" title="Dismiss this alert"
+                    onclick="dismissAlert('${key}')">✕</button>
+          </div>
+          ${detailHtml}${fixHint}
         </div>
       </div>`;
     }).join('');
 
-  } catch {
-    badge.style.display = 'none';
-    list.innerHTML = '<p class="text-gray-600 text-xs italic text-center py-2">Could not load alerts.</p>';
-  }
+    return `<div class="al-group">
+      <div class="al-group-hdr">
+        <span class="al-sev-dot ${items.some(a=>a.severity==='error')?'error':items.some(a=>a.severity==='warn')?'warn':'info'}"></span>
+        ${escHtml(catLabel)}
+        <span style="margin-left:auto;font-weight:400;color:#6b7280">${items.length}</span>
+      </div>
+      ${itemsHtml}
+    </div>`;
+  }).join('');
+}
+
+// Dismiss a single alert for the rest of this session
+function dismissAlert(alertKey) {
+  _dismissedAlertIds.add(alertKey);
+  _renderAlerts(_cachedAlerts);
 }
 
 // ── Review badge ──────────────────────────────────────────────────────────────
@@ -1605,6 +1983,7 @@ function tcTab(name, btn) {
 function onTcYearChange(year) {
   loadHoldings(year);
   loadLots(year);
+  loadReviewQueue(year);
 }
 
 async function loadTaxCenter() {
@@ -1617,6 +1996,531 @@ async function loadTaxCenter() {
   }
 }
 
+async function loadReviewQueue(year) {
+  if (!year) { _showReviewEmpty(true); return; }
+  // FE-04: show loading state so the panel doesn't appear blank during fetch
+  const rvBanner = document.getElementById('tc-review-banner');
+  if (rvBanner) {
+    rvBanner.textContent = 'Loading…';
+    rvBanner.style.cssText = 'background:rgba(100,116,139,.12);color:#9ca3af;border:none;';
+    rvBanner.classList.remove('hidden');
+  }
+  document.getElementById('tc-review-stats')?.classList.add('hidden');
+  document.getElementById('tc-review-sections')?.classList.add('hidden');
+  document.getElementById('tc-review-jobs-section')?.classList.add('hidden');
+  document.getElementById('tc-review-empty')?.classList.add('hidden');
+  try {
+    // Fetch year-level summary and per-job cards in parallel
+    const [summaryR, jobsR] = await Promise.all([
+      fetch(`${API}/review/summary?year=${encodeURIComponent(year)}`),
+      fetch(`${API}/review/jobs?year=${encodeURIComponent(year)}`),
+    ]);
+    if (!summaryR.ok) { _showReviewEmpty(true); return; }
+    const [summaryData, jobsData] = await Promise.all([
+      summaryR.json(),
+      jobsR.ok ? jobsR.json() : Promise.resolve(null),
+    ]);
+    _renderReviewQueue(summaryData);
+    if (jobsData) _renderReviewJobs(jobsData);
+  } catch { _showReviewEmpty(true); }
+}
+
+function _renderReviewQueue(data) {
+  // Stats row
+  document.getElementById('tc-rv-jobs').textContent      = data.jobs_with_review ?? '—';
+  document.getElementById('tc-rv-warnings').textContent  = data.total_warnings ?? '—';
+  document.getElementById('tc-rv-transfers').textContent = (data.unlinked_transfer_jobs || []).length;
+  document.getElementById('tc-rv-missing').textContent   = data.missing_basis_count ?? '—';
+  document.getElementById('tc-review-stats').classList.remove('hidden');
+
+  // Banner
+  const banner = document.getElementById('tc-review-banner');
+  if (data.clean) {
+    banner.textContent = '✅ All clear — no unresolved issues for this year.';
+    banner.style.cssText = 'background:rgba(16,185,129,.12);color:#6ee7b7;border:1px solid rgba(16,185,129,.25);';
+  } else {
+    banner.textContent = '⚠ Issues found — review the sections below.';
+    banner.style.cssText = 'background:rgba(251,191,36,.08);color:#fbbf24;border:1px solid rgba(251,191,36,.2);';
+  }
+  banner.className = 'mb-4 px-4 py-3 rounded-lg text-sm font-medium';
+  banner.classList.remove('hidden');
+
+  document.getElementById('tc-review-sections').classList.remove('hidden');
+  document.getElementById('tc-review-empty').classList.add('hidden');
+
+  // ── Unlinked transfers ── show case names when available
+  const unlinkedSection = document.getElementById('tc-rv-unlinked-section');
+  const unlinkedList    = document.getElementById('tc-rv-unlinked-list');
+  const unlinkedJobs    = data.unlinked_transfer_jobs || [];
+  if (unlinkedJobs.length) {
+    unlinkedList.innerHTML = unlinkedJobs.map(j => {
+      // API returns [{job_id, case_name}] or [string] (backward compat)
+      const label = typeof j === 'object' ? (j.case_name || j.job_id) : j;
+      const id    = typeof j === 'object' ? j.job_id : j;
+      return `<li class="flex items-center gap-2 py-0.5">
+        <span class="dot dot-err flex-shrink-0"></span>
+        <span class="text-red-300 font-medium">${escHtml(label)}</span>
+        <code class="text-gray-600 text-xs">${escHtml(String(id).slice(0, 14))}…</code>
+      </li>`;
+    }).join('');
+    unlinkedSection.classList.remove('hidden');
+  } else {
+    unlinkedSection.classList.add('hidden');
+  }
+
+  // ── Missing cost basis ── per-asset lot-count detail
+  const missingSection = document.getElementById('tc-rv-missing-section');
+  const missingList    = document.getElementById('tc-rv-missing-list');
+  const missingDetail  = data.missing_basis_detail || [];
+  const missingAssets  = data.missing_basis_assets  || [];
+  if (missingDetail.length) {
+    missingList.innerHTML = missingDetail.map(d =>
+      `<div class="flex items-center gap-3 py-1 border-b border-gray-800 last:border-0">
+        <span class="pill pill-amber font-mono">${escHtml(d.asset)}</span>
+        <span class="text-orange-300">${d.missing_lots} of ${d.lot_count} lot${d.lot_count === 1 ? '' : 's'} missing basis</span>
+        <span class="text-gray-500 ml-auto font-mono">${escHtml(d.total_remaining_qty)} remaining</span>
+      </div>`
+    ).join('');
+    missingSection.classList.remove('hidden');
+  } else if (missingAssets.length) {
+    // Backward compat: just asset pills if no detail available
+    missingList.innerHTML = `<div class="flex flex-wrap gap-2">${missingAssets.map(a =>
+      `<span class="pill pill-amber">${escHtml(a)}</span>`).join('')}</div>`;
+    missingSection.classList.remove('hidden');
+  } else {
+    missingSection.classList.add('hidden');
+  }
+
+  // ── Warnings grouped by category ──
+  const warnSection = document.getElementById('tc-rv-warnings-section');
+  const warnCats    = document.getElementById('tc-rv-warnings-cats');
+  const byCategory  = data.warnings_by_category || {};
+  const warnings    = data.warnings || [];
+  if (warnings.length) {
+    const catOrder = ['Tax Law', 'Transfer Linking', 'Cost Basis', 'Income', 'Valuation', 'General'];
+    const catIcons = {'Tax Law': '⚖', 'Transfer Linking': '🔗', 'Cost Basis': '💰',
+                      'Income': '💵', 'Valuation': '📈', 'General': 'ℹ'};
+    let html = '';
+    // Render known categories in fixed order
+    for (const cat of catOrder) {
+      const ws = byCategory[cat];
+      if (!ws || !ws.length) continue;
+      html += `<details class="rv-cat-group" open>
+        <summary class="flex items-center gap-2 text-xs font-semibold text-gray-300 cursor-pointer select-none py-1">
+          <span>${catIcons[cat] || '•'} ${escHtml(cat)}</span>
+          <span class="text-gray-500 font-normal ml-1">(${ws.length})</span>
+        </summary>
+        <ul class="mt-1 ml-4 space-y-0.5 text-xs text-gray-400 max-h-40 overflow-y-auto pb-1">
+          ${ws.map(w => `<li class="py-0.5 border-b border-gray-800 last:border-0">${escHtml(w)}</li>`).join('')}
+        </ul>
+      </details>`;
+    }
+    // Any extra categories not in catOrder
+    for (const cat of Object.keys(byCategory)) {
+      if (catOrder.includes(cat)) continue;
+      const ws = byCategory[cat];
+      if (!ws || !ws.length) continue;
+      html += `<details class="rv-cat-group">
+        <summary class="flex items-center gap-2 text-xs font-semibold text-gray-300 cursor-pointer select-none py-1">
+          <span>• ${escHtml(cat)}</span>
+          <span class="text-gray-500 font-normal ml-1">(${ws.length})</span>
+        </summary>
+        <ul class="mt-1 ml-4 space-y-0.5 text-xs text-gray-400 max-h-40 overflow-y-auto pb-1">
+          ${ws.map(w => `<li class="py-0.5 border-b border-gray-800 last:border-0">${escHtml(w)}</li>`).join('')}
+        </ul>
+      </details>`;
+    }
+    // Fallback: flat list if byCategory was empty
+    if (!html) {
+      html = `<ul class="text-xs text-gray-400 space-y-1 max-h-48 overflow-y-auto">
+        ${warnings.map(w => `<li>${escHtml(w)}</li>`).join('')}
+      </ul>`;
+    }
+    warnCats.innerHTML = html;
+    warnSection.classList.remove('hidden');
+  } else {
+    warnSection.classList.add('hidden');
+  }
+}
+
+function _renderReviewJobs(data) {
+  const section  = document.getElementById('tc-review-jobs-section');
+  const list     = document.getElementById('tc-rv-jobs-list');
+  const emptyEl  = document.getElementById('tc-rv-jobs-empty');
+  const jobs     = data.jobs || [];
+  section.classList.remove('hidden');
+  if (!jobs.length) {
+    list.innerHTML = '';
+    emptyEl.classList.remove('hidden');
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  list.innerHTML = jobs.map(job => {
+    const review    = job.review    || {};
+    const downloads = job.downloads || {};
+    const caseLabel = escHtml(job.case_name || job.job_id);
+    const created   = job.created_at ? _relativeTime(job.created_at) : '—';
+    const createdAbs = job.created_at
+      ? job.created_at.replace('T', ' ').slice(0, 16) + ' UTC' : '';
+
+    // Mode badges
+    const modeBadge = job.pipeline_mode === 'nor_multi'
+      ? `<span class="badge badge-running" style="font-size:10px;padding:1px 7px">nor-multi</span>`
+      : `<span class="badge badge-pending" style="font-size:10px;padding:1px 7px">per-file</span>`;
+    const valBadge = job.valuation_mode
+      ? `<span class="badge" style="background:#1e293b;color:#64748b;font-size:10px;padding:1px 7px">${escHtml(job.valuation_mode)}</span>`
+      : '';
+
+    // Review status line
+    const isClean   = review.clean;
+    const warnCount = review.warning_count || 0;
+    const hasUnlinked = review.has_unlinked_transfers;
+    const statusDot  = `<span class="dot ${isClean ? 'dot-ok' : 'dot-err'} flex-shrink-0 mt-0.5"></span>`;
+    const statusLine = isClean
+      ? '<span class="text-green-400 text-xs font-medium">Clean</span>'
+      : `<span class="text-yellow-400 text-xs font-medium">${warnCount} warning${warnCount === 1 ? '' : 's'}${hasUnlinked ? ' · unlinked transfers' : ''}</span>`;
+
+    // Download buttons — link to file download endpoints
+    const dlButtons = [];
+    if (downloads.html_report_count > 0) {
+      dlButtons.push(`<a href="${API}/jobs/${encodeURIComponent(job.job_id)}/files/report"
+          class="rv-dl-btn" title="Download HTML tax report">📄 Report</a>`);
+    }
+    if (downloads.rf1159_count > 0) {
+      dlButtons.push(`<a href="${API}/jobs/${encodeURIComponent(job.job_id)}/files/rf1159"
+          class="rv-dl-btn" title="Download RF-1159 JSON">📑 RF-1159</a>`);
+    }
+    const dlHtml = dlButtons.length
+      ? dlButtons.join('')
+      : '<span class="text-xs text-gray-600">No downloads</span>';
+
+    // Collapsible inline warnings (first 20)
+    let warningsHtml = '';
+    if (!isClean && review.warnings && review.warnings.length) {
+      const shown = review.warnings.slice(0, 20);
+      const more  = review.warnings.length > 20
+        ? `<li class="text-gray-600 pt-0.5">…${review.warnings.length - 20} more</li>` : '';
+      warningsHtml = `<details class="mt-2">
+        <summary class="text-xs text-gray-500 cursor-pointer select-none hover:text-gray-400 transition-colors">
+          Show warnings (${review.warnings.length})
+        </summary>
+        <ul class="mt-1 ml-3 space-y-0.5 text-xs text-gray-400 max-h-32 overflow-y-auto">
+          ${shown.map(w => `<li class="py-0.5 border-b border-gray-800 last:border-0">${escHtml(w)}</li>`).join('')}${more}
+        </ul>
+      </details>`;
+    }
+
+    // Meta line: date, CSV count, XRPL accounts
+    const metaParts = [];
+    if (createdAbs) metaParts.push(`<span title="${escHtml(createdAbs)}">${escHtml(created)}</span>`);
+    if (job.csv_file_count) metaParts.push(`${job.csv_file_count} CSV`);
+    if (job.xrpl_accounts && job.xrpl_accounts.length) {
+      metaParts.push(`${job.xrpl_accounts.length} XRPL acct${job.xrpl_accounts.length === 1 ? '' : 's'}`);
+    }
+    const metaHtml = metaParts.length
+      ? `<div class="text-xs text-gray-500 mt-0.5">${metaParts.join(' · ')}</div>` : '';
+
+    return `<div class="rv-job-card">
+      <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-start gap-2 mb-1 flex-wrap">
+            ${statusDot}
+            <span class="text-sm font-semibold text-gray-100">${caseLabel}</span>
+            ${modeBadge}${valBadge}
+          </div>
+          ${metaHtml}
+          <div class="flex items-center gap-2 mt-1">${statusLine}</div>
+          ${warningsHtml}
+        </div>
+        <div class="flex items-center gap-2 flex-wrap flex-shrink-0">${dlHtml}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function _showReviewEmpty(show) {
+  document.getElementById('tc-review-banner').classList.add('hidden');
+  document.getElementById('tc-review-stats').classList.toggle('hidden', show);
+  document.getElementById('tc-review-sections').classList.toggle('hidden', show);
+  document.getElementById('tc-review-jobs-section').classList.toggle('hidden', show);
+  document.getElementById('tc-review-empty').classList.toggle('hidden', !show);
+}
+
+async function loadAuditLog() {
+  const loading = document.getElementById('tc-audit-loading');
+  loading.classList.remove('hidden');
+  try {
+    const r = await fetch(`${API}/admin/audit?limit=200`);
+    if (!r.ok) { _showAuditEmpty(true); return; }
+    const entries = await r.json();
+    if (!entries.length) { _showAuditEmpty(true); return; }
+    const tbody = document.getElementById('tc-audit-tbody');
+    tbody.innerHTML = entries.map(e => {
+      const rel = _relativeTime(e.deleted_at);
+      const abs = e.deleted_at ? e.deleted_at.replace('T', ' ').replace('Z', ' UTC') : '—';
+      const short = e.job_id ? e.job_id.slice(0, 12) + '…' : '—';
+      return `<tr>
+        <td><code class="text-gray-400" title="${escHtml(e.job_id || '')}">${escHtml(short)}</code></td>
+        <td title="${escHtml(abs)}" style="font-size:12px">${escHtml(rel)}</td>
+        <td style="text-align:right">${e.files_removed ?? 0}</td>
+      </tr>`;
+    }).join('');
+    _showAuditEmpty(false);
+  } catch { _showAuditEmpty(true); }
+  finally { loading.classList.add('hidden'); }
+}
+
+function _showAuditEmpty(show) {
+  document.getElementById('tc-audit-empty').classList.toggle('hidden', !show);
+  document.getElementById('tc-audit-table').classList.toggle('hidden', show);
+}
+
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+// FE-03: 30-second cache so repeated panel opens don't hammer the API.
+let _diagCacheTs = 0;
+let _diagCacheData = null;
+
+async function loadDiagnostics() {
+  const now = Date.now();
+  if (_diagCacheData && (now - _diagCacheTs) < 30_000) {
+    _renderDiagnostics(_diagCacheData);
+    return;
+  }
+  try {
+    const r = await fetch(`${API}/diagnostics`);
+    if (!r.ok) return;
+    const d = await r.json();
+    _diagCacheTs = Date.now();
+    _diagCacheData = d;
+    _renderDiagnostics(d);
+  } catch { /* silent — diagnostics are non-critical */ }
+}
+
+function _renderDiagnostics(d) {
+  const jobs      = d.jobs      || {};
+  const prices    = d.prices    || {};
+  const lots      = d.lots      || {};
+  const dedup     = d.dedup     || {};
+  const workspace = d.workspace || {};
+
+  // ── Helper: set dot colour ───────────────────────────────────────────────
+  function _setDot(id, cls) {
+    const el = document.getElementById(id);
+    if (el) { el.className = `ds-status ${cls}`; }
+  }
+  function _setHeaderDot(id, cls) {
+    // Updates both the tile header dot AND the summary-bar dot
+    const el = document.getElementById(id);
+    if (el) el.className = `ds-status ${cls}`;
+  }
+
+  // ── Helper: ds-row HTML ──────────────────────────────────────────────────
+  function _row(label, valHtml) {
+    return `<div class="ds-row"><span>${escHtml(label)}</span><span class="ds-val">${valHtml}</span></div>`;
+  }
+
+  // ── Summary line ─────────────────────────────────────────────────────────
+  const summaryLine = [
+    jobs.running ? `${jobs.running} running` : null,
+    jobs.failed  ? `${jobs.failed} failed`   : null,
+    jobs.total != null ? `${jobs.total} jobs` : null,
+  ].filter(Boolean).join(' · ');
+  const sl = document.getElementById('diag-summary-line');
+  if (sl) sl.textContent = summaryLine;
+
+  // Last refreshed
+  const lrEl = document.getElementById('diag-last-refreshed');
+  if (lrEl) lrEl.textContent = `refreshed ${_relativeTime(new Date().toISOString())}`;
+
+  // ── UX-02: plain-language health summary ─────────────────────────────────
+  const healthEl = document.getElementById('diag-health-summary');
+  if (healthEl) {
+    const issues = [];
+    if (jobs.failed)     issues.push(`${jobs.failed} failed job(s)`);
+    if (lots.error)      issues.push('Lot store error');
+    if (prices.error)    issues.push('Price cache error');
+    if (!lots.db_exists) issues.push('No lot store yet');
+    healthEl.className = 'px-5 pt-3 pb-1 text-sm';
+    healthEl.innerHTML = issues.length === 0
+      ? '<span style="color:#4ade80">✅ All systems OK</span>'
+      : `<span style="color:#fbbf24">⚠ ${issues.map(escHtml).join(' · ')}</span>`;
+  }
+
+  // ── Lot Store ─────────────────────────────────────────────────────────────
+  const lotsEl = document.getElementById('diag-lots');
+  if (lotsEl) {
+    if (lots.error) {
+      _setHeaderDot('ds-status-lots', 'error');
+      _setDot('diag-dot-lots', 'error');
+      lotsEl.innerHTML = `<span class="ds-val error text-xs">${escHtml(lots.error)}</span>`;
+    } else if (!lots.db_exists) {
+      _setHeaderDot('ds-status-lots', 'off');
+      _setDot('diag-dot-lots', 'off');
+      lotsEl.innerHTML = '<span class="text-gray-600 text-xs">No lot store yet</span>';
+    } else {
+      _setHeaderDot('ds-status-lots', 'ok');
+      _setDot('diag-dot-lots', 'ok');
+      const years = lots.years || [];
+      const yearsHtml = years.length
+        ? years.map(y => `<span class="pill pill-slate" style="font-size:10px;padding:1px 6px">${escHtml(String(y))}</span>`).join(' ')
+        : '<span class="text-gray-600">—</span>';
+      lotsEl.innerHTML =
+        _row('Size', `${lots.size_kb ?? '?'} KB`) +
+        `<div class="ds-row"><span>Years</span><span class="flex gap-1 flex-wrap justify-end">${yearsHtml}</span></div>`;
+    }
+  }
+
+  // ── Price Cache ───────────────────────────────────────────────────────────
+  const pricesEl = document.getElementById('diag-prices');
+  if (pricesEl) {
+    if (prices.error) {
+      _setHeaderDot('ds-status-prices', 'error');
+      _setDot('diag-dot-prices', 'error');
+      pricesEl.innerHTML = `<span class="ds-val error text-xs">${escHtml(prices.error)}</span>`;
+    } else {
+      const combined = prices.combined_csvs || [];
+      // Freshness: <24h = ok, 24-72h = warn, >72h = error
+      const maxAge = combined.reduce((m, c) => Math.max(m, Number(c.age_hours) || 0), 0);
+      const priceStatus = combined.length === 0 ? 'off'
+        : maxAge < 24 ? 'ok' : maxAge < 72 ? 'warn' : 'error';
+      _setHeaderDot('ds-status-prices', priceStatus);
+      _setDot('diag-dot-prices', priceStatus);
+
+      const combinedHtml = combined.length
+        ? combined.map(c => {
+            const age = Number(c.age_hours);
+            const ageStr = isNaN(age) ? '—' : `${age}h ago`;
+            const ageCls = isNaN(age) ? '' : age < 24 ? 'ok' : age < 72 ? 'warn' : 'error';
+            const name = c.name.replace(/^combined_nok_/, '').replace(/\.csv$/, '');
+            return _row(name, `<span class="ds-val ${ageCls}">${ageStr}</span>`);
+          }).join('')
+        : '<span class="text-gray-600 text-xs">No combined CSV yet</span>';
+      pricesEl.innerHTML = _row('Files', `${prices.csv_count ?? 0}`) + combinedHtml;
+    }
+  }
+
+  // ── Jobs ──────────────────────────────────────────────────────────────────
+  const jobsEl = document.getElementById('diag-jobs');
+  if (jobsEl) {
+    if (jobs.error) {
+      _setHeaderDot('ds-status-jobs', 'error');
+      _setDot('diag-dot-jobs', 'error');
+      jobsEl.innerHTML = `<span class="ds-val error text-xs">${escHtml(jobs.error)}</span>`;
+    } else {
+      const jobStatus = jobs.failed ? 'warn' : jobs.running ? 'ok' : 'ok';
+      _setHeaderDot('ds-status-jobs', jobStatus);
+      _setDot('diag-dot-jobs', jobStatus);
+      const lastDone = jobs.last_completed_at ? _relativeTime(jobs.last_completed_at) : 'never';
+      const runVal  = jobs.running ? `<span class="ds-val blue">${jobs.running}</span>` : `<span class="ds-val">${jobs.running ?? 0}</span>`;
+      const failVal = jobs.failed  ? `<span class="ds-val error">${jobs.failed}</span>`  : `<span class="ds-val">${jobs.failed ?? 0}</span>`;
+      jobsEl.innerHTML =
+        _row('Total', `${jobs.total ?? 0}`) +
+        `<div class="ds-row"><span>Running</span>${runVal}</div>` +
+        `<div class="ds-row"><span>Failed</span>${failVal}</div>` +
+        _row('Last done', escHtml(lastDone));
+    }
+  }
+
+  // ── Dedup ─────────────────────────────────────────────────────────────────
+  const dedupEl = document.getElementById('diag-dedup');
+  if (dedupEl) {
+    if (dedup.error) {
+      _setHeaderDot('ds-status-dedup', 'error');
+      _setDot('diag-dot-dedup', 'error');
+      dedupEl.innerHTML = `<span class="ds-val error text-xs">${escHtml(dedup.error)}</span>`;
+    } else {
+      _setHeaderDot('ds-status-dedup', 'ok');
+      _setDot('diag-dot-dedup', 'ok');
+      dedupEl.innerHTML =
+        _row('Sources', `${dedup.source_count ?? 0}`) +
+        _row('Skipped events', `${dedup.total_skips ?? 0}`);
+    }
+  }
+
+  // ── Workspace ─────────────────────────────────────────────────────────────
+  const wsEl = document.getElementById('diag-workspace');
+  if (wsEl) {
+    if (workspace.error) {
+      _setHeaderDot('ds-status-ws', 'error');
+      _setDot('diag-dot-ws', 'error');
+      wsEl.innerHTML = `<span class="ds-val error text-xs">${escHtml(workspace.error)}</span>`;
+    } else {
+      const wsStatus = (workspace.xrpl_account_count > 0 || workspace.csv_file_count > 0) ? 'ok' : 'off';
+      _setHeaderDot('ds-status-ws', wsStatus);
+      _setDot('diag-dot-ws', wsStatus);
+      wsEl.innerHTML =
+        _row('XRPL accounts', `${workspace.xrpl_account_count ?? 0}`) +
+        _row('CSV files', `${workspace.csv_file_count ?? 0}`) +
+        _row('XRPL assets', `${workspace.xrpl_asset_count ?? 0}`);
+    }
+  }
+
+  // ── Disk Usage ────────────────────────────────────────────────────────────
+  const diskEl = document.getElementById('diag-disk');
+  const disk   = d.disk_usage || {};
+  if (diskEl) {
+    if (disk.error) {
+      _setHeaderDot('ds-status-disk', 'error');
+      _setDot('diag-dot-disk', 'error');
+      diskEl.innerHTML = `<span class="ds-val error text-xs">${escHtml(disk.error)}</span>`;
+    } else {
+      // Compute aggregate to determine status colour
+      const totalMb = [disk.output_dir, disk.upload_dir, disk.prices_dir]
+        .filter(Boolean).reduce((s, x) => s + (Number(x.size_mb) || 0), 0);
+      const diskStatus = totalMb > 500 ? 'warn' : 'ok';
+      _setHeaderDot('ds-status-disk', diskStatus);
+      _setDot('diag-dot-disk', diskStatus);
+      function _mbRow(label, info) {
+        if (!info) return _row(label, '—');
+        if (!info.exists) return _row(label, '<span class="text-gray-600">empty</span>');
+        const mb = info.size_mb;
+        const cls = mb > 200 ? 'warn' : '';
+        const val = mb != null ? `<span class="ds-val ${cls}">${mb} MB</span>` : '—';
+        return `<div class="ds-row"><span>${escHtml(label)}</span>${val}</div>`;
+      }
+      diskEl.innerHTML =
+        _mbRow('Output', disk.output_dir) +
+        _mbRow('Uploads', disk.upload_dir) +
+        _mbRow('Prices', disk.prices_dir);
+    }
+  }
+
+  // ── Overall health badge ──────────────────────────────────────────────────
+  const badge = document.getElementById('diag-health-badge');
+  if (badge) {
+    const hasError = jobs.error || lots.error || prices.error || dedup.error || workspace.error || disk.error
+      || jobs.failed;
+    const hasWarn  = !hasError && (
+      lots.db_exists === false  // no lot store yet
+    );
+    badge.classList.remove('hidden', 'ok', 'warn', 'error');
+    if (hasError) {
+      badge.classList.add('error');
+      badge.textContent = 'Degraded';
+    } else if (hasWarn) {
+      badge.classList.add('warn');
+      badge.textContent = 'Warning';
+    } else {
+      badge.classList.add('ok');
+      badge.textContent = 'Healthy';
+    }
+  }
+}
+
+// Copy the last diagnostics snapshot as formatted JSON to the clipboard
+function _copyDiagnostics() {
+  if (!_diagCacheData) { loadDiagnostics(); return; }
+  const text = JSON.stringify(_diagCacheData, null, 2);
+  navigator.clipboard?.writeText(text).then(() => {
+    const btn = document.querySelector('.diag-copy-btn');
+    if (btn) { const orig = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = orig; }, 1500); }
+  }).catch(() => {
+    // Fallback: open in a new tab (works in all environments)
+    const w = window.open('', '_blank');
+    w?.document.write(`<pre style="font-family:monospace;font-size:13px;padding:16px">${text.replace(/</g,'&lt;')}</pre>`);
+  });
+}
+
 async function loadLotYears() {
   const sel = document.getElementById('tc-year-select');
   try {
@@ -1625,26 +2529,58 @@ async function loadLotYears() {
     const data = await r.json();
     const years = (data.years || []).slice().reverse();
     const prev = sel.value;
+    // FE-02: apply escHtml to year values for consistency with the codebase
+    // convention of escaping all server-sourced strings before DOM insertion.
     sel.innerHTML = '<option value="">— select year —</option>' +
-      years.map(y => `<option value="${y}"${String(y) === prev ? ' selected' : ''}>${y}</option>`).join('');
+      years.map(y => {
+        const ey = escHtml(String(y));
+        return `<option value="${ey}"${String(y) === prev ? ' selected' : ''}>${ey}</option>`;
+      }).join('');
     if (years.length) {
       const pick = years.map(String).includes(prev) ? prev : String(years[0]);
       sel.value = pick;
-      await Promise.all([loadHoldings(pick), loadLots(pick)]);
+      await Promise.all([loadHoldings(pick), loadLots(pick), loadReviewQueue(pick)]);
     } else {
       _showHoldingsEmpty(true);
       _showLotsEmpty(true);
+      _showReviewEmpty(true);
     }
   } catch {
     _showHoldingsEmpty(true);
     _showLotsEmpty(true);
+    _showReviewEmpty(true);
+  }
+}
+
+// ── Live price mode ────────────────────────────────────────────────────────────
+let _liveMode = false;
+let _livePriceTimer = null;
+
+function toggleLivePrices() {
+  _liveMode = !_liveMode;
+  const btn  = document.getElementById('tc-live-toggle');
+  const dot  = document.getElementById('tc-live-dot');
+  if (btn) btn.classList.toggle('active', _liveMode);
+  if (dot) dot.style.display = _liveMode ? 'inline-block' : 'none';
+
+  const year = document.getElementById('tc-year-select')?.value;
+  loadHoldings(year);
+
+  // Auto-refresh every 5 minutes while live mode is on
+  clearInterval(_livePriceTimer);
+  if (_liveMode) {
+    _livePriceTimer = setInterval(() => {
+      const y = document.getElementById('tc-year-select')?.value;
+      if (y) loadHoldings(y);
+    }, 300_000);
   }
 }
 
 async function loadHoldings(year) {
   if (!year) { _showHoldingsEmpty(true); return; }
   try {
-    const r = await fetch(`${API}/lots/${year}/portfolio`);
+    const priceParam = _liveMode ? '&price_type=current' : '';
+    const r = await fetch(`${API}/lots/${year}/portfolio?include_prices=true${priceParam}`);
     if (!r.ok) { _showHoldingsEmpty(true); return; }
     const data = await r.json();
     _renderHoldings(data);
@@ -1662,6 +2598,33 @@ function _renderHoldings(data) {
   document.getElementById('tc-h-assets').textContent = assets.length;
   document.getElementById('tc-h-lots').textContent   = totalLots;
   document.getElementById('tc-h-basis').textContent  = (anyMissing ? '≥ ' : '') + _fmtNok(String(totalBasis));
+
+  // Market value and P&L — populated when include_prices=true and prices available
+  const marketEl  = document.getElementById('tc-h-market');
+  const pnlEl     = document.getElementById('tc-h-pnl');
+  const mktLblEl  = document.getElementById('tc-h-market-lbl');
+  const asOfEl    = document.getElementById('tc-h-prices-as-of');
+  if (data.total_market_value_nok != null) {
+    marketEl.textContent = (data.prices_partial ? '≥ ' : '') + _fmtNok(data.total_market_value_nok);
+    const pnlVal = parseFloat(data.total_unrealized_gain_nok || '0');
+    pnlEl.textContent = (pnlVal >= 0 ? '+' : '') + _fmtNok(data.total_unrealized_gain_nok);
+    pnlEl.style.color = pnlVal >= 0 ? '#6ee7b7' : '#f87171';
+    // Show price type label and as-of timestamp
+    if (mktLblEl) mktLblEl.textContent = _liveMode ? 'Market value (live)' : 'Market value';
+    if (asOfEl && data.prices_as_of) {
+      try {
+        const asOf = new Date(data.prices_as_of);
+        asOfEl.textContent = `as of ${asOf.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
+      } catch { asOfEl.textContent = ''; }
+    } else if (asOfEl) { asOfEl.textContent = ''; }
+  } else {
+    marketEl.textContent = '—';
+    pnlEl.textContent    = '—';
+    pnlEl.style.color    = '';
+    if (mktLblEl) mktLblEl.textContent = 'Market value';
+    if (asOfEl) asOfEl.textContent = '';
+  }
+
   document.getElementById('tc-holdings-stats').classList.remove('hidden');
 
   const tbody = document.getElementById('tc-holdings-tbody');
@@ -1673,11 +2636,26 @@ function _renderHoldings(data) {
     const basisPill = a.has_missing_basis
       ? '<span class="pill pill-amber">⚠ partial</span>'
       : '<span class="pill pill-green">complete</span>';
+
+    // Market value columns (present when include_prices=true)
+    let marketStr = '—', pnlStr = '—', pnlStyle = '';
+    if ('market_value_nok' in a) {
+      if (a.market_value_nok != null) {
+        marketStr = (a.has_missing_price ? '≈ ' : '') + _fmtNok(a.market_value_nok);
+        const pnlVal = parseFloat(a.unrealized_gain_nok || '0');
+        pnlStr   = (pnlVal >= 0 ? '+' : '') + _fmtNok(a.unrealized_gain_nok);
+        pnlStyle = pnlVal >= 0 ? 'color:#6ee7b7' : 'color:#f87171';
+      } else {
+        marketStr = '<span class="text-gray-600">no price</span>';
+      }
+    }
+
     return `<tr>
       <td><strong>${escHtml(a.asset)}</strong></td>
       <td style="text-align:right;font-family:monospace">${_fmtQty(a.total_quantity)}</td>
       <td style="text-align:right;font-family:monospace">${escHtml(basisStr)}</td>
-      <td style="text-align:right;font-family:monospace">${escHtml(avgStr)}</td>
+      <td style="text-align:right;font-family:monospace">${marketStr}</td>
+      <td style="text-align:right;font-family:monospace;${pnlStyle}">${pnlStr}</td>
       <td style="text-align:right">${a.lot_count}</td>
       <td>${basisPill}</td>
     </tr>`;
@@ -1792,12 +2770,31 @@ function _showDedupEmpty(show) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
-  await Promise.all([checkHealth(), loadWorkspace(), loadJobs(), loadAlerts(), loadTaxCenter()]);
+  await Promise.all([checkHealth(), loadWorkspace(), loadJobs(), loadAlerts(), loadTaxCenter(), loadDiagnostics()]);
   // FE-07: retain handles so the timers can be cleared if needed (e.g. in
   // tests or when the page is embedded in a shell that re-runs init code).
   window._jobsTimer   = setInterval(loadJobs,    30_000);
   window._healthTimer = setInterval(checkHealth, 15_000);
   window._alertsTimer = setInterval(loadAlerts,  60_000);
+
+  // Load audit log when the audit tab is first activated.
+  const auditTab = document.getElementById('tc-tab-audit');
+  if (auditTab) {
+    auditTab.addEventListener('click', () => {
+      // Only fetch once (table will be populated after first click).
+      if (!document.getElementById('tc-audit-table').classList.contains('hidden') ||
+          !document.getElementById('tc-audit-empty').classList.contains('hidden')) return;
+      loadAuditLog();
+    });
+  }
+
+  // Reload diagnostics when the panel is expanded.
+  const diagDetails = document.getElementById('diagnostics-details');
+  if (diagDetails) {
+    diagDetails.addEventListener('toggle', () => {
+      if (diagDetails.open) loadDiagnostics();
+    });
+  }
 })();
 </script>
 

@@ -443,6 +443,7 @@ class TestMixedJobSourceTypeGuard:
                 "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
                 "tax_year": 2025,
                 "country": "norway",
+                "valuation_mode": "dummy",
                 "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
             })
             job_id = resp.json()["id"]

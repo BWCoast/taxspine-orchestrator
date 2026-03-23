@@ -290,7 +290,7 @@ class TestDryRunDedupStoreLogged:
             mock_s.TAXSPINE_XRPL_NOR_CLI = "taxspine-xrpl-nor"
             mock_s.OUTPUT_DIR = tmp_path
 
-            resp = client.post("/jobs", json={**_NORWAY_XRPL_BASE, "dry_run": True})
+            resp = client.post("/jobs", json={**_NORWAY_XRPL_BASE, "dry_run": True, "valuation_mode": "dummy"})
             job_id = resp.json()["id"]
             body = start_and_wait(client, job_id)
 

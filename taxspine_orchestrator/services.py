@@ -184,7 +184,7 @@ def _validate_rf1159_signs(path: Path) -> str | None:
 
 from .config import settings
 from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, PipelineMode, ValuationMode
-from .storage import InMemoryJobStore, SqliteJobStore
+from .storage import InMemoryJobStore, SqliteJobStore, WorkspaceStore
 
 _log = logging.getLogger(__name__)
 
@@ -192,8 +192,13 @@ _log = logging.getLogger(__name__)
 class JobService:
     """Create, query, and execute tax jobs."""
 
-    def __init__(self, store: InMemoryJobStore | SqliteJobStore) -> None:
+    def __init__(
+        self,
+        store: InMemoryJobStore | SqliteJobStore,
+        workspace_store: WorkspaceStore | None = None,
+    ) -> None:
         self.store = store
+        self._workspace_store = workspace_store
 
     # ── CRUD ──────────────────────────────────────────────────────────────
 
@@ -221,6 +226,7 @@ class JobService:
         query: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        after_id: str | None = None,
     ) -> list[Job]:
         return self.store.list(
             status=status,
@@ -228,6 +234,7 @@ class JobService:
             query=query,
             limit=limit,
             offset=offset,
+            after_id=after_id,
         )
 
     def count_jobs(
@@ -304,16 +311,63 @@ class JobService:
                             )}
                         )
                     else:
-                        return self._fail_job(
-                            job_id,
-                            error=(
-                                f"valuation_mode=price_table requires csv_prices_path "
-                                f"(or a cached price file at {auto_path}; "
-                                f"call POST /prices/fetch to download prices automatically)"
-                            ),
-                            log_lines=log_lines,
-                            output_dir=output_dir,
+                        # Cache miss — auto-fetch Kraken + Norges Bank prices inline.
+                        # This avoids requiring a separate POST /prices/fetch call
+                        # before every job.  The fetch is cached on disk so subsequent
+                        # jobs in the same year are instant.
+                        log_lines.append(
+                            f"[prices] {auto_path.name} not cached; "
+                            "auto-fetching Kraken + Norges Bank prices …"
                         )
+                        try:
+                            from .prices import fetch_all_prices_for_year  # noqa: PLC0415
+                            _ws_assets: list[str] = (
+                                self._workspace_store.load().xrpl_assets
+                                if self._workspace_store is not None
+                                else []
+                            )
+                            if _ws_assets:
+                                log_lines.append(
+                                    f"[prices] including {len(_ws_assets)} workspace "
+                                    f"XRPL asset(s) in price fetch: "
+                                    + ", ".join(_ws_assets[:5])
+                                    + (" …" if len(_ws_assets) > 5 else "")
+                                )
+                            fetch_all_prices_for_year(
+                                job.input.tax_year,
+                                extra_xrpl_assets=_ws_assets or None,
+                            )
+                        except RuntimeError as _fetch_exc:
+                            return self._fail_job(
+                                job_id,
+                                error=(
+                                    f"Auto-fetch of NOK prices failed: {_fetch_exc}. "
+                                    "Check network connectivity or call "
+                                    "POST /prices/fetch manually."
+                                ),
+                                log_lines=log_lines,
+                                output_dir=output_dir,
+                            )
+                        if auto_path.is_file():
+                            log_lines.append(
+                                f"[prices] auto-fetched and resolved: {auto_path}"
+                            )
+                            job = job.model_copy(
+                                update={"input": job.input.model_copy(
+                                    update={"csv_prices_path": str(auto_path)}
+                                )}
+                            )
+                        else:
+                            return self._fail_job(
+                                job_id,
+                                error=(
+                                    "Price fetch appeared to succeed but "
+                                    f"{auto_path.name} was not written. "
+                                    "Call POST /prices/fetch to diagnose."
+                                ),
+                                log_lines=log_lines,
+                                output_dir=output_dir,
+                            )
                 # SEC-06: reject price table paths that look like CLI flags.
                 # Must be checked before Path().resolve() to avoid passing
                 # a '--flag value' string directly to Path().
@@ -772,6 +826,32 @@ class JobService:
                         output_dir=output_dir,
                     )
 
+            # ── Step 2.6: inject price-source provenance into RF-1159 JSON files ──
+            # TL-03: the CLI does not know which price source was chosen by the
+            # orchestrator, so we post-process each RF-1159 JSON to add a
+            # _provenance block citing the price source and generation timestamp.
+            # Failures are silently swallowed — provenance annotation must never
+            # cause a job to fail.
+            if all_rf1159_json_paths and _price_source:
+                _prov_generated_at = datetime.now(timezone).strftime("%Y-%m-%dT%H:%M:%SZ")
+                _prov_note = {
+                    "generated_at": _prov_generated_at,
+                    "price_source": _price_source,
+                }
+                if _price_table_path:
+                    _prov_note["price_table_path"] = _price_table_path
+                for _rf1159_path_str in all_rf1159_json_paths:
+                    try:
+                        _rp = Path(_rf1159_path_str)
+                        _rdata = _json.loads(_rp.read_text(encoding="utf-8"))
+                        _rdata["_provenance"] = _prov_note
+                        _rp.write_text(
+                            _json.dumps(_rdata, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass  # annotation failure must not fail the job
+
             # ── Step 3: write log + build output record ───────────────────
             log_path = self._write_log(output_dir, log_lines)
 
@@ -780,10 +860,26 @@ class JobService:
             # 6 April N to 5 April N+1.  Set to None for Norway (calendar year).
             _tax_period_start: str | None = None
             _tax_period_end: str | None = None
+            _partial_year_warning: str | None = None
             if job.input.country == Country.UK:
                 y = job.input.tax_year
                 _tax_period_start = f"{y}-04-06"
                 _tax_period_end   = f"{y + 1}-04-05"
+                # TL-08: warn when the tax year hasn't fully elapsed yet.
+                import datetime as _dt  # noqa: PLC0415
+                _year_end = _dt.date(y + 1, 4, 5)
+                if _dt.date.today() <= _year_end:
+                    _partial_year_warning = (
+                        f"UK tax year {y} ends on {_year_end} (5 April {y + 1}). "
+                        "This report was produced before the year closed — "
+                        "transactions after today are not included. "
+                        f"Re-run after 5 April {y + 1} to produce a complete return."
+                    )
+                    _log.warning(
+                        "TL-08: UK job %s — partial year: tax year %d has not "
+                        "elapsed (ends %s). Report covers only transactions to date.",
+                        job_id, y, _year_end,
+                    )
 
             # TL-06: scan input CSVs for complex tax treatment events.
             _complex_treatment_warning = _scan_complex_tax_treatments(job.input.csv_files)
@@ -807,6 +903,10 @@ class JobService:
                 draft_disclaimer=_DRAFT_DISCLAIMER if all_rf1159_json_paths else None,
                 # TL-06: include complex treatment warning when detected.
                 complex_treatment_warning=_complex_treatment_warning,
+                # TL-05: pipeline mode used for this job execution.
+                pipeline_mode_used=job.input.pipeline_mode.value if job.input.pipeline_mode else None,
+                # TL-08: partial-year warning for UK jobs run before year end.
+                partial_year_warning=_partial_year_warning,
             )
             # API-07: guard against overwriting a user-initiated CANCELLED state
             # with COMPLETED.  If the job was cancelled mid-run the terminal
@@ -954,6 +1054,8 @@ class JobService:
         if job_input.country == Country.NORWAY:
             if rf1159_json_path is not None:
                 cmd.extend(["--rf1159-json", str(rf1159_json_path)])
+            if review_json_path is not None:
+                cmd.extend(["--review-json", str(review_json_path)])
 
         return cmd
 
@@ -1013,6 +1115,9 @@ class JobService:
 
         if rf1159_json_path is not None:
             cmd.extend(["--rf1159-json", str(rf1159_json_path)])
+
+        if review_json_path is not None:
+            cmd.extend(["--review-json", str(review_json_path)])
 
         return cmd
 
