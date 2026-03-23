@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const c=process.env.CLAUDE_TOOL_INPUT||''; if(/git push/.test(c)){process.stderr.write('\\n[pre-push-hook] Running CI safety checks...\\n'); const {execSync}=require('child_process'); try{execSync('bash .githooks/pre-push',{stdio:'inherit',cwd:process.env.CLAUDE_CWD||process.cwd()})}catch(e){process.exit(e.status||1)}}\"",
+            "blocking": true
+          }
+        ]
+      }
+    ]
+  }
+}

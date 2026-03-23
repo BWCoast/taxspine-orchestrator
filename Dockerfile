@@ -115,13 +115,21 @@ RUN --mount=type=secret,id=gh_token,required=false \
 # then pass:
 #   docker build --build-arg BLOCKCHAIN_READER_SHA=<full-sha> ...
 #
-# Default "main" retains backward-compat for quick local dev builds but
-# MUST NOT be used in production — it tracks the floating branch tip.
+# Default is "main" so the ARG name is always defined, but the RUN step below
+# hard-fails when it is left as "main".  Always pass a commit SHA in production.
+# For local dev builds use Dockerfile.local (installs from vendor/, no SHA needed).
 ARG BLOCKCHAIN_READER_SHA=main
+# INFRA-01: Fail hard when BLOCKCHAIN_READER_SHA is left as the default "main".
+# For local development use Dockerfile.local (installs from vendor/ directory,
+# no git URL, no SHA required).  For CI/production, the GitHub Actions workflow
+# fetches the HEAD SHA automatically and passes it via --build-arg.
 RUN --mount=type=secret,id=gh_token,required=false \
     echo "# blockchain-reader pinned ref: ${BLOCKCHAIN_READER_SHA}" && \
     if [ "${BLOCKCHAIN_READER_SHA}" = "main" ]; then \
-        echo "WARNING: BLOCKCHAIN_READER_SHA not pinned — using floating 'main' branch. Set a commit SHA for production builds." >&2; \
+        echo "ERROR: BLOCKCHAIN_READER_SHA must be set to a commit SHA for production builds." >&2 && \
+        echo "       Pass --build-arg BLOCKCHAIN_READER_SHA=<full-40-char-sha> to pin the install." >&2 && \
+        echo "       For local dev builds, use Dockerfile.local instead (installs from vendor/)." >&2 && \
+        exit 1; \
     fi && \
     TOKEN=$(cat /run/secrets/gh_token 2>/dev/null || echo "") && \
     if [ -n "$TOKEN" ]; then \

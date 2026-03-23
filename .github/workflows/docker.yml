@@ -29,6 +29,10 @@ on:
     branches: [main]
   # Allow manual trigger from GitHub Actions UI.
   workflow_dispatch:
+  # Triggered by tax-nor CI after a successful push to its main branch.
+  # Requires GH_DISPATCH_TOKEN secret in tax-nor with repo scope on this repo.
+  repository_dispatch:
+    types: [tax-nor-updated]
 
 env:
   REGISTRY:   ghcr.io
@@ -144,6 +148,28 @@ jobs:
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "tax-nor HEAD: ${SHA}"
 
+      # ── INF-09: Fetch Python base image digest ──────────────────────────────
+      # Resolves the mutable python:3.11.9-slim tag to a content-addressable
+      # digest (sha256:…) and passes it as PYTHON_IMAGE build-arg.  This pins
+      # the base image to an exact layer set — a subsequent tag update on Docker
+      # Hub cannot silently change what the build uses.
+      #
+      # The Dockerfile already accepts PYTHON_IMAGE as a build-arg (INFRA-03).
+      # docker/build-push-action pulls the image before building, so the digest
+      # is always fresh at build time.  If the pull fails, the step fails fast
+      # (no silent fallback to the mutable tag).
+      - name: Resolve Python base image digest
+        id: python_digest
+        run: |
+          docker pull python:3.11.9-slim
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' python:3.11.9-slim)
+          if [ -z "$DIGEST" ]; then
+            echo "ERROR: Could not resolve digest for python:3.11.9-slim" >&2
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Python base image: ${DIGEST}"
+
       # ── Fetch blockchain-reader HEAD SHA (INFRA-01: supply-chain pin) ─────────
       # The full 40-character SHA is passed to the Dockerfile as
       # BLOCKCHAIN_READER_SHA and used as the git ref in the pip install URL.
@@ -152,22 +178,27 @@ jobs:
       # image build.  The sha- image tag produced by this workflow records
       # which orchestrator commit built against which blockchain-reader commit.
       #
-      # Falls back to "main" only when GH_READ_TOKEN is unavailable (local /
-      # unauthenticated CI).  "main" is rejected by production deploy policy —
-      # see Dockerfile warning and deployment runbook.
+      # INFRA-01: GH_READ_TOKEN is required.  The step fails hard if the token
+      # is absent or the API call fails — the Dockerfile now rejects "main" as
+      # a build arg, so a fallback to "main" would just produce a broken build.
+      # Add GH_READ_TOKEN as a repository secret if it is missing.
       - name: Fetch blockchain-reader HEAD SHA
         id: blockchain_reader_sha
         env:
           GH_READ_TOKEN: ${{ secrets.GH_READ_TOKEN }}
         run: |
-          if [ -n "$GH_READ_TOKEN" ]; then
-            SHA=$(curl -sf \
-              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
-              "https://api.github.com/repos/BWCoast/blockchain-reader/commits/main" \
-              | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'])" \
-              2>/dev/null || echo "main")
-          else
-            SHA="main"
+          if [ -z "$GH_READ_TOKEN" ]; then
+            echo "ERROR: GH_READ_TOKEN secret is not set." >&2
+            echo "       Add it at: repo → Settings → Secrets → Actions → GH_READ_TOKEN" >&2
+            exit 1
+          fi
+          SHA=$(curl -sf \
+            -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+            "https://api.github.com/repos/BWCoast/blockchain-reader/commits/main" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'])")
+          if [ -z "$SHA" ] || [ "$SHA" = "main" ]; then
+            echo "ERROR: Could not fetch blockchain-reader HEAD SHA from GitHub API." >&2
+            exit 1
           fi
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "blockchain-reader pinned ref: ${SHA}"
@@ -188,6 +219,7 @@ jobs:
           cache-from: type=gha
           cache-to:   type=gha,mode=max
           build-args: |
+            PYTHON_IMAGE=${{ steps.python_digest.outputs.digest }}
             TAXNOR_SHA=${{ steps.taxnor_sha.outputs.sha }}
             TAXNOR_TAG=${{ steps.taxnor_sha.outputs.sha }}
             BLOCKCHAIN_READER_SHA=${{ steps.blockchain_reader_sha.outputs.sha }}
