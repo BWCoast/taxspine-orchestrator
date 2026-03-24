@@ -13,6 +13,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+try:
+    import tax_spine  # noqa: F401
+    _TAX_SPINE_AVAILABLE = True
+except ImportError:
+    _TAX_SPINE_AVAILABLE = False
+
 
 def _make_client():
     from taxspine_orchestrator.main import app
@@ -54,6 +60,7 @@ def _mock_lot_store(lots: list[dict]):
 # ── TestPortfolioWithoutPrices ────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(not _TAX_SPINE_AVAILABLE, reason="tax_spine not installed")
 class TestPortfolioWithoutPrices:
     """Default behaviour (include_prices=false) is unchanged."""
 
@@ -92,6 +99,7 @@ class TestPortfolioWithoutPrices:
 # ── TestPortfolioWithPrices ────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(not _TAX_SPINE_AVAILABLE, reason="tax_spine not installed")
 class TestPortfolioWithPrices:
     """include_prices=true enriches assets with market value and P&L."""
 
@@ -184,6 +192,7 @@ class TestPortfolioWithPrices:
 # ── TestPriceFileNotFound ──────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(not _TAX_SPINE_AVAILABLE, reason="tax_spine not installed")
 class TestPriceFileNotFound:
     """When no price CSV exists, all assets get has_missing_price=true."""
 
@@ -221,6 +230,7 @@ class TestPriceFileNotFound:
 # ── TestPriceFallback ─────────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(not _TAX_SPINE_AVAILABLE, reason="tax_spine not installed")
 class TestPriceFallback:
     """Falls back to latest available date when Dec 31 is absent."""
 

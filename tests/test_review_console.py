@@ -21,6 +21,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+try:
+    import tax_spine  # noqa: F401
+    _TAX_SPINE_AVAILABLE = True
+except ImportError:
+    _TAX_SPINE_AVAILABLE = False
+
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -149,6 +155,7 @@ class TestCategorizeWarnings:
 # ── TestMissingBasisDetail ────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(not _TAX_SPINE_AVAILABLE, reason="tax_spine not installed")
 class TestMissingBasisDetail:
     """_missing_basis_detail() returns per-asset lot counts."""
 
@@ -187,10 +194,7 @@ class TestMissingBasisDetail:
         with patch("taxspine_orchestrator.review.settings") as mock_s, \
              patch("tax_spine.pipeline.lot_store.LotPersistenceStore", return_value=mock_store):
             mock_s.LOT_STORE_DB = db_file
-            try:
-                result = _missing_basis_detail(2025)
-            except Exception:
-                pytest.skip("tax_spine.pipeline.lot_store not importable in this environment")
+            result = _missing_basis_detail(2025)
 
         if result:
             entry = result[0]

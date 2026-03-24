@@ -13,6 +13,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+try:
+    import tax_spine  # noqa: F401
+    _TAX_SPINE_AVAILABLE = True
+except ImportError:
+    _TAX_SPINE_AVAILABLE = False
+
 
 def _make_client():
     from taxspine_orchestrator.main import app
@@ -75,6 +81,7 @@ class TestDiagnosticsEndpointStructure:
 # ── TestDiagnosticsLotsSection ────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(not _TAX_SPINE_AVAILABLE, reason="tax_spine not installed")
 class TestDiagnosticsLotsSection:
     """Lots section reflects lot store state."""
 
