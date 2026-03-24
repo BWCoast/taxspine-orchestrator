@@ -50,6 +50,9 @@ from taxspine_orchestrator.prices import (
     # XRPL account trust-line discovery
     _decode_xrpl_currency,
     _fetch_account_trust_lines,
+    # CoinGecko Tier 2c
+    _coingecko_search_coin_id,
+    _fetch_coingecko_nok_prices,
 )
 from tests.conftest import start_and_wait
 
@@ -2022,3 +2025,218 @@ class TestAutoDiscoverFromAccounts:
             _pm._workspace_assets_provider   = old_assets
 
         assert resp is not None
+
+
+# ── CoinGecko Tier 2c helpers ─────────────────────────────────────────────────
+
+_CG_SEARCH_BODY_SOLO = json.dumps({
+    "coins": [
+        {"id": "stasis-network", "symbol": "EURS", "name": "EURS Stablecoin"},
+        {"id": "solo-coin",      "symbol": "SOLO", "name": "Sologenic"},
+    ]
+}).encode()
+
+_CG_SEARCH_BODY_NO_EXACT = json.dumps({
+    "coins": [
+        {"id": "some-other-coin", "symbol": "XYZ", "name": "Something"},
+    ]
+}).encode()
+
+_CG_MARKET_BODY = json.dumps({
+    "prices": [
+        [1672531200000, 5.2345],   # 2023-01-01 UTC
+        [1672617600000, 5.3000],   # 2023-01-02 UTC
+        [1704067199000, 5.1000],   # 2023-12-31 UTC
+        [1704067200000, 5.9000],   # 2024-01-01 UTC — different year, must be excluded
+    ]
+}).encode()
+
+
+def _make_urlopen_response(body: bytes, status: int = 200):
+    """Return a mock context-manager that mimics urllib urlopen."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+class TestCoinGeckoSearchCoinId:
+    """Unit tests for _coingecko_search_coin_id."""
+
+    def test_exact_symbol_match_preferred(self):
+        """When multiple results exist, the exact symbol match is returned."""
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(_CG_SEARCH_BODY_SOLO)):
+            result = _coingecko_search_coin_id("SOLO")
+        assert result == "solo-coin"
+
+    def test_first_result_fallback_when_no_exact_match(self):
+        """When no coin has an exact symbol match the first result is returned."""
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(_CG_SEARCH_BODY_NO_EXACT)):
+            result = _coingecko_search_coin_id("SOLO")
+        assert result == "some-other-coin"
+
+    def test_empty_coins_list_returns_none(self):
+        body = json.dumps({"coins": []}).encode()
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(body)):
+            result = _coingecko_search_coin_id("SOLO")
+        assert result is None
+
+    def test_network_error_returns_none(self):
+        with patch("urllib.request.urlopen", side_effect=OSError("timeout")):
+            result = _coingecko_search_coin_id("SOLO")
+        assert result is None
+
+    def test_symbol_search_is_case_insensitive(self):
+        """Exact match check is case-insensitive: 'solo' should match 'SOLO' symbol."""
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(_CG_SEARCH_BODY_SOLO)):
+            result = _coingecko_search_coin_id("solo")
+        assert result == "solo-coin"
+
+    def test_returns_string(self):
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(_CG_SEARCH_BODY_SOLO)):
+            result = _coingecko_search_coin_id("SOLO")
+        assert isinstance(result, str)
+
+
+class TestFetchCoinGeckoNokPrices:
+    """Unit tests for _fetch_coingecko_nok_prices."""
+
+    def test_returns_dict_with_date_keys(self):
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(_CG_MARKET_BODY)), \
+             patch("taxspine_orchestrator.prices._coingecko_search_coin_id", return_value="solo-coin"):
+            result = _fetch_coingecko_nok_prices("SOLO", 2023)
+        assert isinstance(result, dict)
+        assert all(isinstance(k, str) for k in result)
+
+    def test_prices_filtered_to_requested_year(self):
+        """The 2024-01-01 entry must be excluded when year=2023."""
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(_CG_MARKET_BODY)), \
+             patch("taxspine_orchestrator.prices._coingecko_search_coin_id", return_value="solo-coin"):
+            result = _fetch_coingecko_nok_prices("SOLO", 2023)
+        assert all(k.startswith("2023-") for k in result), f"Non-2023 dates found: {list(result)}"
+
+    def test_price_values_are_decimal(self):
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(_CG_MARKET_BODY)), \
+             patch("taxspine_orchestrator.prices._coingecko_search_coin_id", return_value="solo-coin"):
+            result = _fetch_coingecko_nok_prices("SOLO", 2023)
+        assert all(isinstance(v, Decimal) for v in result.values())
+
+    def test_coin_id_not_found_returns_empty(self):
+        with patch("taxspine_orchestrator.prices._coingecko_search_coin_id", return_value=None):
+            result = _fetch_coingecko_nok_prices("UNKNOWN", 2023)
+        assert result == {}
+
+    def test_network_error_returns_empty(self):
+        with patch("taxspine_orchestrator.prices._coingecko_search_coin_id", return_value="solo-coin"), \
+             patch("urllib.request.urlopen", side_effect=OSError("timeout")):
+            result = _fetch_coingecko_nok_prices("SOLO", 2023)
+        assert result == {}
+
+    def test_malformed_entry_skipped(self):
+        """A prices entry with only one element must be skipped without raising."""
+        body = json.dumps({"prices": [[1672531200000], [1672617600000, 5.3]]}).encode()
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(body)), \
+             patch("taxspine_orchestrator.prices._coingecko_search_coin_id", return_value="solo-coin"):
+            result = _fetch_coingecko_nok_prices("SOLO", 2023)
+        assert len(result) == 1
+
+    def test_correct_date_format(self):
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(_CG_MARKET_BODY)), \
+             patch("taxspine_orchestrator.prices._coingecko_search_coin_id", return_value="solo-coin"):
+            result = _fetch_coingecko_nok_prices("SOLO", 2023)
+        for k in result:
+            datetime.datetime.strptime(k, "%Y-%m-%d")  # raises if format is wrong
+
+
+class TestFetchAndWriteXrplIouCoinGeckoFallback:
+    """Tests the CoinGecko Tier 2c path inside _fetch_and_write_xrpl_iou."""
+
+    _XRP_USD  = {"2023-01-01": Decimal("0.50")}
+    _NOK_RATE = {"2023-01-01": Decimal("10.0")}
+
+    def test_coingecko_called_when_dex_sources_empty(self, tmp_path):
+        """When OnTheDEX and XRPL.to both return {}, CoinGecko is tried."""
+        dest = tmp_path / "SOLO.csv"
+        nok_prices = {"2023-01-01": Decimal("52.5000")}
+        with patch("taxspine_orchestrator.prices._fetch_onthedex_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_xrplto_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_coingecko_nok_prices", return_value=nok_prices) as mock_cg:
+            result = _fetch_and_write_xrpl_iou("SOLO", "r123", 2023, self._XRP_USD, self._NOK_RATE, dest)
+        mock_cg.assert_called_once_with("SOLO", 2023)
+        assert result is True
+
+    def test_coingecko_writes_csv_with_correct_columns(self, tmp_path):
+        """CoinGecko prices are written as a valid NOK CSV."""
+        dest = tmp_path / "SOLO.csv"
+        nok_prices = {"2023-01-01": Decimal("52.5000")}
+        with patch("taxspine_orchestrator.prices._fetch_onthedex_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_xrplto_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_coingecko_nok_prices", return_value=nok_prices):
+            _fetch_and_write_xrpl_iou("SOLO", "r123", 2023, self._XRP_USD, self._NOK_RATE, dest)
+        import csv as _csv
+        rows = list(_csv.DictReader(dest.read_text(encoding="utf-8").splitlines()))
+        assert len(rows) == 1
+        assert rows[0]["date"] == "2023-01-01"
+        assert rows[0]["fiat_currency"] == "NOK"
+        assert rows[0]["asset_id"] == "SOLO"
+
+    def test_coingecko_not_called_when_onthedex_succeeds(self, tmp_path):
+        """CoinGecko must NOT be called when OnTheDEX returns data."""
+        dest = tmp_path / "SOLO.csv"
+        xrp_prices = {"2023-01-01": Decimal("0.1")}
+        with patch("taxspine_orchestrator.prices._fetch_onthedex_xrp_prices", return_value=xrp_prices), \
+             patch("taxspine_orchestrator.prices._fetch_coingecko_nok_prices") as mock_cg:
+            _fetch_and_write_xrpl_iou("SOLO", "r123", 2023, self._XRP_USD, self._NOK_RATE, dest)
+        mock_cg.assert_not_called()
+
+    def test_coingecko_not_called_when_xrplto_succeeds(self, tmp_path):
+        """CoinGecko must NOT be called when XRPL.to returns data."""
+        dest = tmp_path / "SOLO.csv"
+        xrp_prices = {"2023-01-01": Decimal("0.1")}
+        with patch("taxspine_orchestrator.prices._fetch_onthedex_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_xrplto_xrp_prices", return_value=xrp_prices), \
+             patch("taxspine_orchestrator.prices._fetch_coingecko_nok_prices") as mock_cg:
+            _fetch_and_write_xrpl_iou("SOLO", "r123", 2023, self._XRP_USD, self._NOK_RATE, dest)
+        mock_cg.assert_not_called()
+
+    def test_returns_false_when_all_sources_empty(self, tmp_path):
+        """Returns False if OnTheDEX, XRPL.to, and CoinGecko all return no data."""
+        dest = tmp_path / "SOLO.csv"
+        with patch("taxspine_orchestrator.prices._fetch_onthedex_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_xrplto_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_coingecko_nok_prices", return_value={}):
+            result = _fetch_and_write_xrpl_iou("SOLO", "r123", 2023, self._XRP_USD, self._NOK_RATE, dest)
+        assert result is False
+
+    def test_coingecko_price_quantized_to_4dp(self, tmp_path):
+        """CoinGecko prices are quantized to 4 decimal places in the CSV."""
+        dest = tmp_path / "SOLO.csv"
+        nok_prices = {"2023-01-01": Decimal("52.123456789")}
+        with patch("taxspine_orchestrator.prices._fetch_onthedex_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_xrplto_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_coingecko_nok_prices", return_value=nok_prices):
+            _fetch_and_write_xrpl_iou("SOLO", "r123", 2023, self._XRP_USD, self._NOK_RATE, dest)
+        import csv as _csv
+        rows = list(_csv.DictReader(dest.read_text(encoding="utf-8").splitlines()))
+        price_str = rows[0]["price_fiat"]
+        price = Decimal(price_str)
+        # Must have at most 4 decimal places
+        assert price == price.quantize(Decimal("0.0001"))
+
+    def test_multiple_coingecko_rows_written_in_order(self, tmp_path):
+        """Multiple CoinGecko dates are written sorted ascending."""
+        dest = tmp_path / "SOLO.csv"
+        nok_prices = {
+            "2023-01-03": Decimal("53.0"),
+            "2023-01-01": Decimal("51.0"),
+            "2023-01-02": Decimal("52.0"),
+        }
+        with patch("taxspine_orchestrator.prices._fetch_onthedex_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_xrplto_xrp_prices", return_value={}), \
+             patch("taxspine_orchestrator.prices._fetch_coingecko_nok_prices", return_value=nok_prices):
+            _fetch_and_write_xrpl_iou("SOLO", "r123", 2023, self._XRP_USD, self._NOK_RATE, dest)
+        import csv as _csv
+        rows = list(_csv.DictReader(dest.read_text(encoding="utf-8").splitlines()))
+        dates = [r["date"] for r in rows]
+        assert dates == sorted(dates)

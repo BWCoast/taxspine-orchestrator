@@ -140,8 +140,9 @@ _STATIC_USD_PEGS: dict[str, Decimal] = {
 
 # ── OnTheDEX API ─────────────────────────────────────────────────────────────
 
-_ONTHEDEX_BASE = "https://api.onthedex.live/public/v1"
-_XRPLTO_BASE   = "https://api.xrpl.to/v1"
+_ONTHEDEX_BASE   = "https://api.onthedex.live/public/v1"
+_XRPLTO_BASE     = "https://api.xrpl.to/v1"
+_COINGECKO_BASE  = "https://api.coingecko.com/api/v3"
 
 _STALE_HOURS = 24   # re-fetch current-year files if older than this
 
@@ -491,6 +492,89 @@ def _fetch_xrplto_xrp_prices(
     return prices
 
 
+def _coingecko_search_coin_id(symbol: str) -> str | None:
+    """Return the CoinGecko coin ID for *symbol*, or None if not found.
+
+    Searches ``/search?query=SYMBOL``, prefers an exact symbol match over
+    a name/alias match, and returns the first result.  Returns None on any
+    network error or if no coins are found.
+
+    Rate limit: CoinGecko free tier allows 30 req/min.  This function is
+    called at most once per unknown token per price-fetch run, so staying
+    within the limit is straightforward.
+    """
+    url = f"{_COINGECKO_BASE}/search?query={urllib.parse.quote(symbol)}"
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "taxspine-orchestrator/1.0", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read())
+    except Exception:
+        return None
+
+    coins = body.get("coins", [])
+    if not coins:
+        return None
+
+    # Prefer exact symbol match (case-insensitive)
+    exact = [c for c in coins if c.get("symbol", "").upper() == symbol.upper()]
+    if exact:
+        return str(exact[0]["id"])
+    return str(coins[0]["id"])
+
+
+def _fetch_coingecko_nok_prices(symbol: str, year: int) -> dict[str, Decimal]:
+    """Tier 2c: fetch daily NOK prices from CoinGecko for *symbol* in *year*.
+
+    Uses ``market_chart/range`` which returns granular (~daily) data for
+    ranges > 90 days.  NOK prices are returned directly — no XRP conversion
+    required, so this path is independent of Kraken/Norges Bank availability.
+
+    Returns ``{date_str: price_nok}`` or ``{}`` on any error or if the coin
+    is not listed on CoinGecko.
+    """
+    coin_id = _coingecko_search_coin_id(symbol)
+    if not coin_id:
+        return {}
+
+    tz      = datetime.timezone.utc
+    from_ts = int(datetime.datetime(year, 1, 1, tzinfo=tz).timestamp())
+    to_ts   = int(datetime.datetime(year, 12, 31, 23, 59, 59, tzinfo=tz).timestamp())
+
+    url = (
+        f"{_COINGECKO_BASE}/coins/{urllib.parse.quote(coin_id)}/market_chart/range"
+        f"?vs_currency=nok&from={from_ts}&to={to_ts}"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "taxspine-orchestrator/1.0", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+    except Exception:
+        return {}
+
+    raw_prices = body.get("prices", [])
+    result: dict[str, Decimal] = {}
+    for entry in raw_prices:
+        if len(entry) < 2:
+            continue
+        try:
+            ts_ms = int(entry[0])
+            price = Decimal(str(entry[1]))
+            dt    = datetime.datetime.fromtimestamp(ts_ms / 1000, tz=tz)
+            if dt.year != year:
+                continue
+            result[dt.strftime("%Y-%m-%d")] = price
+        except Exception:
+            continue
+
+    return result
+
+
 def _fetch_and_write_xrpl_iou(
     symbol: str,
     issuer: str,
@@ -499,37 +583,60 @@ def _fetch_and_write_xrpl_iou(
     nok_rates: dict[str, Decimal],
     dest: Path,
 ) -> bool:
-    """Fetch XRPL IOU prices (OnTheDEX → XRPL.to fallback) and write NOK CSV.
+    """Fetch XRPL IOU prices (OnTheDEX → XRPL.to → CoinGecko fallback) and write NOK CSV.
 
     Conversion: close_xrp × xrp_usd × usd_nok = asset_nok
 
     Returns True if data was written, False if no price data was found.
     """
-    # Try OnTheDEX first; fall back to XRPL.to
+    # Tier 2a: OnTheDEX → Tier 2b: XRPL.to (both XRP-denominated)
     xrp_prices = _fetch_onthedex_xrp_prices(symbol, issuer, year)
     if not xrp_prices:
         xrp_prices = _fetch_xrplto_xrp_prices(symbol, issuer, year)
-    if not xrp_prices:
+
+    if xrp_prices:
+        rows: list[tuple[str, str]] = []
+        for date_str, xrp_price in sorted(xrp_prices.items()):
+            xrp_usd  = xrp_usd_prices.get(date_str)
+            nok_rate = nok_rates.get(date_str)
+            if xrp_usd is None or nok_rate is None:
+                continue
+            nok_price = (xrp_price * xrp_usd * nok_rate).quantize(
+                Decimal("0.0001"), rounding=ROUND_HALF_UP
+            )
+            rows.append((date_str, str(nok_price)))
+
+        if not rows:
+            return False
+
+        with dest.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["date", "asset_id", "fiat_currency", "price_fiat"])
+            for date_str, price in rows:
+                writer.writerow([date_str, symbol, "NOK", price])
+
+        return True
+
+    # Tier 2c: CoinGecko — NOK direct, no XRP conversion chain required.
+    # Used when the token appears on centralised exchanges but not on XRPL DEXes,
+    # or when both DEX sources return no data for the requested year.
+    _log.info("XRPL DEX sources empty for %s — trying CoinGecko (Tier 2c)", symbol)
+    nok_prices = _fetch_coingecko_nok_prices(symbol, year)
+    if not nok_prices:
         return False
 
-    rows: list[tuple[str, str]] = []
-    for date_str, xrp_price in sorted(xrp_prices.items()):
-        xrp_usd  = xrp_usd_prices.get(date_str)
-        nok_rate = nok_rates.get(date_str)
-        if xrp_usd is None or nok_rate is None:
-            continue
-        nok_price = (xrp_price * xrp_usd * nok_rate).quantize(
-            Decimal("0.0001"), rounding=ROUND_HALF_UP
-        )
-        rows.append((date_str, str(nok_price)))
+    cg_rows: list[tuple[str, str]] = []
+    for date_str, nok_price in sorted(nok_prices.items()):
+        quantized = nok_price.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        cg_rows.append((date_str, str(quantized)))
 
-    if not rows:
+    if not cg_rows:
         return False
 
     with dest.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["date", "asset_id", "fiat_currency", "price_fiat"])
-        for date_str, price in rows:
+        for date_str, price in cg_rows:
             writer.writerow([date_str, symbol, "NOK", price])
 
     return True
