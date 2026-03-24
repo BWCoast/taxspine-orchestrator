@@ -833,7 +833,7 @@ class JobService:
             # Failures are silently swallowed — provenance annotation must never
             # cause a job to fail.
             if all_rf1159_json_paths and _price_source:
-                _prov_generated_at = datetime.now(timezone).strftime("%Y-%m-%dT%H:%M:%SZ")
+                _prov_generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 _prov_note = {
                     "generated_at": _prov_generated_at,
                     "price_source": _price_source,
