@@ -174,7 +174,10 @@ _job_service = JobService(_job_store, workspace_store=_workspace_store)
 # Wire workspace assets into the prices router so POST /prices/fetch also
 # auto-includes tokens registered via POST /workspace/xrpl-assets.
 import taxspine_orchestrator.prices as _prices_mod  # noqa: E402
-_prices_mod._workspace_assets_provider = lambda: _workspace_store.load().xrpl_assets
+_prices_mod._workspace_assets_provider  = lambda: _workspace_store.load().xrpl_assets
+# Auto-discover IOU tokens from registered XRPL accounts via account_lines.
+# Ensures all tokens held by the user are priced without manual registration.
+_prices_mod._workspace_accounts_provider = lambda: _workspace_store.load().xrpl_accounts
 
 # API-17: retain strong references to background tasks so the garbage collector
 # cannot discard them before they complete.  Each task removes itself from the

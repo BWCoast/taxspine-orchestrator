@@ -14,9 +14,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 try:
-    import tax_spine  # noqa: F401
+    import tax_spine.pipeline.lot_store  # noqa: F401  — test the exact submodule patch() needs
     _TAX_SPINE_AVAILABLE = True
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     _TAX_SPINE_AVAILABLE = False
 
 

@@ -95,6 +95,12 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _workspace_assets_provider: Callable[[], list[str]] | None = None
 
+# Set by main.py to return the list of registered XRPL account r-addresses.
+# When set, every POST /prices/fetch call auto-discovers all IOU tokens held
+# by those accounts via XRPL account_lines and includes them in the Tier-2
+# price fetch — no manual xrpl_assets registration required.
+_workspace_accounts_provider: Callable[[], list[str]] | None = None
+
 # ── Tier-1 assets: Kraken USD pairs ──────────────────────────────────────────
 
 _KRAKEN_USD_PAIR: dict[str, str] = {
@@ -759,6 +765,92 @@ def _fetch_and_write_lp_token(amm_account: str, year: int, dest: Path) -> bool:
     return True
 
 
+# ── XRPL account trust-line discovery ────────────────────────────────────────
+
+
+def _decode_xrpl_currency(code: str) -> str:
+    """Convert a raw XRPL currency code to a human-readable symbol.
+
+    XRPL stores non-standard token names as 40-char hex strings
+    (UTF-8 bytes zero-padded to 20 bytes).  Standard 3-char ISO codes
+    ("XRP", "USD") are returned as-is.
+
+    Examples::
+
+        "534F4C4F000000000000000000000000000000000000" → "SOLO"
+        "785354494B00000000000000000000000000000000" → "xSTIK"
+        "USD" → "USD"
+    """
+    code = code.strip()
+    if len(code) == 40 and all(c in "0123456789abcdefABCDEF" for c in code):
+        try:
+            raw = bytes.fromhex(code).rstrip(b"\x00")
+            decoded = raw.decode("utf-8").strip()
+            return decoded if decoded else code
+        except (ValueError, UnicodeDecodeError):
+            return code   # return hex as-is; caller will route to "unknown"
+    return code
+
+
+def _fetch_account_trust_lines(account: str) -> list[str]:
+    """Return ``SYMBOL.rISSUER`` specs for all non-zero IOU balances on *account*.
+
+    Calls XRPL ``account_lines`` and paginates via ``marker`` until all
+    trust lines are collected (max 20 pages × 400 lines = 8 000 trust lines,
+    which is far beyond any real account).
+
+    Returns an empty list on any network or API error — the caller degrades
+    gracefully (skips auto-discovery, manual xrpl_assets still work).
+
+    Currency codes are decoded via :func:`_decode_xrpl_currency` so that
+    non-standard XRPL names (SOLO, xSTIK, SHROOMIES …) appear as readable
+    symbols in the asset spec, matching what the taxspine CLI emits.
+    """
+    specs: list[str] = []
+    marker = None
+
+    for _ in range(20):   # pagination guard — real accounts rarely exceed 2–3 pages
+        params: dict = {
+            "account":       account,
+            "ledger_index":  "validated",
+            "limit":         400,
+        }
+        if marker is not None:
+            params["marker"] = marker
+
+        try:
+            result = _xrpl_rpc("account_lines", params, timeout=15)
+        except RuntimeError as exc:
+            _log.warning("account_lines failed for %s: %s", account, exc)
+            break
+
+        for line in result.get("lines", []):
+            currency = line.get("currency", "")
+            issuer   = line.get("account", "")   # 'account' field = issuer address
+            balance  = line.get("balance", "0")
+
+            # Skip zero-balance trust lines (authorised but no holding)
+            try:
+                if Decimal(balance) == Decimal("0"):
+                    continue
+            except Exception:
+                continue
+
+            symbol = _decode_xrpl_currency(currency)
+            if not symbol or not issuer:
+                continue
+            if symbol.upper() == "XRP":
+                continue   # XRP is native, not an IOU
+
+            specs.append(f"{symbol}.{issuer}")
+
+        marker = result.get("marker")
+        if marker is None:
+            break
+
+    return specs
+
+
 # ── Top-level entry points ─────────────────────────────────────────────────────
 
 
@@ -786,6 +878,23 @@ def fetch_all_prices_for_year(
     """
     settings.PRICES_DIR.mkdir(parents=True, exist_ok=True)
     extra_xrpl_assets = list(extra_xrpl_assets or [])
+
+    # ── Auto-discover tokens from registered XRPL accounts ───────────────────
+    # Pull trust-line holdings for every r-address in the workspace.  This
+    # ensures ALL IOU tokens the user actually holds are priced without
+    # requiring manual xrpl_assets registration for each one.
+    # Manually registered xrpl_assets are passed in by the caller (route
+    # handler or services.py); this step only adds account-discovered tokens
+    # not already in the list.
+    if _workspace_accounts_provider is not None:
+        _seen_discovered: set[str] = set(extra_xrpl_assets)
+        for _acct in _workspace_accounts_provider():
+            _discovered = _fetch_account_trust_lines(_acct)
+            for _spec in _discovered:
+                if _spec not in _seen_discovered:
+                    extra_xrpl_assets.append(_spec)
+                    _seen_discovered.add(_spec)
+                    _log.info("Auto-discovered XRPL token from %s: %s", _acct, _spec)
 
     any_fetched      = False
     available_paths: list[Path] = []
@@ -1492,7 +1601,8 @@ def fetch_prices(body: FetchPricesRequest) -> FetchPricesResponse:
         )
 
     # Merge explicitly-requested assets with workspace-registered assets.
-    # Use a dict to deduplicate while preserving request-body ordering first.
+    # Account trust-line discovery happens inside fetch_all_prices_for_year
+    # via _workspace_accounts_provider so it benefits all call sites.
     _ws_extra: list[str] = (
         _workspace_assets_provider() if _workspace_assets_provider is not None else []
     )

@@ -47,6 +47,9 @@ from taxspine_orchestrator.prices import (
     _lp_csv_path,
     _read_dec31_nok_price,
     _fetch_and_write_lp_token,
+    # XRPL account trust-line discovery
+    _decode_xrpl_currency,
+    _fetch_account_trust_lines,
 )
 from tests.conftest import start_and_wait
 
@@ -1761,3 +1764,261 @@ class TestFetchAllPricesWithLpAssets:
         sym, iss = _parse_xrpl_asset(spec)
         # Just verify classification is consistent; dedup logic tested via integration
         assert _classify_asset(sym, iss) == "lp_token"
+
+
+# ── TestDecodeXrplCurrency ────────────────────────────────────────────────────
+
+
+class TestDecodeXrplCurrency:
+    """_decode_xrpl_currency converts 40-char hex currency codes to readable symbols."""
+
+    def test_solo_hex_decodes_to_solo(self):
+        from taxspine_orchestrator.prices import _decode_xrpl_currency
+        # "SOLO" = 4 bytes; padded to 20 bytes (40 hex chars): 534F4C4F + 16 zero bytes
+        raw = "SOLO".encode("utf-8")
+        hex_code = (raw + b"\x00" * (20 - len(raw))).hex().upper()
+        assert len(hex_code) == 40
+        assert _decode_xrpl_currency(hex_code) == "SOLO"
+
+    def test_xstik_hex_decodes_correctly(self):
+        from taxspine_orchestrator.prices import _decode_xrpl_currency
+        # "xSTIK" → 7853544943 + 30 zeros (5 bytes + padding)
+        import binascii
+        raw = "xSTIK".encode("utf-8")
+        hex_code = (raw + b"\x00" * (20 - len(raw))).hex().upper()
+        assert _decode_xrpl_currency(hex_code) == "xSTIK"
+
+    def test_three_char_iso_returned_as_is(self):
+        from taxspine_orchestrator.prices import _decode_xrpl_currency
+        assert _decode_xrpl_currency("USD") == "USD"
+        assert _decode_xrpl_currency("XRP") == "XRP"
+
+    def test_non_hex_string_returned_as_is(self):
+        from taxspine_orchestrator.prices import _decode_xrpl_currency
+        assert _decode_xrpl_currency("RLUSD") == "RLUSD"
+
+    def test_invalid_hex_returned_as_is(self):
+        from taxspine_orchestrator.prices import _decode_xrpl_currency
+        # 40 chars but invalid utf-8 bytes → returned verbatim
+        bad_hex = "FF" * 20   # 40-char hex, but bytes are 0xFF which is invalid UTF-8 standalone
+        result = _decode_xrpl_currency(bad_hex)
+        # Should not raise, should return something (either decoded or original)
+        assert isinstance(result, str)
+
+    def test_strips_null_padding(self):
+        from taxspine_orchestrator.prices import _decode_xrpl_currency
+        raw = "ARK".encode("utf-8")
+        hex_code = (raw + b"\x00" * (20 - len(raw))).hex().upper()
+        assert _decode_xrpl_currency(hex_code) == "ARK"
+
+
+# ── TestFetchAccountTrustLines ────────────────────────────────────────────────
+
+_TEST_ACCOUNT = "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
+_SOLO_ISSUER  = "rsoLo2S1kiGeCcn6hCUXVrCpGMWLrRrLZz"
+_GRIM_ISSUER  = "rGriMeYGM1drXCfFMKcEWiH5kUBhaYHCBi"
+
+
+class TestFetchAccountTrustLines:
+    """_fetch_account_trust_lines returns SYMBOL.rISSUER specs from account_lines."""
+
+    def test_returns_spec_for_nonzero_balance(self):
+        from taxspine_orchestrator.prices import _fetch_account_trust_lines
+        mock_result = {
+            "lines": [
+                {"currency": "SOLO", "account": _SOLO_ISSUER, "balance": "100.0"},
+            ]
+        }
+        with patch("taxspine_orchestrator.prices._xrpl_rpc", return_value=mock_result):
+            specs = _fetch_account_trust_lines(_TEST_ACCOUNT)
+        assert f"SOLO.{_SOLO_ISSUER}" in specs
+
+    def test_skips_zero_balance_trust_lines(self):
+        from taxspine_orchestrator.prices import _fetch_account_trust_lines
+        mock_result = {
+            "lines": [
+                {"currency": "SOLO", "account": _SOLO_ISSUER, "balance": "0"},
+                {"currency": "GRIM", "account": _GRIM_ISSUER, "balance": "500.0"},
+            ]
+        }
+        with patch("taxspine_orchestrator.prices._xrpl_rpc", return_value=mock_result):
+            specs = _fetch_account_trust_lines(_TEST_ACCOUNT)
+        assert f"SOLO.{_SOLO_ISSUER}" not in specs
+        assert f"GRIM.{_GRIM_ISSUER}" in specs
+
+    def test_decodes_hex_currency_code(self):
+        from taxspine_orchestrator.prices import _fetch_account_trust_lines
+        import binascii
+        raw = "xSTIK".encode("utf-8")
+        hex_code = (raw + b"\x00" * (20 - len(raw))).hex().upper()
+        xstik_issuer = "rXSTiKissuerAddress1234567890"
+        mock_result = {
+            "lines": [
+                {"currency": hex_code, "account": xstik_issuer, "balance": "1000.0"},
+            ]
+        }
+        with patch("taxspine_orchestrator.prices._xrpl_rpc", return_value=mock_result):
+            specs = _fetch_account_trust_lines(_TEST_ACCOUNT)
+        assert f"xSTIK.{xstik_issuer}" in specs
+
+    def test_returns_empty_on_rpc_failure(self):
+        from taxspine_orchestrator.prices import _fetch_account_trust_lines
+        with patch("taxspine_orchestrator.prices._xrpl_rpc", side_effect=RuntimeError("timeout")):
+            specs = _fetch_account_trust_lines(_TEST_ACCOUNT)
+        assert specs == []
+
+    def test_skips_xrp_entries(self):
+        from taxspine_orchestrator.prices import _fetch_account_trust_lines
+        mock_result = {
+            "lines": [
+                {"currency": "XRP", "account": "", "balance": "5000.0"},
+                {"currency": "SOLO", "account": _SOLO_ISSUER, "balance": "100.0"},
+            ]
+        }
+        with patch("taxspine_orchestrator.prices._xrpl_rpc", return_value=mock_result):
+            specs = _fetch_account_trust_lines(_TEST_ACCOUNT)
+        xrp_specs = [s for s in specs if s.startswith("XRP.")]
+        assert xrp_specs == []
+        assert f"SOLO.{_SOLO_ISSUER}" in specs
+
+    def test_paginates_via_marker(self):
+        from taxspine_orchestrator.prices import _fetch_account_trust_lines
+        call_count = 0
+
+        def mock_rpc(method, params, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "lines": [{"currency": "SOLO", "account": _SOLO_ISSUER, "balance": "1.0"}],
+                    "marker": "page2",
+                }
+            return {
+                "lines": [{"currency": "GRIM", "account": _GRIM_ISSUER, "balance": "2.0"}],
+            }
+
+        with patch("taxspine_orchestrator.prices._xrpl_rpc", side_effect=mock_rpc):
+            specs = _fetch_account_trust_lines(_TEST_ACCOUNT)
+
+        assert call_count == 2
+        assert f"SOLO.{_SOLO_ISSUER}" in specs
+        assert f"GRIM.{_GRIM_ISSUER}" in specs
+
+
+# ── TestAutoDiscoverFromAccounts ──────────────────────────────────────────────
+
+
+class TestAutoDiscoverFromAccounts:
+    """fetch_all_prices_for_year auto-discovers XRPL tokens from registered accounts."""
+
+    def test_account_tokens_included_in_fetch(self, tmp_path):
+        """Tokens returned by account_lines are priced via Tier 2 automatically."""
+        import taxspine_orchestrator.prices as _pm
+
+        discovered_specs: list[str] = []
+
+        def _mock_trust_lines(account: str) -> list[str]:
+            return [f"SOLO.{_SOLO_ISSUER}", f"GRIM.{_GRIM_ISSUER}"]
+
+        def _mock_fetch_iou(symbol, issuer, year, xrp_usd, nok_rates, dest):
+            discovered_specs.append(f"{symbol}.{issuer}")
+            dest.write_text("date,asset_id,fiat_currency,price_fiat\n2025-01-01,{symbol},NOK,1.0\n")
+            return True
+
+        old_accounts = _pm._workspace_accounts_provider
+        old_assets   = _pm._workspace_assets_provider
+        try:
+            _pm._workspace_accounts_provider = lambda: [_TEST_ACCOUNT]
+            _pm._workspace_assets_provider   = lambda: []
+
+            with patch("taxspine_orchestrator.prices.settings") as ms, \
+                 patch("taxspine_orchestrator.prices._fetch_account_trust_lines",
+                       side_effect=_mock_trust_lines), \
+                 patch("taxspine_orchestrator.prices._fetch_and_write_xrpl_iou",
+                       side_effect=_mock_fetch_iou), \
+                 patch("taxspine_orchestrator.prices._needs_fetch", return_value=True), \
+                 patch("taxspine_orchestrator.prices._fetch_and_write"), \
+                 patch("taxspine_orchestrator.prices._xrpl_iou_csv_path",
+                       side_effect=lambda sym, iss, yr: tmp_path / f"{sym}.csv"), \
+                 patch("taxspine_orchestrator.prices._fetch_kraken_usd_prices",
+                       return_value={"2025-01-01": Decimal("0.5")}), \
+                 patch("taxspine_orchestrator.prices._fetch_norges_bank_usd_nok",
+                       return_value={"2025-01-01": Decimal("10.0")}), \
+                 patch("taxspine_orchestrator.prices._fill_calendar_gaps",
+                       side_effect=lambda d, yr: d):
+                ms.PRICES_DIR = tmp_path
+                fetch_all_prices_for_year(2025, extra_xrpl_assets=None)
+
+        finally:
+            _pm._workspace_accounts_provider = old_accounts
+            _pm._workspace_assets_provider   = old_assets
+
+        assert f"SOLO.{_SOLO_ISSUER}" in discovered_specs
+        assert f"GRIM.{_GRIM_ISSUER}" in discovered_specs
+
+    def test_no_duplicate_specs_when_account_overlaps_assets(self, tmp_path):
+        """A token in both account_lines and xrpl_assets is fetched exactly once."""
+        import taxspine_orchestrator.prices as _pm
+
+        fetch_calls: list[str] = []
+
+        def _mock_fetch_iou(symbol, issuer, year, xrp_usd, nok_rates, dest):
+            fetch_calls.append(f"{symbol}.{issuer}")
+            dest.write_text("date,asset_id,fiat_currency,price_fiat\n")
+            return True
+
+        old_accounts = _pm._workspace_accounts_provider
+        old_assets   = _pm._workspace_assets_provider
+        try:
+            _pm._workspace_accounts_provider = lambda: [_TEST_ACCOUNT]
+            # Same spec registered manually too
+            _pm._workspace_assets_provider   = lambda: [f"SOLO.{_SOLO_ISSUER}"]
+
+            with patch("taxspine_orchestrator.prices.settings") as ms, \
+                 patch("taxspine_orchestrator.prices._fetch_account_trust_lines",
+                       return_value=[f"SOLO.{_SOLO_ISSUER}"]), \
+                 patch("taxspine_orchestrator.prices._fetch_and_write_xrpl_iou",
+                       side_effect=_mock_fetch_iou), \
+                 patch("taxspine_orchestrator.prices._needs_fetch", return_value=True), \
+                 patch("taxspine_orchestrator.prices._fetch_and_write"), \
+                 patch("taxspine_orchestrator.prices._xrpl_iou_csv_path",
+                       side_effect=lambda sym, iss, yr: tmp_path / f"{sym}.csv"), \
+                 patch("taxspine_orchestrator.prices._fetch_kraken_usd_prices",
+                       return_value={"2025-01-01": Decimal("0.5")}), \
+                 patch("taxspine_orchestrator.prices._fetch_norges_bank_usd_nok",
+                       return_value={"2025-01-01": Decimal("10.0")}), \
+                 patch("taxspine_orchestrator.prices._fill_calendar_gaps",
+                       side_effect=lambda d, yr: d):
+                ms.PRICES_DIR = tmp_path
+                fetch_all_prices_for_year(2025)
+        finally:
+            _pm._workspace_accounts_provider = old_accounts
+            _pm._workspace_assets_provider   = old_assets
+
+        solo_calls = [c for c in fetch_calls if c.startswith("SOLO.")]
+        assert len(solo_calls) == 1, f"SOLO fetched {len(solo_calls)} times, expected 1"
+
+    def test_rpc_failure_in_discovery_does_not_block_fetch(self, tmp_path):
+        """If account_lines fails, price fetch continues with manually registered assets."""
+        import taxspine_orchestrator.prices as _pm
+
+        old_accounts = _pm._workspace_accounts_provider
+        old_assets   = _pm._workspace_assets_provider
+        try:
+            _pm._workspace_accounts_provider = lambda: [_TEST_ACCOUNT]
+            _pm._workspace_assets_provider   = lambda: []
+
+            with patch("taxspine_orchestrator.prices.settings") as ms, \
+                 patch("taxspine_orchestrator.prices._fetch_account_trust_lines",
+                       return_value=[]), \
+                 patch("taxspine_orchestrator.prices._needs_fetch", return_value=False), \
+                 patch("taxspine_orchestrator.prices._fetch_and_write"):
+                ms.PRICES_DIR = tmp_path
+                (tmp_path / "xrp_nok_2025.csv").write_text("date,asset_id,fiat_currency,price_fiat\n")
+                # Should not raise even if account_lines returns nothing
+                resp = fetch_all_prices_for_year(2025)
+        finally:
+            _pm._workspace_accounts_provider = old_accounts
+            _pm._workspace_assets_provider   = old_assets
+
+        assert resp is not None
