@@ -32,11 +32,20 @@ def _ok_subprocess(*_args, **_kwargs):
 
 
 @pytest.fixture(autouse=True)
-def _reset_store() -> None:
-    """Clear the in-memory store between tests so they don't leak state."""
+def _reset_store():
+    """Clear the job store and drain lingering background tasks before and after each test.
+
+    Using yield so teardown runs even if the test itself fails.  Cancelling tasks
+    in ``_background_tasks`` prevents executor threads started by one test from
+    writing stale rows into the store while a later test is running.
+    """
     from taxspine_orchestrator import main as _m
 
     _m._job_store.clear()
+    _m._background_tasks.clear()   # drop references; threads may still run briefly
+    yield
+    _m._job_store.clear()
+    _m._background_tasks.clear()
 
 
 @pytest.fixture()
@@ -160,10 +169,15 @@ class TestPostJobsReturns201:
         assert resp.json()["id"]
 
     def test_start_job_returns_202_not_affected(self, client: TestClient) -> None:
-        """POST /jobs/{id}/start should still return 202 — no regression."""
-        create_resp = client.post("/jobs", json=_SAMPLE_INPUT)
-        job_id = create_resp.json()["id"]
-        start_resp = client.post(f"/jobs/{job_id}/start")
+        """POST /jobs/{id}/start should still return 202 — no regression.
+
+        Mock ``start_job_execution`` so the background thread completes immediately
+        without running real tax computation (which can outlive the test process).
+        """
+        with patch("taxspine_orchestrator.main._job_service.start_job_execution"):
+            create_resp = client.post("/jobs", json=_SAMPLE_INPUT)
+            job_id = create_resp.json()["id"]
+            start_resp = client.post(f"/jobs/{job_id}/start")
         assert start_resp.status_code == 202
 
 
@@ -304,6 +318,12 @@ class TestBackgroundTaskRetention:
         We verify this by intercepting asyncio.create_task, checking the returned
         task has a done-callback registered (the discard call), and that the task
         was added to _background_tasks (or already finished and discarded cleanly).
+
+        ``start_job_execution`` is mocked so the background thread completes
+        immediately — the test only validates task-retention wiring, not real
+        execution.  Without the mock the thread can outlive the test suite and
+        cause the "executor did not finish joining" warning plus state leakage
+        into sibling test files.
         """
         import asyncio
         from taxspine_orchestrator import main as _m
@@ -319,7 +339,8 @@ class TestBackgroundTaskRetention:
             created_tasks.append(t)
             return t
 
-        with patch("taxspine_orchestrator.main.asyncio.create_task", side_effect=_spy):
+        with patch("taxspine_orchestrator.main._job_service.start_job_execution"), \
+             patch("taxspine_orchestrator.main.asyncio.create_task", side_effect=_spy):
             resp = client.post(f"/jobs/{job_id}/start")
 
         assert resp.status_code == 202

@@ -16,11 +16,15 @@ from taxspine_orchestrator.models import JobOutput, JobStatus
 
 
 @pytest.fixture(autouse=True)
-def _reset_store() -> None:
-    """Clear the in-memory store between tests so they don't leak state."""
+def _reset_store():
+    """Clear the job store and drain lingering background tasks before and after each test."""
     from taxspine_orchestrator import main as _m
 
     _m._job_store.clear()
+    _m._background_tasks.clear()
+    yield
+    _m._job_store.clear()
+    _m._background_tasks.clear()
 
 
 @pytest.fixture()
