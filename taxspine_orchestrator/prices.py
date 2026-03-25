@@ -5,6 +5,10 @@ public APIs.  Four source tiers are supported:
 
   Tier 1 — Kraken OHLC (USD) × Norges Bank (USD/NOK):
     XRP, BTC, ETH, ADA, LTC  — major assets, highest accuracy.
+    Kraken's OHLC window covers only the ~720 most recent daily candles
+    from today (~2 years).  For earlier years, CoinGecko market_chart/range
+    is used as an automatic fallback (NOK prices returned directly, no
+    conversion chain required).
 
   Tier 2 — OnTheDEX OHLC (XRP) × XRP/USD × USD/NOK:
     Any XRPL IOU token traded on the XRPL DEX (GRIM, xSTIK, SOLO, …).
@@ -112,6 +116,16 @@ _KRAKEN_USD_PAIR: dict[str, str] = {
 }
 
 _ALL_KRAKEN_ASSETS: list[str] = list(_KRAKEN_USD_PAIR.keys())
+
+# CoinGecko coin IDs for Tier-1 assets — used as fallback when Kraken's OHLC
+# window (~720 days from today) does not cover the requested year.
+_COINGECKO_COIN_IDS: dict[str, str] = {
+    "XRP": "ripple",
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "ADA": "cardano",
+    "LTC": "litecoin",
+}
 
 # ── Live spot price cache (GET /prices/spot) ──────────────────────────────────
 # Kraken Ticker returns result keys that differ from the request pair names.
@@ -1008,7 +1022,10 @@ def fetch_all_prices_for_year(
     failed_assets:   list[str]  = []
     _fetch_errors:   dict[str, str] = {}  # asset → error message for diagnostics
 
-    # ── Step 1: Kraken assets ────────────────────────────────────────────────
+    # ── Step 1: Kraken assets (CoinGecko fallback for historical years) ──────
+    # Kraken OHLC returns the 720 most recent daily candles from today (~2 years).
+    # For years outside that window, fall back to CoinGecko market_chart/range,
+    # which has no rolling-window limit and returns NOK prices directly.
     for asset in _ALL_KRAKEN_ASSETS:
         dest = _asset_csv_path(asset, year)
         if _needs_fetch(dest, year):
@@ -1017,9 +1034,31 @@ def fetch_all_prices_for_year(
                 _fetch_and_write(pair_usd, asset, year, dest)
                 any_fetched = True
             except RuntimeError as _exc:
-                failed_assets.append(asset)
-                _fetch_errors[asset] = str(_exc)
-                continue
+                # Kraken failed — try CoinGecko as fallback.
+                coin_id = _COINGECKO_COIN_IDS.get(asset)
+                if coin_id is not None:
+                    _log.info(
+                        "Kraken unavailable for %s %s — trying CoinGecko fallback "
+                        "(coin_id=%s). Kraken error: %s",
+                        asset, year, coin_id, _exc,
+                    )
+                    n_rows = _fetch_and_write_coingecko_nok(coin_id, asset, year, dest)
+                    if n_rows > 0:
+                        any_fetched = True
+                        _log.info(
+                            "CoinGecko fallback succeeded for %s %s: %d rows",
+                            asset, year, n_rows,
+                        )
+                    else:
+                        failed_assets.append(asset)
+                        _fetch_errors[asset] = (
+                            f"Kraken: {_exc}; CoinGecko: no data returned"
+                        )
+                        continue
+                else:
+                    failed_assets.append(asset)
+                    _fetch_errors[asset] = str(_exc)
+                    continue
         if dest.exists():
             available_paths.append(dest)
 
@@ -1525,6 +1564,64 @@ def _fetch_bank_of_england_usd_gbp(year: int) -> dict[str, Decimal]:
     if not rates:
         raise RuntimeError(f"Bank of England returned no USD/GBP rates for {year}.")
     return rates
+
+
+def _fetch_and_write_coingecko_nok(
+    coin_id: str, symbol: str, year: int, dest: Path
+) -> int:
+    """Fetch daily NOK prices from CoinGecko using a known coin_id and write CSV.
+
+    Bypasses the search step — uses a pre-known ``coin_id`` (e.g. "ripple",
+    "bitcoin") for reliability.  Called as a Tier-1 fallback when Kraken's
+    OHLC window does not cover *year* (~720-day rolling window from today).
+
+    Returns the number of rows written, or 0 on any error or empty response.
+    """
+    tz      = datetime.timezone.utc
+    from_ts = int(datetime.datetime(year, 1, 1, tzinfo=tz).timestamp())
+    to_ts   = int(datetime.datetime(year, 12, 31, 23, 59, 59, tzinfo=tz).timestamp())
+
+    url = (
+        f"{_COINGECKO_BASE}/coins/{urllib.parse.quote(coin_id)}/market_chart/range"
+        f"?vs_currency=nok&from={from_ts}&to={to_ts}"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "taxspine-orchestrator/1.0", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+    except Exception:
+        return 0
+
+    raw_prices = body.get("prices", [])
+    rows: list[tuple[str, str]] = []
+    for entry in raw_prices:
+        if len(entry) < 2:
+            continue
+        try:
+            ts_ms = int(entry[0])
+            price = Decimal(str(entry[1])).quantize(
+                Decimal("0.0001"), rounding=ROUND_HALF_UP
+            )
+            dt = datetime.datetime.fromtimestamp(ts_ms / 1000, tz=tz)
+            if dt.year != year:
+                continue
+            rows.append((dt.strftime("%Y-%m-%d"), str(price)))
+        except Exception:
+            continue
+
+    if not rows:
+        return 0
+
+    with dest.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["date", "asset_id", "fiat_currency", "price_fiat"])
+        for date_str, price in rows:
+            writer.writerow([date_str, symbol, "NOK", price])
+
+    return len(rows)
 
 
 def _fetch_and_write(pair_usd: str, asset: str, year: int, dest: Path) -> None:

@@ -322,4 +322,44 @@ does NOT run ruff automatically — add it if this recurs.
 
 ---
 
+## §10 — Kraken OHLC 720-Day Window (Historical Price Fetch)
+
+### Pattern
+
+`POST /prices/fetch` returns `✗ Could not fetch price data for any asset in YYYY.`
+when `YYYY` is 2023 or earlier (and partially for early 2024).
+
+### Root cause
+
+Kraken's OHLC endpoint (`/0/public/OHLC?interval=1440`) returns the **720 most
+recent daily candles from today**, regardless of the `since` timestamp.  From
+2026-03-26, that window starts around 2024-03-30.  Any year before that returns
+an empty candle list; `_fetch_kraken_usd_prices` raises `RuntimeError`.
+
+2024 is also affected — Jan–Mar 2024 (~87 candles) fall outside the window.
+
+### Fix (applied 2026-03-26)
+
+`_fetch_and_write_coingecko_nok(coin_id, symbol, year, dest)` — fetches daily
+NOK prices directly from CoinGecko `market_chart/range?vs_currency=nok` using
+hardcoded coin IDs (`ripple`, `bitcoin`, `ethereum`, `cardano`, `litecoin`).
+No USD→NOK conversion chain needed.
+
+The Step 1 loop in `fetch_all_prices_for_year` now catches the Kraken
+`RuntimeError` and automatically retries via CoinGecko before giving up.
+
+### CoinGecko free-tier rate limits
+
+- 30 req/min on the free tier.
+- The fallback is called at most once per asset per fetch run — 5 calls maximum
+  for a full Tier-1 fetch.  No rate-limit concerns in practice.
+
+### When to expect the Kraken window to cover more years
+
+The window advances 1 day per day.  2024-01-01 will re-enter the window around
+2024-01-01 + 720 days ≈ 2025-12-22.  At that point Kraken will fully cover 2024
+again without needing CoinGecko.
+
+---
+
 *This document lives at `docs/CI_BUILD_GOTCHAS.md`. The pre-push hook at `.githooks/pre-push` automates the mechanical checks.*
