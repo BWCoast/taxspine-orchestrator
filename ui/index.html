@@ -442,6 +442,9 @@
       <!-- Error message -->
       <div id="results-error" class="hidden bg-red-900/30 border border-red-800 rounded-lg p-3 mb-4 text-sm text-red-300"></div>
 
+      <!-- RF-1159 filing warnings (TL-09) -->
+      <div id="results-rf1159-warnings" class="hidden bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 mb-4 text-sm text-yellow-300"></div>
+
       <!-- Download buttons -->
       <div id="results-downloads" class="flex flex-wrap gap-2 mb-4"></div>
 
@@ -1440,6 +1443,18 @@ async function openResults(job) {
     errEl.classList.remove('hidden');
   } else {
     errEl.classList.add('hidden');
+  }
+
+  // RF-1159 filing warnings (TL-09) — non-empty list = must review before filing
+  const warnEl = document.getElementById('results-rf1159-warnings');
+  const rf1159Warnings = job.output?.rf1159_warnings;
+  if (rf1159Warnings && rf1159Warnings.length > 0) {
+    const lines = rf1159Warnings.map(w => `<li class="mt-1">${escHtml(w)}</li>`).join('');
+    warnEl.innerHTML = `<strong>\u26a0 RF-1159 filing warnings</strong> — resolve before submitting to Skatteetaten:<ul class="list-disc pl-4 mt-1">${lines}</ul>`;
+    warnEl.classList.remove('hidden');
+  } else {
+    warnEl.innerHTML = '';
+    warnEl.classList.add('hidden');
   }
 
   // Downloads

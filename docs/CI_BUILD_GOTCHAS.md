@@ -2,7 +2,7 @@
 
 > **This document is the pre-push checklist.**
 > Reference it (and run `.githooks/pre-push`) before every `git push` to `main`.
-> Last updated: 2026-03-25
+> Last updated: 2026-03-26
 
 ---
 
@@ -19,6 +19,7 @@
 [ ] 7. TAILWIND_VERSION ARG in Dockerfile matches an existing GitHub release (see §4)
 [ ] 8. Local test failures in TestPriceTableMissingPath are expected — not regressions (see §5)
 [ ] 9. Python version compat: every pinned package has a Python 3.11 Linux amd64 wheel (see §6)
+[ ] 10. Run `ruff check .` locally before pushing — F811 (duplicate imports) will fail the workflow in ~20s (see §9)
 ```
 
 Run `.githooks/pre-push` to automate checks 1, 3, 5, 6, 7.
@@ -278,10 +279,46 @@ alert aggregation state computed lazily from completed jobs in other test module
 3. **Not caused by:** any of the valuation, provenance, RF-1159 warnings, or
    workspace changes from 2026-03-25.
 
-### Long-term fix (deferred)
+### Long-term fix (applied 2026-03-26)
 
-Add an explicit alert-state reset to the `autouse` fixture in `conftest.py`,
-or refactor `alerts.py` to be stateless (derive alerts from job store each time).
+Both `autouse` fixtures in `test_alerts.py` and `test_alerts_diagnostics.py` now
+`yield` between setup and teardown, clearing the job store both before and after
+each test.  This prevents state from a test that ran last in module A from leaking
+into the first test in module B when the latter's autouse fixture fires late.
+
+---
+
+## §9 — Ruff Lint Failures (F811 / F841)
+
+### Pattern
+
+The workflow runs `ruff check .` **before** `pytest`.  A lint error fails the build
+in ~20 seconds — far faster than any test failure — producing a confusing red badge
+with no obvious cause.
+
+### Root cause (2026-03-26)
+
+When new test classes are added for internal helpers (e.g. `_decode_xrpl_currency`,
+`_fetch_account_trust_lines`), it is tempting to add inline `from … import …`
+inside each test method.  If the same name is already imported at the top of the
+file (module-level), ruff raises **F811 — redefinition of unused name**.
+
+Similarly, `as mock_fetch` captures that are never referenced produce **F841 —
+local variable assigned but never used**.
+
+### How to catch before pushing
+
+```bash
+ruff check .
+```
+
+Run from the repo root.  All checks must pass before pushing.  The pre-push hook
+does NOT run ruff automatically — add it if this recurs.
+
+### Fix
+
+- Remove redundant inline imports when the name is already at module level.
+- Drop `as <name>` from `patch(…)` calls where the mock object is never used.
 
 ---
 

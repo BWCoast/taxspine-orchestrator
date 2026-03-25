@@ -29,8 +29,10 @@ def _make_client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def _reset_store() -> None:
+def _reset_store():
     from taxspine_orchestrator import main as _m
+    _m._job_store.clear()
+    yield
     _m._job_store.clear()
 
 

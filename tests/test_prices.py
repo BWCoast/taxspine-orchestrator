@@ -1776,7 +1776,6 @@ class TestDecodeXrplCurrency:
     """_decode_xrpl_currency converts 40-char hex currency codes to readable symbols."""
 
     def test_solo_hex_decodes_to_solo(self):
-        from taxspine_orchestrator.prices import _decode_xrpl_currency
         # "SOLO" = 4 bytes; padded to 20 bytes (40 hex chars): 534F4C4F + 16 zero bytes
         raw = "SOLO".encode("utf-8")
         hex_code = (raw + b"\x00" * (20 - len(raw))).hex().upper()
@@ -1784,7 +1783,6 @@ class TestDecodeXrplCurrency:
         assert _decode_xrpl_currency(hex_code) == "SOLO"
 
     def test_xstik_hex_decodes_correctly(self):
-        from taxspine_orchestrator.prices import _decode_xrpl_currency
         # "xSTIK" → 7853544943 + 30 zeros (5 bytes + padding)
         import binascii
         raw = "xSTIK".encode("utf-8")
@@ -1792,16 +1790,13 @@ class TestDecodeXrplCurrency:
         assert _decode_xrpl_currency(hex_code) == "xSTIK"
 
     def test_three_char_iso_returned_as_is(self):
-        from taxspine_orchestrator.prices import _decode_xrpl_currency
         assert _decode_xrpl_currency("USD") == "USD"
         assert _decode_xrpl_currency("XRP") == "XRP"
 
     def test_non_hex_string_returned_as_is(self):
-        from taxspine_orchestrator.prices import _decode_xrpl_currency
         assert _decode_xrpl_currency("RLUSD") == "RLUSD"
 
     def test_invalid_hex_returned_as_is(self):
-        from taxspine_orchestrator.prices import _decode_xrpl_currency
         # 40 chars but invalid utf-8 bytes → returned verbatim
         bad_hex = "FF" * 20   # 40-char hex, but bytes are 0xFF which is invalid UTF-8 standalone
         result = _decode_xrpl_currency(bad_hex)
@@ -1809,7 +1804,6 @@ class TestDecodeXrplCurrency:
         assert isinstance(result, str)
 
     def test_strips_null_padding(self):
-        from taxspine_orchestrator.prices import _decode_xrpl_currency
         raw = "ARK".encode("utf-8")
         hex_code = (raw + b"\x00" * (20 - len(raw))).hex().upper()
         assert _decode_xrpl_currency(hex_code) == "ARK"
@@ -1826,7 +1820,6 @@ class TestFetchAccountTrustLines:
     """_fetch_account_trust_lines returns SYMBOL.rISSUER specs from account_lines."""
 
     def test_returns_spec_for_nonzero_balance(self):
-        from taxspine_orchestrator.prices import _fetch_account_trust_lines
         mock_result = {
             "lines": [
                 {"currency": "SOLO", "account": _SOLO_ISSUER, "balance": "100.0"},
@@ -1837,7 +1830,6 @@ class TestFetchAccountTrustLines:
         assert f"SOLO.{_SOLO_ISSUER}" in specs
 
     def test_skips_zero_balance_trust_lines(self):
-        from taxspine_orchestrator.prices import _fetch_account_trust_lines
         mock_result = {
             "lines": [
                 {"currency": "SOLO", "account": _SOLO_ISSUER, "balance": "0"},
@@ -1850,7 +1842,6 @@ class TestFetchAccountTrustLines:
         assert f"GRIM.{_GRIM_ISSUER}" in specs
 
     def test_decodes_hex_currency_code(self):
-        from taxspine_orchestrator.prices import _fetch_account_trust_lines
         import binascii
         raw = "xSTIK".encode("utf-8")
         hex_code = (raw + b"\x00" * (20 - len(raw))).hex().upper()
@@ -1865,13 +1856,11 @@ class TestFetchAccountTrustLines:
         assert f"xSTIK.{xstik_issuer}" in specs
 
     def test_returns_empty_on_rpc_failure(self):
-        from taxspine_orchestrator.prices import _fetch_account_trust_lines
         with patch("taxspine_orchestrator.prices._xrpl_rpc", side_effect=RuntimeError("timeout")):
             specs = _fetch_account_trust_lines(_TEST_ACCOUNT)
         assert specs == []
 
     def test_skips_xrp_entries(self):
-        from taxspine_orchestrator.prices import _fetch_account_trust_lines
         mock_result = {
             "lines": [
                 {"currency": "XRP", "account": "", "balance": "5000.0"},
@@ -1885,7 +1874,6 @@ class TestFetchAccountTrustLines:
         assert f"SOLO.{_SOLO_ISSUER}" in specs
 
     def test_paginates_via_marker(self):
-        from taxspine_orchestrator.prices import _fetch_account_trust_lines
         call_count = 0
 
         def mock_rpc(method, params, **kw):

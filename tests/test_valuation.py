@@ -586,7 +586,7 @@ class TestWorkspaceAssetsInAutoFetch:
 
         with (
             patch("taxspine_orchestrator.services.settings") as mock_s,
-            patch("taxspine_orchestrator.prices.fetch_all_prices_for_year") as mock_fetch,
+            patch("taxspine_orchestrator.prices.fetch_all_prices_for_year"),
         ):
             mock_s.PRICES_DIR = tmp_path  # no cached file
             mock_s.OUTPUT_DIR = tmp_path
