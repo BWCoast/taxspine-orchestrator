@@ -132,7 +132,7 @@ curl -s http://localhost:8000/jobs/JOB_ID
 | `country`         | enum    | required    | `"norway"` or `"uk"`                                      |
 | `case_name`       | string  | `null`      | Human-friendly label for dashboard display and filtering  |
 | `pipeline_mode`   | enum    | `"per_file"`| `"per_file"` or `"nor_multi"` (Norway CSV jobs only)      |
-| `valuation_mode`  | enum    | `"dummy"`   | `"dummy"` or `"price_table"`                              |
+| `valuation_mode`  | enum    | `"price_table"` | `"dummy"` or `"price_table"`                          |
 | `csv_prices_path` | string  | `null`      | Path to NOK price table CSV (required for `price_table`)  |
 | `include_trades`  | bool    | `false`     | Include XRPL DEX swap events (OfferCreate)                |
 | `debug_valuation` | bool    | `false`     | Write valuation diagnostics to the execution log          |
@@ -252,14 +252,28 @@ Accepted MIME types: `text/csv`, `application/vnd.ms-excel`,
 
 ## Valuation mode
 
-| Mode          | Behaviour                                                        |
-|---------------|------------------------------------------------------------------|
-| `dummy`       | Built-in default valuation — no extra flags passed (default)     |
-| `price_table` | Passes `--csv-prices <path>` to the tax CLI                      |
+| Mode          | Behaviour                                                                    |
+|---------------|------------------------------------------------------------------------------|
+| `price_table` | **Default.** Auto-resolves `combined_nok_{year}.csv`; fetches from Kraken + Norges Bank if absent. Passes `--csv-prices <path>` to every tax CLI call. |
+| `dummy`       | No price lookup. Output marked `draft=true` in RF-1159 `_provenance`. Must not be filed. |
 
-When `valuation_mode=price_table` the `csv_prices_path` field is required and
-the file must exist on disk.  The orchestrator checks existence but does not
-validate contents.
+When `valuation_mode=price_table` and `csv_prices_path` is omitted, the orchestrator
+auto-resolves `combined_nok_{year}.csv` from `PRICES_DIR`. If it does not exist it
+calls `POST /prices/fetch` inline (requires network access to Kraken and Norges Bank).
+
+### Price tiers
+
+| Tier | Source | Assets |
+|------|--------|--------|
+| 1 | Kraken OHLC × Norges Bank USD/NOK | XRP, BTC, ETH, ADA, LTC |
+| 2a | OnTheDEX OHLC (XRP-denominated) | XRPL IOU tokens |
+| 2b | XRPL.to OHLC (XRP-denominated, fallback) | XRPL IOU tokens |
+| 2c | CoinGecko `market_chart/range?vs_currency=nok` | Any token with a CoinGecko listing |
+| 3 | Static USD peg | RLUSD = $1.00 |
+| 4 | XRPL AMM `amm_info` year-end NAV | AMM LP tokens |
+
+XRPL tokens held in registered workspace accounts are auto-discovered via `account_lines`
+RPC and included in every price fetch without manual registration.
 
 ---
 
@@ -342,6 +356,35 @@ All settings are controlled via environment variables:
 
 In all failure cases `job.output.log_path` points to `execution.log` with
 captured commands and stderr.
+
+---
+
+## Job output fields
+
+Key fields populated on a `COMPLETED` Norway job:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `rf1159_json_path` | string \| null | Path to the primary RF-1159 Altinn export JSON |
+| `rf1159_json_paths` | list[string] | All RF-1159 paths (one per CLI invocation) |
+| `rf1159_warnings` | list[string] \| null | Filing-completeness warnings extracted from RF-1159 output. `null` = no RF-1159 produced. `[]` = clean filing. Non-empty = must review before filing. |
+| `valuation_mode_used` | string | `"price_table"` or `"dummy"` — which engine was used |
+| `price_source` | string | `"price_table_csv"` or `"dummy"` |
+| `price_table_path` | string \| null | Path to the NOK price CSV that was used |
+| `draft_disclaimer` | string \| null | Populated for all Norway RF-1159 jobs; show to users |
+| `pipeline_mode_used` | string \| null | `"per_file"` or `"nor_multi"` (Norway only) |
+| `log_path` | string | Execution log with all CLI invocations and output |
+
+`rf1159_warnings` examples:
+
+```json
+"rf1159_warnings": []                         // clean — safe to review for filing
+"rf1159_warnings": [
+  "UNRESOLVED COST BASIS: XRP, SOLO. ...",    // missing prices → gains may be wrong
+  "UNRESOLVED INCOME: staking rewards ..."    // income totals understated
+]
+"rf1159_warnings": null                       // no RF-1159 output (UK job, no activity)
+```
 
 ---
 

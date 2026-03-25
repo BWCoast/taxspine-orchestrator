@@ -2,7 +2,7 @@
 
 > **This document is the pre-push checklist.**
 > Reference it (and run `.githooks/pre-push`) before every `git push` to `main`.
-> Last updated: 2026-03-23
+> Last updated: 2026-03-25
 
 ---
 
@@ -73,7 +73,7 @@ All other entries must be traceable as transitive deps of the above.
 | ~~`annotated-doc`~~ | **Legitimate** — `fastapi/annotated-doc` by tiangolo; required by fastapi. Allow it. |
 | `weasyprint` | Heavy PDF library not used by orchestrator (we use `fpdf2`) |
 | `zopfli` | C extension used only by weasyprint |
-| `hypothesis` | Property-based testing library; not in pyproject.toml |
+| `hypothesis` | Property-based testing library; orchestrator does not use it — but tax-nor (Project F) does. Allow it in tax-nor's `requirements-dev.lock`; forbidden in orchestrator's `requirements.lock`. |
 | `rich` | Pretty-printing CLI lib; not a dep |
 | `typer` | CLI framework; not a dep |
 | `shellingham` | typer transitive dep; not a dep |
@@ -244,6 +244,44 @@ Or check manually at `https://pypi.org/project/<package>/#files` and look for
 1. Regenerate `requirements.lock` from a clean Python 3.11 venv
 2. Commit the local hardened `docker.yml` and `Dockerfile`
 3. Verify `GH_READ_TOKEN` is valid
+
+---
+
+---
+
+## §8 — Intermittent Alerts Test Failures
+
+### Pattern
+
+Tests in `test_alerts.py` and `test_alerts_diagnostics.py` fail intermittently
+when the **full suite** is run (`pytest -q`) but pass individually or in isolation.
+
+Known intermittent failures:
+- `TestAlertSorting::test_error_before_warn`
+- `TestAlertsRaisedAt::test_review_alert_has_raised_at`
+- `TestAlertsCategoryGrouping::test_review_alert_category_is_review`
+
+### Root cause
+
+Likely shared state in the in-memory job store or alert aggregation that
+bleeds between test classes when the full suite runs in the same process.
+`_job_store.clear()` in the `autouse` fixture clears jobs but may not reset
+alert aggregation state computed lazily from completed jobs in other test modules.
+
+### How to handle
+
+1. **If these fail in CI on a PR:** re-run the CI job. One-shot reruns almost
+   always pass — confirming this is timing/order-dependent, not a real regression.
+2. **If they fail consistently (>3 consecutive runs):** investigate shared state
+   in `alerts.py` — specifically whether `GET /alerts` reads from a module-level
+   cache that is not cleared between tests.
+3. **Not caused by:** any of the valuation, provenance, RF-1159 warnings, or
+   workspace changes from 2026-03-25.
+
+### Long-term fix (deferred)
+
+Add an explicit alert-state reset to the `autouse` fixture in `conftest.py`,
+or refactor `alerts.py` to be stateless (derive alerts from job store each time).
 
 ---
 
