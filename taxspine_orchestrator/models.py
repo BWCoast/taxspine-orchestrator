@@ -357,6 +357,21 @@ class JobOutput(BaseModel):
             "up to the run date and must be re-run after the year closes."
         ),
     )
+    # TL-09: filing-completeness warnings extracted from RF-1159 JSON output.
+    # Populated whenever the tax pipeline detects conditions that mean the
+    # RF-1159 output is incomplete or unreliable (unresolved cost basis,
+    # unresolved income valuations, zero formue with non-empty portfolio, etc.).
+    # Empty list when the pipeline produced a clean, fully-valued result.
+    # None when no RF-1159 output was produced (UK jobs, no virtual currency).
+    rf1159_warnings: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Completeness warnings from the RF-1159 pipeline output. "
+            "Non-empty means the filing has unresolved items that must be "
+            "reviewed before submission. None for jobs that produce no "
+            "RF-1159 output (UK jobs, jobs with no virtual currency activity)."
+        ),
+    )
 
 
 class Job(BaseModel):

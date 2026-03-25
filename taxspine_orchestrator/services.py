@@ -832,6 +832,28 @@ class JobService:
                         output_dir=output_dir,
                     )
 
+            # ── Step 2.7: collect RF-1159 warnings for API response (TL-09) ──
+            # The tax pipeline embeds filing-completeness warnings in the
+            # RF-1159 JSON (unresolved cost basis, unresolved income, zero
+            # formue, etc.).  Collect and deduplicate them so callers can
+            # surface them in the UI without reading the file.
+            _rf1159_warnings: list[str] | None = None
+            if all_rf1159_json_paths:
+                _seen_warnings: set[str] = set()
+                _collected: list[str] = []
+                for _wpath in all_rf1159_json_paths:
+                    try:
+                        _wdata = _json.loads(
+                            Path(_wpath).read_text(encoding="utf-8")
+                        )
+                        for _w in _wdata.get("warnings", []):
+                            if _w not in _seen_warnings:
+                                _seen_warnings.add(_w)
+                                _collected.append(_w)
+                    except Exception:  # noqa: BLE001
+                        pass  # annotation failure must not fail the job
+                _rf1159_warnings = _collected
+
             # ── Step 3: write log + build output record ───────────────────
             log_path = self._write_log(output_dir, log_lines)
 
@@ -887,6 +909,8 @@ class JobService:
                 pipeline_mode_used=job.input.pipeline_mode.value if job.input.pipeline_mode else None,
                 # TL-08: partial-year warning for UK jobs run before year end.
                 partial_year_warning=_partial_year_warning,
+                # TL-09: filing-completeness warnings from the RF-1159 output.
+                rf1159_warnings=_rf1159_warnings,
             )
             # API-07: guard against overwriting a user-initiated CANCELLED state
             # with COMPLETED.  If the job was cancelled mid-run the terminal

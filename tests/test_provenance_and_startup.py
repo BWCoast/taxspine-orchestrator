@@ -69,6 +69,7 @@ class TestRf1159ProvenanceAnnotation:
             valuation_mode="dummy",
             price_source="dummy",
             price_table_path=None,
+            generated_at="2025-01-01T00:00:00Z",
         )
         data = json.loads(rf.read_text(encoding="utf-8"))
         assert "_provenance" in data
@@ -78,7 +79,8 @@ class TestRf1159ProvenanceAnnotation:
         rf = tmp_path / "rf.json"
         rf.write_text(json.dumps({"skjema": "RF-1159", "virtuellValuta": []}), encoding="utf-8")
         _annotate_rf1159_with_provenance(
-            rf, valuation_mode="price_table", price_source="price_table_csv", price_table_path="/p.csv"
+            rf, valuation_mode="price_table", price_source="price_table_csv",
+            price_table_path="/p.csv", generated_at="2025-01-01T00:00:00Z",
         )
         prov = json.loads(rf.read_text())["_provenance"]
         assert prov["valuation_mode"] == "price_table"
@@ -88,7 +90,8 @@ class TestRf1159ProvenanceAnnotation:
         rf = tmp_path / "rf.json"
         rf.write_text(json.dumps({"skjema": "RF-1159", "virtuellValuta": []}), encoding="utf-8")
         _annotate_rf1159_with_provenance(
-            rf, valuation_mode="dummy", price_source="norges_bank_usd_nok", price_table_path=None
+            rf, valuation_mode="dummy", price_source="norges_bank_usd_nok",
+            price_table_path=None, generated_at="2025-01-01T00:00:00Z",
         )
         prov = json.loads(rf.read_text())["_provenance"]
         assert prov["price_source"] == "norges_bank_usd_nok"
@@ -98,7 +101,8 @@ class TestRf1159ProvenanceAnnotation:
         rf = tmp_path / "rf.json"
         rf.write_text(json.dumps({"skjema": "RF-1159", "virtuellValuta": []}), encoding="utf-8")
         _annotate_rf1159_with_provenance(
-            rf, valuation_mode="dummy", price_source="dummy", price_table_path=None
+            rf, valuation_mode="dummy", price_source="dummy",
+            price_table_path=None, generated_at="2025-01-01T00:00:00Z",
         )
         assert json.loads(rf.read_text())["_provenance"]["draft"] is True
 
@@ -107,7 +111,8 @@ class TestRf1159ProvenanceAnnotation:
         rf = tmp_path / "rf.json"
         rf.write_text(json.dumps({"skjema": "RF-1159", "virtuellValuta": []}), encoding="utf-8")
         _annotate_rf1159_with_provenance(
-            rf, valuation_mode="price_table", price_source="price_table_csv", price_table_path="/p.csv"
+            rf, valuation_mode="price_table", price_source="price_table_csv",
+            price_table_path="/p.csv", generated_at="2025-01-01T00:00:00Z",
         )
         assert json.loads(rf.read_text())["_provenance"]["draft"] is False
 
@@ -117,7 +122,8 @@ class TestRf1159ProvenanceAnnotation:
         original = {"skjema": "RF-1159", "inntektsaar": 2025, "virtuellValuta": [{"navn": "BTC"}]}
         rf.write_text(json.dumps(original), encoding="utf-8")
         _annotate_rf1159_with_provenance(
-            rf, valuation_mode="dummy", price_source="dummy", price_table_path=None
+            rf, valuation_mode="dummy", price_source="dummy",
+            price_table_path=None, generated_at="2025-01-01T00:00:00Z",
         )
         data = json.loads(rf.read_text())
         assert data["inntektsaar"] == 2025
@@ -131,6 +137,7 @@ class TestRf1159ProvenanceAnnotation:
             valuation_mode="dummy",
             price_source="dummy",
             price_table_path=None,
+            generated_at="2025-01-01T00:00:00Z",
         )
 
     def test_annotate_silently_ignores_invalid_json(self, tmp_path: Path) -> None:
@@ -138,7 +145,8 @@ class TestRf1159ProvenanceAnnotation:
         bad = tmp_path / "bad.json"
         bad.write_text("not json", encoding="utf-8")
         _annotate_rf1159_with_provenance(
-            bad, valuation_mode="dummy", price_source="dummy", price_table_path=None
+            bad, valuation_mode="dummy", price_source="dummy",
+            price_table_path=None, generated_at="2025-01-01T00:00:00Z",
         )
 
 
