@@ -338,21 +338,27 @@ an empty candle list; `_fetch_kraken_usd_prices` raises `RuntimeError`.
 
 2024 is also affected — Jan–Mar 2024 (~87 candles) fall outside the window.
 
-### Fix (applied 2026-03-26)
+### Fix (updated 2026-03-26)
 
-`_fetch_and_write_coingecko_nok(coin_id, symbol, year, dest)` — fetches daily
-NOK prices directly from CoinGecko `market_chart/range?vs_currency=nok` using
-hardcoded coin IDs (`ripple`, `bitcoin`, `ethereum`, `cardano`, `litecoin`).
-No USD→NOK conversion chain needed.
+Three-tier fallback chain in the Step 1 loop of `fetch_all_prices_for_year`:
 
-The Step 1 loop in `fetch_all_prices_for_year` now catches the Kraken
-`RuntimeError` and automatically retries via CoinGecko before giving up.
+1. **Kraken** — OHLC `?interval=1440&since=...` × Norges Bank USD/NOK
+2. **CoinCap** (primary fallback) — `GET /assets/{id}/history?interval=d1`, returns
+   USD daily prices; multiplied by Norges Bank USD/NOK.  Free, no API key, full
+   history since ~2013.  IDs: bitcoin, ethereum, ripple, cardano, litecoin.
+3. **CoinGecko** (secondary fallback) — `market_chart/range?vs_currency=nok`,
+   returns NOK prices directly.  No USD conversion needed.  Free tier has
+   aggressive rate limits and may require a demo API key in 2025.
 
-### CoinGecko free-tier rate limits
+**Note:** CoinGecko's free public API started requiring registration in 2024.
+If CoinGecko also fails, the error message will clearly show all three sources.
 
-- 30 req/min on the free tier.
-- The fallback is called at most once per asset per fetch run — 5 calls maximum
-  for a full Tier-1 fetch.  No rate-limit concerns in practice.
+### CoinCap API notes
+
+- No API key required for the public `/v2` endpoint.
+- Pagination: `start`/`end` epoch-millisecond params handle full-year fetch.
+- Returns `{"data": [{"priceUsd": "...", "time": ms}]}` — parsed into
+  `dict[str, Decimal]` for the Norges Bank conversion step.
 
 ### When to expect the Kraken window to cover more years
 

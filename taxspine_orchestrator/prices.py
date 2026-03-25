@@ -117,8 +117,19 @@ _KRAKEN_USD_PAIR: dict[str, str] = {
 
 _ALL_KRAKEN_ASSETS: list[str] = list(_KRAKEN_USD_PAIR.keys())
 
-# CoinGecko coin IDs for Tier-1 assets — used as fallback when Kraken's OHLC
+# CoinCap asset IDs for Tier-1 assets — primary fallback when Kraken's OHLC
 # window (~720 days from today) does not cover the requested year.
+# CoinCap: free, no API key, full history since 2013.
+# USD prices from CoinCap × USD/NOK from Norges Bank → NOK CSV.
+_COINCAP_COIN_IDS: dict[str, str] = {
+    "XRP": "ripple",
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "ADA": "cardano",
+    "LTC": "litecoin",
+}
+
+# CoinGecko coin IDs for Tier-1 assets — secondary fallback if CoinCap also fails.
 _COINGECKO_COIN_IDS: dict[str, str] = {
     "XRP": "ripple",
     "BTC": "bitcoin",
@@ -157,6 +168,7 @@ _STATIC_USD_PEGS: dict[str, Decimal] = {
 _ONTHEDEX_BASE   = "https://api.onthedex.live/public/v1"
 _XRPLTO_BASE     = "https://api.xrpl.to/v1"
 _COINGECKO_BASE  = "https://api.coingecko.com/api/v3"
+_COINCAP_BASE    = "https://api.coincap.io/v2"
 
 _STALE_HOURS = 24   # re-fetch current-year files if older than this
 
@@ -1033,32 +1045,60 @@ def fetch_all_prices_for_year(
             try:
                 _fetch_and_write(pair_usd, asset, year, dest)
                 any_fetched = True
-            except RuntimeError as _exc:
-                # Kraken failed — try CoinGecko as fallback.
-                coin_id = _COINGECKO_COIN_IDS.get(asset)
-                if coin_id is not None:
+            except RuntimeError as _kraken_exc:
+                # Kraken OHLC window doesn't cover this year.
+                # Fallback 1: CoinCap (USD daily × Norges Bank, no key required).
+                coincap_id = _COINCAP_COIN_IDS.get(asset)
+                _coincap_ok = False
+                _coincap_exc: str = ""
+                if coincap_id is not None:
                     _log.info(
-                        "Kraken unavailable for %s %s — trying CoinGecko fallback "
-                        "(coin_id=%s). Kraken error: %s",
-                        asset, year, coin_id, _exc,
+                        "Kraken unavailable for %s %s — trying CoinCap fallback "
+                        "(id=%s). Kraken error: %s",
+                        asset, year, coincap_id, _kraken_exc,
                     )
-                    n_rows = _fetch_and_write_coingecko_nok(coin_id, asset, year, dest)
-                    if n_rows > 0:
+                    try:
+                        _fetch_and_write_coincap(coincap_id, asset, year, dest)
                         any_fetched = True
+                        _coincap_ok = True
                         _log.info(
-                            "CoinGecko fallback succeeded for %s %s: %d rows",
-                            asset, year, n_rows,
+                            "CoinCap fallback succeeded for %s %s", asset, year
                         )
-                    else:
+                    except RuntimeError as _exc2:
+                        _coincap_exc = str(_exc2)
+                        _log.warning(
+                            "CoinCap fallback failed for %s %s: %s",
+                            asset, year, _exc2,
+                        )
+
+                if _coincap_ok:
+                    pass  # success — continue to availability check below
+                else:
+                    # Fallback 2: CoinGecko NOK direct (no USD conversion needed).
+                    cg_id = _COINGECKO_COIN_IDS.get(asset)
+                    _cg_ok = False
+                    if cg_id is not None:
+                        _log.info(
+                            "Trying CoinGecko fallback for %s %s (id=%s)",
+                            asset, year, cg_id,
+                        )
+                        n_rows = _fetch_and_write_coingecko_nok(cg_id, asset, year, dest)
+                        if n_rows > 0:
+                            any_fetched = True
+                            _cg_ok = True
+                            _log.info(
+                                "CoinGecko fallback succeeded for %s %s: %d rows",
+                                asset, year, n_rows,
+                            )
+
+                    if not _cg_ok:
                         failed_assets.append(asset)
                         _fetch_errors[asset] = (
-                            f"Kraken: {_exc}; CoinGecko: no data returned"
+                            f"Kraken: {_kraken_exc}"
+                            + (f"; CoinCap: {_coincap_exc}" if _coincap_exc else "")
+                            + "; CoinGecko: no data returned"
                         )
                         continue
-                else:
-                    failed_assets.append(asset)
-                    _fetch_errors[asset] = str(_exc)
-                    continue
         if dest.exists():
             available_paths.append(dest)
 
@@ -1564,6 +1604,98 @@ def _fetch_bank_of_england_usd_gbp(year: int) -> dict[str, Decimal]:
     if not rates:
         raise RuntimeError(f"Bank of England returned no USD/GBP rates for {year}.")
     return rates
+
+
+def _fetch_coincap_usd_prices(coincap_id: str, year: int) -> dict[str, Decimal]:
+    """Return {date_str: close_usd} from CoinCap daily history for *year*.
+
+    Uses GET /assets/{id}/history?interval=d1&start={ms}&end={ms}.
+    CoinCap is free, requires no API key, and stores full history since ~2013.
+
+    Returns ``{}`` on any error — caller decides whether to try another source.
+    """
+    tz      = datetime.timezone.utc
+    from_ms = int(datetime.datetime(year, 1, 1, tzinfo=tz).timestamp()) * 1000
+    to_ms   = int(datetime.datetime(year, 12, 31, 23, 59, 59, tzinfo=tz).timestamp()) * 1000
+
+    url = (
+        f"{_COINCAP_BASE}/assets/{urllib.parse.quote(coincap_id)}/history"
+        f"?interval=d1&start={from_ms}&end={to_ms}"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "taxspine-orchestrator/1.0", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+    except Exception as exc:
+        _log.warning("CoinCap request failed for %s %s: %s", coincap_id, year, exc)
+        return {}
+
+    data = body.get("data")
+    if not isinstance(data, list) or not data:
+        _log.warning(
+            "CoinCap returned no data for %s %s (body keys: %s)",
+            coincap_id, year, list(body.keys()),
+        )
+        return {}
+
+    prices: dict[str, Decimal] = {}
+    for entry in data:
+        price_str = entry.get("priceUsd")
+        time_ms   = entry.get("time")
+        if price_str is None or time_ms is None:
+            continue
+        try:
+            dt = datetime.datetime.fromtimestamp(int(time_ms) / 1000, tz=tz)
+            if dt.year != year:
+                continue
+            prices[dt.strftime("%Y-%m-%d")] = Decimal(str(price_str))
+        except Exception:
+            continue
+
+    return prices
+
+
+def _fetch_and_write_coincap(
+    coincap_id: str, asset: str, year: int, dest: Path
+) -> None:
+    """Fetch USD prices from CoinCap + FX from Norges Bank → write NOK CSV.
+
+    Mirrors ``_fetch_and_write`` but uses CoinCap instead of Kraken.
+    Raises ``RuntimeError`` if no data is obtained or no NOK prices can be computed.
+    """
+    usd_prices = _fetch_coincap_usd_prices(coincap_id, year)
+    if not usd_prices:
+        raise RuntimeError(
+            f"CoinCap returned no USD prices for {coincap_id} in {year}."
+        )
+
+    raw_fx    = _fetch_norges_bank_usd_nok(year)
+    nok_rates = _fill_calendar_gaps(raw_fx, year)
+
+    rows: list[tuple[str, str]] = []
+    for date_str, usd_price in sorted(usd_prices.items()):
+        nok_rate = nok_rates.get(date_str)
+        if nok_rate is None:
+            continue
+        nok_price = (usd_price * nok_rate).quantize(
+            Decimal("0.0001"), rounding=ROUND_HALF_UP
+        )
+        rows.append((date_str, str(nok_price)))
+
+    if not rows:
+        raise RuntimeError(
+            f"No NOK prices computed for {asset} {year}: "
+            "no overlap between CoinCap candles and Norges Bank rates."
+        )
+
+    with dest.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["date", "asset_id", "fiat_currency", "price_fiat"])
+        for date_str, price in rows:
+            writer.writerow([date_str, asset, "NOK", price])
 
 
 def _fetch_and_write_coingecko_nok(
