@@ -108,12 +108,14 @@ def _annotate_rf1159_with_provenance(
     valuation_mode: str,
     price_source: str,
     price_table_path: str | None,
+    generated_at: str,
 ) -> None:
     """Add a ``_provenance`` block to an RF-1159 JSON file in-place.
 
     TL-01: Makes dummy-valuation output distinguishable from real output by
     setting ``draft=true`` when ``valuation_mode == "dummy"``.
     TL-02: Records the price source so a tax auditor can verify provenance.
+    TL-03: Records the generation timestamp for audit traceability.
     """
     try:
         data = _json.loads(path.read_text(encoding="utf-8"))
@@ -125,6 +127,7 @@ def _annotate_rf1159_with_provenance(
         "price_table_path": price_table_path,
         "draft": valuation_mode == "dummy",
         "generated_by": "taxspine-orchestrator",
+        "generated_at": generated_at,
     }
     path.write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -789,15 +792,17 @@ class JobService:
                                 review_json_path = review_dest_pf
 
             # ── Step 2.5: annotate output files with provenance ───────────
-            # TL-01 / TL-02: determine the effective price source string and
-            # annotate all RF-1159 JSON files with a _provenance block.  If the
-            # job used dummy valuation, also inject a visible draft banner into
-            # every HTML report so the output cannot be mistaken for a real filing.
+            # TL-01: ``draft=true`` when valuation_mode == "dummy" so the
+            # output cannot be mistaken for a real filing.
+            # TL-02: records the price source for tax-auditor traceability.
+            # TL-03: records the ISO-8601 generation timestamp.
+            # Failures are silently swallowed — annotation must never fail a job.
             _valuation_mode = job.input.valuation_mode.value
             _price_source = (
                 "price_table_csv" if _valuation_mode == "price_table" else "dummy"
             )
             _price_table_path = job.input.csv_prices_path
+            _generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
             for _rf1159_path_str in all_rf1159_json_paths:
                 _annotate_rf1159_with_provenance(
@@ -805,6 +810,7 @@ class JobService:
                     valuation_mode=_valuation_mode,
                     price_source=_price_source,
                     price_table_path=_price_table_path,
+                    generated_at=_generated_at,
                 )
 
             if _valuation_mode == "dummy":
@@ -825,32 +831,6 @@ class JobService:
                         log_lines=log_lines,
                         output_dir=output_dir,
                     )
-
-            # ── Step 2.6: inject price-source provenance into RF-1159 JSON files ──
-            # TL-03: the CLI does not know which price source was chosen by the
-            # orchestrator, so we post-process each RF-1159 JSON to add a
-            # _provenance block citing the price source and generation timestamp.
-            # Failures are silently swallowed — provenance annotation must never
-            # cause a job to fail.
-            if all_rf1159_json_paths and _price_source:
-                _prov_generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                _prov_note = {
-                    "generated_at": _prov_generated_at,
-                    "price_source": _price_source,
-                }
-                if _price_table_path:
-                    _prov_note["price_table_path"] = _price_table_path
-                for _rf1159_path_str in all_rf1159_json_paths:
-                    try:
-                        _rp = Path(_rf1159_path_str)
-                        _rdata = _json.loads(_rp.read_text(encoding="utf-8"))
-                        _rdata["_provenance"] = _prov_note
-                        _rp.write_text(
-                            _json.dumps(_rdata, ensure_ascii=False, indent=2),
-                            encoding="utf-8",
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass  # annotation failure must not fail the job
 
             # ── Step 3: write log + build output record ───────────────────
             log_path = self._write_log(output_dir, log_lines)
