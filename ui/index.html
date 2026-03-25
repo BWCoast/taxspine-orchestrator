@@ -267,7 +267,7 @@
       <div class="flex flex-col gap-3">
         <div>
           <label for="run-tax-year" class="text-xs text-gray-400 mb-1 block">Tax Year</label>
-          <input type="number" id="run-tax-year" class="input" min="2015" max="2030" step="1">
+          <input type="number" id="run-tax-year" class="input" min="2015" max="2030" step="1" oninput="onTaxYearChange()">
         </div>
         <div>
           <label for="run-country" class="text-xs text-gray-400 mb-1 block">Country</label>
@@ -1075,6 +1075,15 @@ function togglePricesField() {
   document.getElementById('prices-field').classList.toggle('hidden', v !== 'price_table');
   // F-14: show/hide the "not for filing" warning based on valuation mode
   document.getElementById('dummy-valuation-warning').classList.toggle('hidden', v !== 'dummy');
+}
+
+function onTaxYearChange() {
+  // Clear stale price path and status so a leftover path from a different year
+  // is not silently submitted with the new year's job.
+  document.getElementById('run-prices-path').value = '';
+  const status = document.getElementById('fetch-prices-status');
+  status.textContent = '';
+  status.className = 'text-xs text-gray-500';
 }
 
 function toggleCountryFields() {

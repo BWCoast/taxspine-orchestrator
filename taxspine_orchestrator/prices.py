@@ -1006,6 +1006,7 @@ def fetch_all_prices_for_year(
     any_fetched      = False
     available_paths: list[Path] = []
     failed_assets:   list[str]  = []
+    _fetch_errors:   dict[str, str] = {}  # asset → error message for diagnostics
 
     # ── Step 1: Kraken assets ────────────────────────────────────────────────
     for asset in _ALL_KRAKEN_ASSETS:
@@ -1015,8 +1016,9 @@ def fetch_all_prices_for_year(
             try:
                 _fetch_and_write(pair_usd, asset, year, dest)
                 any_fetched = True
-            except RuntimeError:
+            except RuntimeError as _exc:
                 failed_assets.append(asset)
+                _fetch_errors[asset] = str(_exc)
                 continue
         if dest.exists():
             available_paths.append(dest)
@@ -1204,9 +1206,10 @@ def fetch_all_prices_for_year(
 
     # ── Step 4: Merge all per-asset CSVs into combined ───────────────────────
     if not available_paths:
+        detail = "; ".join(f"{a}: {e}" for a, e in _fetch_errors.items())
         raise RuntimeError(
             f"Could not fetch price data for any asset in {year}. "
-            "Check network connectivity."
+            + (f"Errors: {detail}" if detail else "Check network connectivity.")
         )
 
     combined   = _combined_csv_path(year)
