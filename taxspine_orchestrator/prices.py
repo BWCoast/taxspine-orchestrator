@@ -412,10 +412,10 @@ def _fetch_onthedex_xrp_prices(
     except Exception:
         return {}
 
-    if body.get("error"):
+    if not isinstance(body, dict) or body.get("error"):
         return {}
 
-    ohlc_list = body.get("data", {}).get("ohlc")
+    ohlc_list = body.get("data", {}).get("ohlc") if isinstance(body.get("data"), dict) else None
     if not isinstance(ohlc_list, list):
         return {}
 
@@ -451,6 +451,9 @@ def _fetch_xrplto_token_id(symbol: str, issuer: str) -> str | None:
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read())
     except Exception:
+        return None
+
+    if not isinstance(body, dict):
         return None
 
     tokens = body.get("tokens")
@@ -496,6 +499,9 @@ def _fetch_xrplto_xrp_prices(
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read())
     except Exception:
+        return {}
+
+    if not isinstance(body, dict):
         return {}
 
     # XRPL.to response structure: try common field names
@@ -548,6 +554,9 @@ def _coingecko_search_coin_id(symbol: str) -> str | None:
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read())
     except Exception:
+        return None
+
+    if not isinstance(body, dict):
         return None
 
     coins = body.get("coins", [])
@@ -703,7 +712,16 @@ def _xrpl_rpc(method: str, params: dict, *, timeout: int = 15) -> dict:
     except Exception as exc:
         raise RuntimeError(f"XRPL RPC '{method}' failed: {exc}") from exc
 
+    if not isinstance(body, dict):
+        raise RuntimeError(
+            f"XRPL RPC '{method}' returned unexpected response type {type(body).__name__}"
+        )
+
     result = body.get("result", {})
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            f"XRPL RPC '{method}' returned non-dict result: {type(result).__name__}"
+        )
     if result.get("status") == "error":
         raise RuntimeError(
             f"XRPL RPC '{method}' error: "
@@ -1341,6 +1359,9 @@ def _fetch_kraken_usd_prices(pair: str, year: int) -> dict[str, Decimal]:
     except Exception as exc:
         raise RuntimeError(f"Could not reach Kraken API: {exc}") from exc
 
+    if not isinstance(body, dict):
+        raise RuntimeError(f"Kraken API returned unexpected response type {type(body).__name__}")
+
     if body.get("error"):
         raise RuntimeError(f"Kraken API error for {pair}: {body['error']}")
 
@@ -1478,6 +1499,9 @@ def _fetch_kraken_spot_usd() -> dict[str, Decimal]:
             body = json.loads(resp.read())
     except Exception as exc:
         raise RuntimeError(f"Could not reach Kraken Ticker API: {exc}") from exc
+
+    if not isinstance(body, dict):
+        raise RuntimeError(f"Kraken Ticker returned unexpected response type {type(body).__name__}")
 
     if body.get("error"):
         raise RuntimeError(f"Kraken Ticker error: {body['error']}")
