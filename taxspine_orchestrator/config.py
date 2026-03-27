@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     # A hung or infinitely-looping tax CLI will be killed after this many
     # seconds and the job will be marked FAILED with a descriptive error.
     # Override via SUBPROCESS_TIMEOUT_SECONDS env var for very large datasets.
-    SUBPROCESS_TIMEOUT_SECONDS: int = 300
+    SUBPROCESS_TIMEOUT_SECONDS: int = 600
 
     def ensure_dirs(self) -> None:
         """Create all working directories if they do not exist."""

@@ -298,8 +298,8 @@
         <div>
           <label for="run-valuation" class="text-xs text-gray-400 mb-1 block">Valuation</label>
           <select id="run-valuation" class="select w-full" onchange="togglePricesField()">
-            <option value="dummy">Built-in estimates (not for filing)</option>
-            <option value="price_table">Price table CSV</option>
+            <option value="dummy">Blockchain Scanner (no price table)</option>
+            <option value="price_table">Price Table CSV (for filing)</option>
           </select>
         </div>
         <!-- F-14: warning shown when built-in estimates are selected -->
@@ -309,8 +309,7 @@
              referenced Skatteetaten (Norway-only) but also appears for UK
              jobs where HMRC is the relevant authority. -->
         <div id="dummy-valuation-warning" class="rounded border border-yellow-600 bg-yellow-900/30 px-3 py-2 text-xs text-yellow-300" role="alert" aria-live="polite" aria-atomic="true">
-          <strong>⚠ Not for filing</strong> — Built-in estimates are <em>not</em> suitable for tax filing.
-          Select <strong>Price table CSV</strong> and upload authoritative prices before generating a report you intend to submit.
+          <strong>⚠ Preview only</strong> — Blockchain Scanner derives token prices from your own DEX trades. No external price table is used. Select <strong>Price Table CSV</strong> and fetch NOK prices before submitting to tax authorities.
         </div>
         <div id="prices-field" class="hidden">
           <label for="run-prices-path" class="text-xs text-gray-400 mb-1 block">Price table</label>
@@ -417,7 +416,7 @@
         <ol class="text-left list-decimal list-inside space-y-1 max-w-xs mx-auto">
           <li>Add an XRPL address <em>or</em> upload a generic-events CSV on the left.</li>
           <li>Set the tax year and country.</li>
-          <li>Choose <strong>Price table CSV</strong> and fetch NOK prices for an accurate report.</li>
+          <li>Choose <strong>Price Table CSV</strong> and fetch NOK prices for an accurate report.</li>
           <li>Click <strong>▶ Run Report</strong>.</li>
         </ol>
       </div>
