@@ -1733,6 +1733,10 @@ def _fetch_coincap_usd_prices(coincap_id: str, year: int) -> dict[str, Decimal]:
         _log.warning("CoinCap request failed for %s %s: %s", coincap_id, year, exc)
         return {}
 
+    if not isinstance(body, dict):
+        _log.warning("CoinCap returned unexpected type %s for %s %s", type(body).__name__, coincap_id, year)
+        return {}
+
     data = body.get("data")
     if not isinstance(data, list) or not data:
         _log.warning(
@@ -1825,6 +1829,9 @@ def _fetch_and_write_coingecko_nok(
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read())
     except Exception:
+        return 0
+
+    if not isinstance(body, dict):
         return 0
 
     raw_prices = body.get("prices", [])
