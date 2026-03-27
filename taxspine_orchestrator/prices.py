@@ -2057,6 +2057,12 @@ def fetch_prices(body: FetchPricesRequest) -> FetchPricesResponse:
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        _log.exception("Unexpected error in fetch_all_prices_for_year(year=%s)", body.year)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal error fetching prices: {type(exc).__name__}: {exc}",
+        ) from exc
 
     return info
 

@@ -1108,7 +1108,15 @@ async function fetchPrices() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ year: taxYear }),
     });
-    const data = await r.json();
+    let data;
+    try {
+      data = await r.json();
+    } catch {
+      const text = await r.text().catch(() => r.statusText);
+      status.textContent = `✗ Server error (${r.status}): ${text.slice(0, 200)}`;
+      status.className = 'text-xs text-red-400';
+      return;
+    }
     if (!r.ok) {
       status.textContent = `✗ ${data.detail || r.statusText}`;
       status.className = 'text-xs text-red-400';
