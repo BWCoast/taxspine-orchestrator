@@ -67,9 +67,37 @@ class TestDefaultPriceTable:
         assert resp.json()["input"]["csv_prices_path"] is None
 
     @patch("taxspine_orchestrator.services.subprocess.run")
-    def test_explicit_dummy_no_csv_prices_flag(self, mock_run, client):
-        """Explicitly setting valuation_mode=dummy should also omit --csv-prices."""
-        # _NORWAY_BASE has 1 XRPL account → 1 subprocess call.
+    @patch(
+        "taxspine_orchestrator.prices.fetch_xrp_backbone_nok",
+        return_value=Path("/fake/xrp_nok_2025.csv"),
+    )
+    def test_explicit_dummy_adds_backbone_csv_prices(
+        self, mock_backbone, mock_run, client
+    ):
+        """Blockchain Scanner mode (dummy + XRPL): adds --csv-prices (backbone)."""
+        mock_run.side_effect = [_make_ok()]
+
+        payload = {**_NORWAY_BASE, "valuation_mode": "dummy"}
+        resp = client.post("/jobs", json=payload)
+        job_id = resp.json()["id"]
+
+        client.post(f"/jobs/{job_id}/start")
+
+        mock_backbone.assert_called_once_with(2025)
+        xrpl_cmd = mock_run.call_args_list[0][0][0]
+        assert "--csv-prices" in xrpl_cmd
+        csv_idx = xrpl_cmd.index("--csv-prices")
+        assert "xrp_nok_2025.csv" in xrpl_cmd[csv_idx + 1]
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    @patch(
+        "taxspine_orchestrator.prices.fetch_xrp_backbone_nok",
+        side_effect=RuntimeError("no data"),
+    )
+    def test_explicit_dummy_backbone_failure_omits_csv_prices(
+        self, mock_backbone, mock_run, client
+    ):
+        """When backbone fetch fails, --csv-prices is omitted (graceful degradation)."""
         mock_run.side_effect = [_make_ok()]
 
         payload = {**_NORWAY_BASE, "valuation_mode": "dummy"}
