@@ -147,10 +147,10 @@ class TestSEC20SubprocessTimeout:
             "SUBPROCESS_TIMEOUT_SECONDS must be a positive integer"
         )
 
-    def test_subprocess_timeout_default_is_300(self):
-        """Default timeout must be 300 seconds (5 minutes)."""
+    def test_subprocess_timeout_default_is_600(self):
+        """Default timeout must be 600 seconds (10 minutes)."""
         from taxspine_orchestrator.config import Settings
-        assert Settings().SUBPROCESS_TIMEOUT_SECONDS == 300
+        assert Settings().SUBPROCESS_TIMEOUT_SECONDS == 600
 
     def test_services_passes_timeout_to_subprocess_run(self):
         """services.py must pass timeout= to every subprocess.run() call."""

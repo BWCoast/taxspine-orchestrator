@@ -2037,6 +2037,62 @@ def _write_combined_csv(source_paths: list[Path], dest: Path) -> int:
     return total
 
 
+def fetch_xrp_backbone_nok(year: int) -> Path:
+    """Fetch (or return cached) daily XRP/NOK prices for *year*.
+
+    Uses the same Kraken → Binance fallback chain as ``fetch_all_prices_for_year``
+    but only fetches XRP.  Writes to ``xrp_nok_{year}.csv`` in PRICES_DIR.
+
+    Returns the path to the CSV file (guaranteed to exist if no exception is raised).
+
+    Used by Blockchain Scanner mode (``valuation_mode == "dummy"`` + XRPL sources):
+    the XRP/NOK backbone is the conversion rate needed to turn XRPL DEX trade
+    quantities (XRP ÷ token) into NOK prices via VWAP.
+
+    Raises ``RuntimeError`` if all price sources fail.
+    """
+    settings.PRICES_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _asset_csv_path("XRP", year)
+
+    if not _needs_fetch(dest, year):
+        return dest
+
+    errs: list[str] = []
+
+    # Attempt 1: Kraken OHLC
+    try:
+        _fetch_and_write(_KRAKEN_USD_PAIR["XRP"], "XRP", year, dest)
+        _log.info("XRP backbone: fetched via Kraken for %s", year)
+        return dest
+    except RuntimeError as exc:
+        errs.append(f"Kraken: {exc}")
+        _log.warning("XRP backbone Kraken failed for %s: %s", year, exc)
+
+    # Attempt 2: Binance klines
+    binance_pair = _BINANCE_PAIRS.get("XRP")
+    if binance_pair is not None:
+        try:
+            _fetch_and_write_binance(binance_pair, "XRP", year, dest)
+            _log.info("XRP backbone: fetched via Binance for %s", year)
+            return dest
+        except RuntimeError as exc:
+            errs.append(f"Binance: {exc}")
+            _log.warning("XRP backbone Binance failed for %s: %s", year, exc)
+
+    # Attempt 3: CoinGecko NOK direct
+    cg_id = _COINGECKO_COIN_IDS.get("XRP")
+    if cg_id is not None:
+        n_rows = _fetch_and_write_coingecko_nok(cg_id, "XRP", year, dest)
+        if n_rows > 0:
+            _log.info("XRP backbone: fetched via CoinGecko for %s (%d rows)", year, n_rows)
+            return dest
+        errs.append("CoinGecko: no data returned")
+
+    raise RuntimeError(
+        f"Could not fetch XRP/NOK backbone for {year}: {'; '.join(errs)}"
+    )
+
+
 def _count_rows(path: Path) -> int:
     """Return the number of data rows in *path* (header excluded)."""
     try:

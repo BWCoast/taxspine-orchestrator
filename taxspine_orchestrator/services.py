@@ -557,6 +557,34 @@ class JobService:
             review_json_path: Path | None = None
             all_review_json_paths: list[str] = []
 
+            # ── Blockchain Scanner: auto-fetch XRP/NOK backbone ──────────────
+            # When valuation_mode == DUMMY and there are XRPL accounts, fetch the
+            # XRP/NOK backbone (Kraken → Binance fallback) and pass it as --csv-prices
+            # so the DEX VWAP service can convert XRP-denominated trade quantities
+            # to NOK.  The CLI also writes the derived IOU prices via --write-dex-prices.
+            _blockchain_scanner_csv: Path | None = None
+            _write_dex_prices_path: Path | None = None
+            if has_xrpl and job.input.valuation_mode == ValuationMode.DUMMY:
+                try:
+                    from .prices import fetch_xrp_backbone_nok  # noqa: PLC0415
+                    _blockchain_scanner_csv = fetch_xrp_backbone_nok(job.input.tax_year)
+                    _write_dex_prices_path = (
+                        output_dir / f"dex_prices_{job.input.tax_year}.csv"
+                    )
+                    log_lines.append(
+                        f"[blockchain-scanner] XRP/NOK backbone: {_blockchain_scanner_csv}"
+                    )
+                except Exception as _bsc_exc:  # noqa: BLE001
+                    log_lines.append(
+                        f"[blockchain-scanner] WARNING: could not fetch XRP/NOK backbone "
+                        f"for {job.input.tax_year}: {_bsc_exc} — "
+                        "XRPL IOU token prices will be unresolved."
+                    )
+                    _log.warning(
+                        "Blockchain Scanner backbone fetch failed for year=%s: %s",
+                        job.input.tax_year, _bsc_exc,
+                    )
+
             if has_xrpl:
                 for idx, account in enumerate(job.input.xrpl_accounts):
                     suffix = f"_{idx}" if len(job.input.xrpl_accounts) > 1 else ""
@@ -587,6 +615,8 @@ class JobService:
                         csv_files=csv_files_for_account,
                         rf1159_json_path=rf1159_dest,
                         review_json_path=review_dest,
+                        blockchain_scanner_csv=_blockchain_scanner_csv,
+                        write_dex_prices=_write_dex_prices_path,
                     )
                     log_lines.append(f"$ {' '.join(str(c) for c in xrpl_cmd)}")
 
@@ -942,6 +972,8 @@ class JobService:
         csv_files: list[CsvFileSpec] | None = None,
         rf1159_json_path: Path | None = None,
         review_json_path: Path | None = None,
+        blockchain_scanner_csv: Path | None = None,
+        write_dex_prices: Path | None = None,
     ) -> list[str]:
         """Build a ``taxspine-xrpl-nor`` command for a single XRPL account.
 
@@ -955,6 +987,7 @@ class JobService:
             --generic-events-csv   PATH     (optional; repeatable — one per CSV)
             --rf1159-json          PATH     (optional; RF-1159 JSON export)
             --csv-prices           PATH     (optional; CSV format price table)
+            --write-dex-prices     PATH     (optional; write DEX-implied prices CSV)
             --debug-valuation               (optional)
             --html-output          PATH     (optional; self-contained HTML report)
 
@@ -962,6 +995,13 @@ class JobService:
         Only GENERIC_EVENTS files are supported by taxspine-xrpl-nor.
         Non-generic files are skipped with a warning (they must be run via
         taxspine-nor-report instead).
+
+        ``blockchain_scanner_csv`` — when set (Blockchain Scanner mode), passed as
+        ``--csv-prices`` so the DEX VWAP service can convert XRP-denominated trade
+        prices to NOK using the fetched XRP/NOK backbone.
+
+        ``write_dex_prices`` — when set, the CLI writes DEX-derived token prices to
+        this path after the run (``--write-dex-prices``).
         """
         cmd: list[str] = [
             settings.TAXSPINE_XRPL_NOR_CLI,
@@ -985,11 +1025,18 @@ class JobService:
                     spec.path,
                 )
 
+        # Price table: explicit price_table mode takes precedence.
+        # Blockchain Scanner mode supplies its own backbone CSV.
         if (
             job_input.valuation_mode == ValuationMode.PRICE_TABLE
             and job_input.csv_prices_path is not None
         ):
             cmd.extend(["--csv-prices", job_input.csv_prices_path])
+        elif blockchain_scanner_csv is not None:
+            cmd.extend(["--csv-prices", str(blockchain_scanner_csv)])
+
+        if write_dex_prices is not None:
+            cmd.extend(["--write-dex-prices", str(write_dex_prices)])
 
         if rf1159_json_path is not None:
             cmd.extend(["--rf1159-json", str(rf1159_json_path)])
