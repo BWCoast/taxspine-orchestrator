@@ -59,7 +59,13 @@ class TestApi03WorkspaceRunAsync:
         )
 
     def test_source_code_uses_asyncio_to_thread(self) -> None:
-        """Static check: main.py must use asyncio.to_thread in run_workspace_report."""
+        """Static check: main.py must use BackgroundTasks in run_workspace_report.
+
+        B-2 changed /workspace/run from asyncio.to_thread (still blocks the
+        HTTP response) to FastAPI BackgroundTasks (true fire-and-forget).
+        The endpoint must use background_tasks.add_task so the HTTP response
+        is returned immediately with a PENDING job.
+        """
         main_py = Path(__file__).parent.parent / "taxspine_orchestrator" / "main.py"
         src = main_py.read_text(encoding="utf-8")
         start = src.find("async def run_workspace_report(")
@@ -67,14 +73,18 @@ class TestApi03WorkspaceRunAsync:
         # Read up to next @app. decorator.
         next_fn = src.find("\n@app.", start + 1)
         snippet = src[start: next_fn] if next_fn > 0 else src[start: start + 2000]
-        assert "asyncio.to_thread" in snippet, (
-            "run_workspace_report must use asyncio.to_thread to offload blocking "
-            "start_job_execution (API-03)"
+        assert "background_tasks.add_task" in snippet, (
+            "run_workspace_report must use background_tasks.add_task to offload "
+            "blocking start_job_execution and return immediately (B-2 / API-03)"
         )
 
     def test_workspace_run_returns_job(self, client: TestClient, tmp_path: Path) -> None:
-        """Integration: /workspace/run with a CSV file returns a completed/failed job."""
-        # Upload a minimal CSV to the workspace.
+        """Integration: /workspace/run returns immediately with a PENDING job (B-2).
+
+        After the B-2 fix, /workspace/run is fire-and-forget: the HTTP response
+        carries the newly-created PENDING job record and the pipeline runs in the
+        background.  Callers must poll GET /jobs/{id} for the final status.
+        """
         dummy_csv = tmp_path / "events.csv"
         dummy_csv.write_text(
             "event_id,timestamp,event_type,source,account,asset_in,amount_in,"
@@ -82,20 +92,19 @@ class TestApi03WorkspaceRunAsync:
             "complex_tax_treatment,note\n",
             encoding="utf-8",
         )
-        # Register directly.
         from taxspine_orchestrator import main as _m
         from taxspine_orchestrator.models import CsvFileSpec, CsvSourceType
         _m._workspace_store.add_csv(CsvFileSpec(path=str(dummy_csv)))
 
         resp = client.post(
             "/workspace/run",
-            json={"tax_year": 2025, "country": "norway", "dry_run": True},
+            json={"tax_year": 2025, "country": "norway"},
         )
-        # dry_run=True should complete (or fail) without real CLI calls.
-        assert resp.status_code in (200, 500), resp.text
-        if resp.status_code == 200:
-            body = resp.json()
-            assert body["status"] in ("completed", "failed")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # Fire-and-forget: response must carry the job before execution completes.
+        assert "id" in body
+        assert body["status"] in ("pending", "running", "completed", "failed")
 
 
 # ── API-04: Start-job duplicate-start prevention ──────────────────────────────

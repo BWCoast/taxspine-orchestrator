@@ -918,6 +918,22 @@ class JobService:
             if _complex_treatment_warning:
                 _log.warning("TL-06: job %s — %s", job_id, _complex_treatment_warning)
 
+            # A-M2: detect completed-but-empty-output cases.
+            # If the job had sources (CSV or XRPL) and produced rc=0 but no HTML
+            # was generated, the report file likely couldn't be written.
+            _output_warnings: list[str] = []
+            _has_sources = bool(job.input.csv_files) or bool(
+                getattr(job.input, "xrpl_accounts", None)
+            )
+            if _has_sources and not all_html_paths:
+                _msg = (
+                    "Pipeline completed (rc=0) but no HTML report was produced. "
+                    "The output directory may have been unreachable or the pipeline "
+                    "exited before writing the report file."
+                )
+                _output_warnings.append(_msg)
+                _log.warning("A-M2: job %s — %s", job_id, _msg)
+
             output = JobOutput(
                 report_html_path=str(report_html_path) if report_html_path else None,
                 report_html_paths=all_html_paths,
@@ -941,6 +957,8 @@ class JobService:
                 partial_year_warning=_partial_year_warning,
                 # TL-09: filing-completeness warnings from the RF-1159 output.
                 rf1159_warnings=_rf1159_warnings,
+                # A-M2: operational warnings (e.g. missing HTML output).
+                output_warnings=_output_warnings,
             )
             # API-07: guard against overwriting a user-initiated CANCELLED state
             # with COMPLETED.  If the job was cancelled mid-run the terminal

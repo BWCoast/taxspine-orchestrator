@@ -357,6 +357,17 @@ class JobOutput(BaseModel):
             "up to the run date and must be re-run after the year closes."
         ),
     )
+    # A-M2: operational warnings emitted when expected output files are missing
+    # after a successful (rc=0) pipeline run.  Surfaced without failing the job
+    # so callers know the report is incomplete without having to inspect files.
+    output_warnings: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Operational warnings from the job runner. "
+            "Non-empty when expected output files (HTML, RF-1159 JSON) were not "
+            "produced despite a successful pipeline exit code."
+        ),
+    )
     # TL-09: filing-completeness warnings extracted from RF-1159 JSON output.
     # Populated whenever the tax pipeline detects conditions that mean the
     # RF-1159 output is incomplete or unreliable (unresolved cost basis,

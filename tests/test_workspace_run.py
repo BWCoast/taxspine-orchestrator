@@ -239,11 +239,18 @@ class TestWorkspaceRunExecution:
     def test_returns_completed_job(
         self, mock_run: MagicMock, client_with_account: TestClient
     ) -> None:
-        """workspace/run executes synchronously and returns the final job."""
+        """workspace/run returns a job record immediately (B-2: fire-and-forget).
+
+        After B-2 the endpoint dispatches execution via FastAPI BackgroundTasks
+        and returns the PENDING job without waiting.  Callers must poll
+        GET /jobs/{id} for the terminal status.
+        """
         mock_run.return_value = _make_ok()
         resp = client_with_account.post("/workspace/run", json=_BASE_RUN)
         assert resp.status_code == 200
-        assert resp.json()["status"] == "completed"
+        body = resp.json()
+        assert "id" in body
+        assert body["status"] in ("pending", "running", "completed", "failed")
 
     @patch("taxspine_orchestrator.services.subprocess.run")
     def test_workspace_accounts_included_in_job(

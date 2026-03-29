@@ -280,9 +280,13 @@ async def health() -> JSONResponse:
         _log.error("Health check: DB ping failed: %s", exc)
         checks["db"] = "error"
 
-    # OUTPUT_DIR writable
-    out_ok = os.access(settings.OUTPUT_DIR, os.W_OK)
-    checks["output_dir"] = "ok" if out_ok else "error"
+    # Storage directories writable (B-M3: check all three dirs, not just output).
+    for _dir_name, _dir_path in [
+        ("output_dir", settings.OUTPUT_DIR),
+        ("upload_dir", settings.UPLOAD_DIR),
+        ("prices_dir", settings.PRICES_DIR),
+    ]:
+        checks[_dir_name] = "ok" if os.access(_dir_path, os.W_OK) else "error"
 
     # CLI binaries present
     for cli_name in ["taxspine-nor-report", "taxspine-xrpl-nor"]:
@@ -300,7 +304,12 @@ async def health() -> JSONResponse:
     #
     # CLI binaries being absent is "degraded" (HTTP 200) — the server can
     # still respond and callers can diagnose via the response body.
-    critical_ok = checks.get("db") == "ok" and checks.get("output_dir") == "ok"
+    critical_ok = (
+        checks.get("db") == "ok"
+        and checks.get("output_dir") == "ok"
+        and checks.get("upload_dir") == "ok"
+        and checks.get("prices_dir") == "ok"
+    )
 
     return JSONResponse(
         {"status": "ok" if overall_ok else "degraded", **checks},
