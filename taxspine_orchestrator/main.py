@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, Security, UploadFile, File
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Response, Security, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security.api_key import APIKeyHeader
@@ -134,10 +134,17 @@ settings.ensure_dirs()
 _startup_logger = logging.getLogger(__name__)
 _log = _startup_logger  # module-level logger used by endpoint handlers
 if not settings.ORCHESTRATOR_KEY:
+    if settings.REQUIRE_AUTH:
+        raise RuntimeError(
+            "ORCHESTRATOR_KEY is not set but REQUIRE_AUTH=true. "
+            "Set ORCHESTRATOR_KEY in your environment or .env file before starting "
+            "the server, or set REQUIRE_AUTH=false for local/dev use."
+        )
     _startup_logger.warning(
         "ORCHESTRATOR_KEY is not set — all API endpoints are PUBLICLY ACCESSIBLE. "
         "Set ORCHESTRATOR_KEY in your environment or .env file before deploying "
-        "to any network-reachable host."
+        "to any network-reachable host. "
+        "Set REQUIRE_AUTH=true to turn this warning into a hard startup failure."
     )
 
 # SEC-17: Validate CLI binary names at startup.
@@ -1111,7 +1118,7 @@ class WorkspaceRunRequest(BaseModel):
     country: Country = Country.NORWAY
     case_name: Optional[str] = None
     pipeline_mode: PipelineMode = PipelineMode.PER_FILE
-    valuation_mode: ValuationMode = ValuationMode.DUMMY
+    valuation_mode: ValuationMode = ValuationMode.PRICE_TABLE
     csv_prices_path: Optional[str] = None
     include_trades: bool = False
     debug_valuation: bool = False
@@ -1119,19 +1126,18 @@ class WorkspaceRunRequest(BaseModel):
 
 
 @app.post("/workspace/run", response_model=Job, tags=["workspace"], dependencies=[Depends(_require_key)])
-async def run_workspace_report(body: WorkspaceRunRequest) -> Job:
-    """Create and immediately execute a job using all workspace accounts and CSVs.
+async def run_workspace_report(body: WorkspaceRunRequest, background_tasks: BackgroundTasks) -> Job:
+    """Create a job using all workspace accounts and CSVs, start it asynchronously.
 
     This is the primary year-over-year entry point:
     - All registered XRPL accounts are included automatically.
     - All registered CSV files are included automatically.
     - Change only ``tax_year`` from one year to the next.
 
-    API-03: execution is offloaded to a thread-pool worker via
-    ``asyncio.to_thread`` so the event loop is not blocked during the
-    (potentially long-running) CLI subprocess calls.
-
-    Returns the completed (or failed) job.
+    API-03: execution is dispatched to a background task so the HTTP response
+    is returned immediately with the created job (status=PENDING). The caller
+    should poll ``GET /jobs/{id}`` until the status is COMPLETED or FAILED.
+    This prevents HTTP timeouts on large datasets.
     """
     ws = _workspace_store.load()
     if not ws.xrpl_accounts and not ws.csv_files:
@@ -1161,12 +1167,11 @@ async def run_workspace_report(body: WorkspaceRunRequest) -> Job:
     )
 
     job = _job_service.create_job(job_input)
-    # API-03: offload blocking CLI execution to the thread pool so the FastAPI
-    # event loop is not blocked during subprocess calls.
-    result = await asyncio.to_thread(_job_service.start_job_execution, job.id)
-    if result is None:
-        raise HTTPException(status_code=500, detail="Job execution returned None")
-    return result
+    # API-03: dispatch execution to the background so we return immediately.
+    # BackgroundTasks runs sync callables in the thread pool after the response
+    # is sent, so the ASGI worker is not blocked.
+    background_tasks.add_task(_job_service.start_job_execution, job.id)
+    return job
 
 
 # ── Alerts ────────────────────────────────────────────────────────────────────

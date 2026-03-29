@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # Set to a non-empty value to require X-Orchestrator-Key on all mutating
     # endpoints.
     ORCHESTRATOR_KEY: str = ""
+    # Set REQUIRE_AUTH=true to refuse startup when ORCHESTRATOR_KEY is empty.
+    # Always set this in production or any network-reachable deployment.
+    # When false (default), an empty key is allowed but a loud warning is emitted.
+    REQUIRE_AUTH: bool = False
     # Allowed CORS origins.  Override with a comma-separated env var or
     # by subclassing Settings.
     CORS_ORIGINS: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000"]
