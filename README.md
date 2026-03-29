@@ -417,7 +417,30 @@ where you serve `ui/index.html`.  Note: CORS only restricts *browser* clients;
 command-line tools such as `curl` are unaffected, which is why `ORCHESTRATOR_KEY`
 is the primary access control.
 
-### 3. Consider a reverse proxy for rate limiting (SEC-03)
+### 3. HTTPS is required in production (S-M3)
+
+The orchestrator transmits the `ORCHESTRATOR_KEY` API key over HTTP by default.
+**Never run it on a publicly accessible interface without TLS.**
+
+- **Self-hosted (recommended):** Place the orchestrator behind a reverse proxy
+  (nginx, Caddy, Traefik) that terminates TLS.  The orchestrator binds to
+  `127.0.0.1` only; the proxy handles HTTPS on port 443.
+
+  Example Caddy snippet:
+  ```
+  taxspine.example.com {
+      reverse_proxy 127.0.0.1:8000
+  }
+  ```
+
+- **Docker Compose:** See the `docker-compose.synology.yml` example which
+  routes traffic through the Synology reverse-proxy infrastructure.
+
+- **Local development only:** Plain HTTP on `localhost` is acceptable because
+  traffic never leaves the machine.  Do not expose `0.0.0.0:8000` on a
+  network-accessible interface without TLS.
+
+### 4. Consider a reverse proxy for rate limiting (SEC-03)
 
 The orchestrator has no built-in rate limiter.  In production, place it behind
 nginx, Caddy, or another reverse proxy and configure per-IP or per-key request

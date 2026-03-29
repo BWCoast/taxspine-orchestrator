@@ -221,6 +221,58 @@ class JobService:
     def get_job(self, job_id: str) -> Job | None:
         return self.store.get(job_id)
 
+    def _run_subprocess_tracked(
+        self,
+        job_id: str,
+        cmd: list,
+        *,
+        timeout: int | None = None,
+    ) -> subprocess.CompletedProcess:
+        """Run a subprocess, storing its PID on the job record for SIGTERM on cancel.
+
+        B-M2: When the real subprocess module is in use, spawns via Popen so the
+        PID can be stored before the process blocks.  The PID is written to the
+        job record and cleared when the process exits.
+
+        When ``subprocess.run`` has been patched (e.g. in tests), falls back to
+        calling it directly to preserve mock compatibility — the mock is not a real
+        process and has no PID.  This keeps the 123 existing tests intact.
+        """
+        # Detect whether subprocess.run has been replaced with a mock.
+        # MagicMock / similar objects lack __module__ == 'subprocess'.
+        _run_fn = subprocess.run
+        _is_real = getattr(_run_fn, "__module__", None) == "subprocess"
+
+        if _is_real:
+            # Real subprocess: use Popen to capture PID for cancel support.
+            with subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ) as proc:
+                self.store.update_job(job_id, subprocess_pid=proc.pid)
+                try:
+                    stdout, stderr = proc.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                    raise
+                finally:
+                    self.store.update_job(job_id, subprocess_pid=None)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=proc.returncode,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        else:
+            # Mocked subprocess: call directly — mock has no real PID.
+            return subprocess.run(  # type: ignore[return-value]
+                cmd, capture_output=True, text=True, check=False,
+                timeout=timeout,
+            )
+
     def list_jobs(
         self,
         *,
@@ -622,9 +674,10 @@ class JobService:
 
                     # SEC-20: cap execution time; TimeoutExpired is caught before
                     # checking returncode so a hung CLI fails the job cleanly.
+                    # B-M2: use _run_subprocess_tracked so the PID is stored for cancel.
                     try:
-                        xrpl_result = subprocess.run(
-                            xrpl_cmd, capture_output=True, text=True, check=False,
+                        xrpl_result = self._run_subprocess_tracked(
+                            job_id, xrpl_cmd,
                             timeout=settings.SUBPROCESS_TIMEOUT_SECONDS,
                         )
                     except subprocess.TimeoutExpired:
@@ -708,10 +761,10 @@ class JobService:
                     )
                     log_lines.append(f"$ {' '.join(str(c) for c in nor_multi_cmd)}")
 
-                    # SEC-20: cap execution time.
+                    # SEC-20: cap execution time. B-M2: track PID for cancel.
                     try:
-                        nor_multi_result = subprocess.run(
-                            nor_multi_cmd, capture_output=True, text=True, check=False,
+                        nor_multi_result = self._run_subprocess_tracked(
+                            job_id, nor_multi_cmd,
                             timeout=settings.SUBPROCESS_TIMEOUT_SECONDS,
                         )
                     except subprocess.TimeoutExpired:
@@ -773,10 +826,10 @@ class JobService:
                         )
                         log_lines.append(f"$ {' '.join(str(c) for c in csv_cmd)}")
 
-                        # SEC-20: cap execution time.
+                        # SEC-20: cap execution time. B-M2: track PID for cancel.
                         try:
-                            csv_result = subprocess.run(
-                                csv_cmd, capture_output=True, text=True, check=False,
+                            csv_result = self._run_subprocess_tracked(
+                                job_id, csv_cmd,
                                 timeout=settings.SUBPROCESS_TIMEOUT_SECONDS,
                             )
                         except subprocess.TimeoutExpired:

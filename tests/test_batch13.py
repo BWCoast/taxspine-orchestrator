@@ -153,19 +153,22 @@ class TestSEC20SubprocessTimeout:
         assert Settings().SUBPROCESS_TIMEOUT_SECONDS == 600
 
     def test_services_passes_timeout_to_subprocess_run(self):
-        """services.py must pass timeout= to every subprocess.run() call."""
+        """services.py must pass timeout= to subprocess execution.
+
+        B-M2 introduced _run_subprocess_tracked() which centralises the
+        subprocess invocation.  The three call sites now call that helper
+        (passing timeout=settings.SUBPROCESS_TIMEOUT_SECONDS); the helper
+        itself uses Popen.communicate(timeout=...) for real subprocesses and
+        subprocess.run(timeout=...) for the mock-fallback path.
+        """
         src = _services()
-        # Count subprocess.run( calls and verify each has timeout=
-        import re
-        # Find all subprocess.run( blocks
-        run_calls = list(re.finditer(r"subprocess\.run\(", src))
-        assert len(run_calls) >= 3, (
-            f"Expected at least 3 subprocess.run() calls; found {len(run_calls)}"
+        # The helper and its three callers must all pass the timeout through.
+        assert "_run_subprocess_tracked(" in src, (
+            "services.py must use _run_subprocess_tracked() for subprocess calls (B-M2)"
         )
-        # Verify timeout= appears in services.py
         assert "timeout=settings.SUBPROCESS_TIMEOUT_SECONDS" in src, (
-            "services.py must pass timeout=settings.SUBPROCESS_TIMEOUT_SECONDS "
-            "to subprocess.run() calls (SEC-20)"
+            "services.py must forward timeout=settings.SUBPROCESS_TIMEOUT_SECONDS "
+            "to _run_subprocess_tracked() (SEC-20)"
         )
 
     def test_timeout_expired_caught_in_services(self):
@@ -177,14 +180,20 @@ class TestSEC20SubprocessTimeout:
         )
 
     def test_timeout_count_matches_subprocess_run_count(self):
-        """Number of TimeoutExpired handlers must equal number of subprocess.run calls."""
+        """services.py must catch subprocess.TimeoutExpired.
+
+        B-M2: _run_subprocess_tracked() centralises subprocess execution.
+        The three call sites each wrap it in try/except TimeoutExpired.
+        The helper itself also handles TimeoutExpired internally (Popen path).
+        We verify at least one TimeoutExpired handler per _run_subprocess_tracked
+        call site (3 sites + 1 internal = 4 total).
+        """
         src = _services()
         import re
-        run_count = len(re.findall(r"subprocess\.run\(", src))
         timeout_count = len(re.findall(r"subprocess\.TimeoutExpired", src))
-        assert timeout_count == run_count, (
-            f"Expected {run_count} TimeoutExpired handlers to match "
-            f"{run_count} subprocess.run calls; found {timeout_count}"
+        assert timeout_count >= 4, (
+            f"Expected at least 4 TimeoutExpired handlers (3 call sites + "
+            f"1 internal in _run_subprocess_tracked); found {timeout_count}"
         )
 
     def test_timed_out_xrpl_job_is_failed(self, tmp_path, monkeypatch):

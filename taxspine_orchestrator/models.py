@@ -395,6 +395,16 @@ class Job(BaseModel):
     created_at: datetime
     updated_at: datetime
     started_at: Optional[datetime] = None
+    # B-M2: PID of the currently running pipeline subprocess, if any.
+    # Set when a subprocess starts; cleared when it exits.  The cancel endpoint
+    # sends SIGTERM to this PID when the job is RUNNING.
+    subprocess_pid: Optional[int] = Field(
+        default=None,
+        description=(
+            "PID of the active pipeline subprocess. Non-None only while a "
+            "subprocess is running. Used by POST /jobs/{id}/cancel to send SIGTERM."
+        ),
+    )
 
 
 # ── Workspace ────────────────────────────────────────────────────────────────

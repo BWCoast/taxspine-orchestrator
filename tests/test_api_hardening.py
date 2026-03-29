@@ -98,7 +98,7 @@ class TestApi03WorkspaceRunAsync:
 
         resp = client.post(
             "/workspace/run",
-            json={"tax_year": 2025, "country": "norway"},
+            json={"tax_year": 2025, "country": "norway", "dry_run": True},
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()

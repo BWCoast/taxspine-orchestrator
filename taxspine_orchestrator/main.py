@@ -430,6 +430,17 @@ async def cancel_job(job_id: str) -> dict:
             detail=f"Cannot cancel a job with status {job.status.value}",
         )
     _job_store.update_status(job_id, JobStatus.CANCELLED, error_message="Cancelled by user")
+    # B-M2: send SIGTERM to the active subprocess if one is running.
+    pid = job.subprocess_pid
+    if pid is not None:
+        import signal as _sig  # noqa: PLC0415
+        import os as _os  # noqa: PLC0415
+        try:
+            _os.kill(pid, _sig.SIGTERM)
+            _log.info("cancel_job: sent SIGTERM to pid %d for job %s", pid, job_id)
+        except (ProcessLookupError, PermissionError) as exc:
+            # Process already exited or we lack permission — not an error.
+            _log.warning("cancel_job: SIGTERM to pid %d failed: %s", pid, exc)
     return {"status": "cancelled", "job_id": job_id}
 
 
@@ -884,6 +895,55 @@ async def upload_csv(
         "original_filename": original_name,
         "registered": register,
     }
+
+
+# ── Upload management ─────────────────────────────────────────────────────────
+
+
+@app.get("/uploads", tags=["uploads"], dependencies=[Depends(_require_key)])
+def list_uploads() -> list[dict]:
+    """List all uploaded CSV files with metadata (id, size, created_at).
+
+    B-M1: callers can enumerate previously uploaded files and decide which to
+    delete.  Returns an empty list when the upload directory is empty.
+    """
+    upload_dir = settings.UPLOAD_DIR
+    results = []
+    for csv_file in sorted(upload_dir.glob("*.csv")):
+        stem = csv_file.stem  # upload_id (UUID)
+        stat = csv_file.stat()
+        results.append({
+            "id": stem,
+            "filename": csv_file.name,
+            "size_bytes": stat.st_size,
+            "created_at": stat.st_ctime,
+        })
+    return results
+
+
+@app.delete("/uploads/{upload_id}", status_code=204, tags=["uploads"], dependencies=[Depends(_require_key)])
+def delete_upload(upload_id: str) -> None:
+    """Delete an uploaded CSV file by its upload ID.
+
+    B-M1: prevents unbounded disk growth by allowing callers to remove
+    files that are no longer needed.
+
+    The ``upload_id`` must be a UUID produced by ``POST /uploads/csv``.
+    Any path traversal attempt (``..``, ``/``) is rejected with 400.
+    Returns 204 on success; 404 when the file does not exist.
+    """
+    # SEC: reject any upload_id containing path separators or dots.
+    if not upload_id or "/" in upload_id or "\\" in upload_id or ".." in upload_id or "." in upload_id:
+        raise HTTPException(status_code=400, detail="Invalid upload_id format")
+    dest = settings.UPLOAD_DIR / f"{upload_id}.csv"
+    # Verify the resolved path is still inside UPLOAD_DIR.
+    try:
+        dest.resolve().relative_to(settings.UPLOAD_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid upload_id format")
+    if not dest.exists():
+        raise HTTPException(status_code=404, detail="Upload not found")
+    dest.unlink()
 
 
 # ── Attach CSVs to a job ──────────────────────────────────────────────────────
