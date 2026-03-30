@@ -602,6 +602,9 @@ def _fetch_coingecko_nok_prices(symbol: str, year: int) -> dict[str, Decimal]:
     except Exception:
         return {}
 
+    if not isinstance(body, dict):
+        return {}
+
     raw_prices = body.get("prices", [])
     result: dict[str, Decimal] = {}
     for entry in raw_prices:

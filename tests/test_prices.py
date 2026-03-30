@@ -2136,6 +2136,14 @@ class TestFetchCoinGeckoNokPrices:
         for k in result:
             datetime.datetime.strptime(k, "%Y-%m-%d")  # raises if format is wrong
 
+    def test_list_response_returns_empty(self):
+        """CoinGecko returning a list (rate-limit / unexpected format) must not raise."""
+        list_body = json.dumps([1, 2, 3]).encode()
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(list_body)), \
+             patch("taxspine_orchestrator.prices._coingecko_search_coin_id", return_value="solo-coin"):
+            result = _fetch_coingecko_nok_prices("SOLO", 2023)
+        assert result == {}
+
 
 class TestFetchAndWriteXrplIouCoinGeckoFallback:
     """Tests the CoinGecko Tier 2c path inside _fetch_and_write_xrpl_iou."""
