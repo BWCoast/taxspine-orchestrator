@@ -421,6 +421,8 @@ def _fetch_onthedex_xrp_prices(
 
     prices: dict[str, Decimal] = {}
     for candle in ohlc_list:
+        if not isinstance(candle, dict):
+            continue
         ts    = candle.get("t")
         close = candle.get("c")
         if ts is None or close is None:
@@ -461,6 +463,8 @@ def _fetch_xrplto_token_id(symbol: str, issuer: str) -> str | None:
         return None
 
     for token in tokens:
+        if not isinstance(token, dict):
+            continue
         if (
             token.get("currency", "").upper() == symbol.upper()
             and token.get("issuer", "") == issuer
@@ -516,6 +520,8 @@ def _fetch_xrplto_xrp_prices(
 
     prices: dict[str, Decimal] = {}
     for candle in ohlc_data:
+        if not isinstance(candle, dict):
+            continue
         ts    = candle.get("t") or candle.get("time") or candle.get("timestamp")
         close = candle.get("c") or candle.get("close")
         if ts is None or close is None:
@@ -564,10 +570,13 @@ def _coingecko_search_coin_id(symbol: str) -> str | None:
         return None
 
     # Prefer exact symbol match (case-insensitive)
-    exact = [c for c in coins if c.get("symbol", "").upper() == symbol.upper()]
+    dict_coins = [c for c in coins if isinstance(c, dict)]
+    if not dict_coins:
+        return None
+    exact = [c for c in dict_coins if c.get("symbol", "").upper() == symbol.upper()]
     if exact:
         return str(exact[0]["id"])
-    return str(coins[0]["id"])
+    return str(dict_coins[0]["id"])
 
 
 def _fetch_coingecko_nok_prices(symbol: str, year: int) -> dict[str, Decimal]:
@@ -989,6 +998,8 @@ def _fetch_account_trust_lines(account: str) -> list[str]:
             break
 
         for line in result.get("lines", []):
+            if not isinstance(line, dict):
+                continue
             currency = line.get("currency", "")
             issuer   = line.get("account", "")   # 'account' field = issuer address
             balance  = line.get("balance", "0")

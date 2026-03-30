@@ -881,6 +881,23 @@ class TestFetchOnthedexXrpPrices:
         result = _fetch_onthedex_xrp_prices("SOLO", "rIssuer", 2025)
         assert result == {}
 
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_array_format_candles_returns_empty(self, mock_urlopen):
+        """OnTheDEX returning array-format candles must not raise AttributeError."""
+        import datetime as _dt
+        ts = int(_dt.datetime(2025, 6, 15, tzinfo=_dt.timezone.utc).timestamp())
+        # Array-format: [timestamp, open, high, low, close, volume] instead of dict
+        body = {"data": {"ohlc": [[ts, "0.01", "0.02", "0.009", "0.019", "1000"]]}}
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=MagicMock(
+            read=MagicMock(return_value=json.dumps(body).encode())
+        ))
+        ctx.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = ctx
+
+        result = _fetch_onthedex_xrp_prices("SOLO", "rIssuer", 2025)
+        assert result == {}
+
 
 # ── TestFetchXrpltoTokenId ────────────────────────────────────────────────────
 
@@ -934,6 +951,45 @@ class TestFetchXrpltoTokenId:
         mock_urlopen.return_value = ctx
 
         assert _fetch_xrplto_token_id("GRIM", "rGrimIssuer") is None
+
+    @patch("taxspine_orchestrator.prices.urllib.request.urlopen")
+    def test_non_dict_token_entries_skipped(self, mock_urlopen):
+        """tokens list containing non-dict elements must not raise AttributeError."""
+        body = {"tokens": [["SOLO", "rsoLo2S1kiGeCcn6hCUXVrCpGMWLrRrLZz", "abc123"]]}
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=MagicMock(
+            read=MagicMock(return_value=json.dumps(body).encode())
+        ))
+        ctx.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = ctx
+
+        assert _fetch_xrplto_token_id("SOLO", "rsoLo2S1kiGeCcn6hCUXVrCpGMWLrRrLZz") is None
+
+
+class TestFetchXrpltoXrpPrices:
+    """Unit tests for _fetch_xrplto_xrp_prices."""
+
+    def test_array_format_candles_returns_empty(self):
+        """XRPL.to returning array-format candles must not raise AttributeError."""
+        import datetime as _dt
+        ts = int(_dt.datetime(2025, 6, 15, tzinfo=_dt.timezone.utc).timestamp())
+        # Array-format: [timestamp, open, high, low, close] instead of dict
+        body = json.dumps({"ohlc": [[ts, "0.01", "0.02", "0.009", "0.019"]]}).encode()
+        with patch("taxspine_orchestrator.prices._fetch_xrplto_token_id", return_value="solo-md5"), \
+             patch("urllib.request.urlopen", return_value=_make_urlopen_response(body)):
+            result = _fetch_xrplto_xrp_prices("SOLO", "rsoLo2S1kiGeCcn6hCUXVrCpGMWLrRrLZz", 2025)
+        assert result == {}
+
+    def test_dict_format_candles_parsed(self):
+        """XRPL.to returning dict-format candles is parsed correctly."""
+        import datetime as _dt
+        ts = int(_dt.datetime(2025, 6, 15, tzinfo=_dt.timezone.utc).timestamp())
+        body = json.dumps({"ohlc": [{"t": ts, "c": "0.019"}]}).encode()
+        with patch("taxspine_orchestrator.prices._fetch_xrplto_token_id", return_value="solo-md5"), \
+             patch("urllib.request.urlopen", return_value=_make_urlopen_response(body)):
+            result = _fetch_xrplto_xrp_prices("SOLO", "rsoLo2S1kiGeCcn6hCUXVrCpGMWLrRrLZz", 2025)
+        assert "2025-06-15" in result
+        assert isinstance(result["2025-06-15"], Decimal)
 
 
 # ── TestFetchAndWriteXrplIou ──────────────────────────────────────────────────
@@ -1895,6 +1951,19 @@ class TestFetchAccountTrustLines:
         assert f"SOLO.{_SOLO_ISSUER}" in specs
         assert f"GRIM.{_GRIM_ISSUER}" in specs
 
+    def test_non_dict_line_entries_skipped(self):
+        """lines list containing non-dict elements must not raise AttributeError."""
+        mock_result = {
+            "lines": [
+                ["SOLO", _SOLO_ISSUER, "100.0"],           # array format — should be skipped
+                {"currency": "GRIM", "account": _GRIM_ISSUER, "balance": "500.0"},  # valid
+            ]
+        }
+        with patch("taxspine_orchestrator.prices._xrpl_rpc", return_value=mock_result):
+            specs = _fetch_account_trust_lines(_TEST_ACCOUNT)
+        assert f"SOLO.{_SOLO_ISSUER}" not in specs
+        assert f"GRIM.{_GRIM_ISSUER}" in specs
+
 
 # ── TestAutoDiscoverFromAccounts ──────────────────────────────────────────────
 
@@ -2085,6 +2154,13 @@ class TestCoinGeckoSearchCoinId:
         with patch("urllib.request.urlopen", return_value=_make_urlopen_response(_CG_SEARCH_BODY_SOLO)):
             result = _coingecko_search_coin_id("SOLO")
         assert isinstance(result, str)
+
+    def test_non_dict_coin_entries_skipped(self):
+        """coins list containing non-dict elements must not raise AttributeError."""
+        body = json.dumps({"coins": [["solo-coin", "SOLO", "Solo"]]}).encode()
+        with patch("urllib.request.urlopen", return_value=_make_urlopen_response(body)):
+            result = _coingecko_search_coin_id("SOLO")
+        assert result is None
 
 
 class TestFetchCoinGeckoNokPrices:
