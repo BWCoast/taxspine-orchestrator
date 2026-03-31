@@ -189,6 +189,22 @@ from .config import settings
 from .models import Country, CsvFileSpec, CsvSourceType, Job, JobInput, JobOutput, JobStatus, PipelineMode, ValuationMode
 from .storage import InMemoryJobStore, SqliteJobStore, WorkspaceStore
 
+# ── TL-12: Content-based CSV format detection ──────────────────────────────────
+# Maps sniff_csv_source_type() display names → CsvSourceType for auto-correction.
+# Only formats that have a corresponding CsvSourceType enum value are listed;
+# unknown formats (Bybit, Kraken, NBX, Uphold) are caught separately.
+try:
+    from tax_spine.importers import sniff_csv_source_type as _sniff_csv_source_type
+    _SNIFF_AVAILABLE = True
+except ImportError:  # pragma: no cover — tax_spine not installed in this env
+    _sniff_csv_source_type = None  # type: ignore[assignment]
+    _SNIFF_AVAILABLE = False
+
+_SNIFF_TO_SOURCE_TYPE: dict[str, CsvSourceType] = {
+    "Coinbase RAWTX CSV": CsvSourceType.COINBASE_CSV,
+    "Firi CSV": CsvSourceType.FIRI_CSV,
+}
+
 _log = logging.getLogger(__name__)
 
 
@@ -529,8 +545,8 @@ class JobService:
             # that every traded asset appears in the CSV price table.  Transactions
             # for assets absent from the table produce UNRESOLVED (zero) lots,
             # silently understating gains.  Warn the operator to verify coverage
-            # manually.  RLUSD is a known unsupported asset (no exchange rate data
-            # available from Kraken/Norges Bank as of 2026).
+            # manually.  RLUSD is auto-included by fetch_all_prices_for_year when
+            # XRPL assets are present; coverage gaps are still possible for other assets.
             if (
                 job.input.valuation_mode == ValuationMode.PRICE_TABLE
                 and job.input.csv_prices_path
@@ -539,8 +555,7 @@ class JobService:
                     f"[price-table] Using {job.input.csv_prices_path}. "
                     "WARNING TL-07/TL-10: asset coverage is not verified at execution time. "
                     "Transactions for assets absent from the price table produce "
-                    "UNRESOLVED (zero) valuations. "
-                    "Known unsupported asset: RLUSD. Verify coverage before filing."
+                    "UNRESOLVED (zero) valuations. Verify coverage before filing."
                 )
 
             # ── dry_run: preview commands only ────────────────────────────
@@ -571,6 +586,75 @@ class JobService:
                         log_lines=log_lines,
                         output_dir=output_dir,
                     )
+
+            # ── TL-12: Content-based CSV format detection ─────────────────
+            # When a file is submitted as source_type=generic_events but its
+            # header fingerprint matches a known exchange format, we need to
+            # either auto-correct the source_type (CSV-only jobs) or fail fast
+            # (XRPL+CSV jobs, where taxspine-xrpl-nor only accepts
+            # --generic-events-csv).
+            #
+            # This catches the common case where users upload a Firi or
+            # Coinbase CSV through the dashboard UI, which coerces bare paths
+            # to source_type=GENERIC_EVENTS before TL-11 can detect the mismatch.
+            _resolved_csv_files: list[CsvFileSpec] = []
+            _tl12_corrections: list[tuple[str, str, str]] = []  # (path, from, to)
+            for spec in job.input.csv_files:
+                if spec.source_type == CsvSourceType.GENERIC_EVENTS and _SNIFF_AVAILABLE:
+                    sniff_result = _sniff_csv_source_type(spec.path)
+                    if sniff_result is not None:
+                        display_name, cli_hint = sniff_result
+                        corrected_type = _SNIFF_TO_SOURCE_TYPE.get(display_name)
+                        if corrected_type is not None:
+                            _tl12_corrections.append(
+                                (spec.path, CsvSourceType.GENERIC_EVENTS.value, corrected_type.value)
+                            )
+                            _resolved_csv_files.append(
+                                CsvFileSpec(path=spec.path, source_type=corrected_type)
+                            )
+                        else:
+                            # Recognised format but no CsvSourceType mapping
+                            # (Bybit, Kraken, NBX, Uphold).  Cannot auto-route.
+                            return self._fail_job(
+                                job_id,
+                                error=(
+                                    f"TL-12: CSV file {spec.path!r} was submitted as "
+                                    f"source_type=generic_events but its header looks "
+                                    f"like a {display_name!r}. {cli_hint} "
+                                    "Convert to generic-events CSV format or submit "
+                                    "a separate job with the correct source_type."
+                                ),
+                                log_lines=log_lines,
+                                output_dir=output_dir,
+                            )
+                        continue
+                _resolved_csv_files.append(spec)
+
+            if _tl12_corrections:
+                if has_xrpl:
+                    # taxspine-xrpl-nor cannot accept non-generic CSVs.
+                    bad = ", ".join(
+                        f"{to_type}:{path}"
+                        for path, _, to_type in _tl12_corrections
+                    )
+                    return self._fail_job(
+                        job_id,
+                        error=(
+                            "TL-12: XRPL job received non-generic CSV files submitted as "
+                            f"generic_events (auto-detected: {bad}). "
+                            "taxspine-xrpl-nor only accepts generic-events CSV files. "
+                            "Submit the CSV files in a separate Norway-CSV-only job, "
+                            "or set the correct source_type in the job request."
+                        ),
+                        log_lines=log_lines,
+                        output_dir=output_dir,
+                    )
+                else:
+                    for path, from_type, to_type in _tl12_corrections:
+                        log_lines.append(
+                            f"[TL-12] Auto-detected {path!r}: "
+                            f"source_type corrected {from_type} → {to_type}."
+                        )
 
             # ── Carry-forward lots (Norway jobs only) ─────────────────────
             # Load FIFO lots saved from tax_year-1 and inject them as
@@ -653,7 +737,7 @@ class JobService:
                     # when this is a mixed workspace.  This keeps the FIFO lot
                     # pool unified and prevents formue double-counting.
                     csv_files_for_account: list[CsvFileSpec] = (
-                        list(job.input.csv_files) if (has_csv and idx == 0) else []
+                        list(_resolved_csv_files) if (has_csv and idx == 0) else []
                     )
                     # Prepend carry-forward lots to the primary account so
                     # the opening position is established before any events.
@@ -748,9 +832,9 @@ class JobService:
                     rf1159_dest_nm = output_dir / "rf1159.json"
                     review_dest_nm = output_dir / "review.json"
                     nor_multi_specs = (
-                        [carry_forward_spec] + list(job.input.csv_files)
+                        [carry_forward_spec] + list(_resolved_csv_files)
                         if carry_forward_spec is not None
-                        else list(job.input.csv_files)
+                        else list(_resolved_csv_files)
                     )
                     nor_multi_cmd = self._build_nor_multi_command(
                         job.input,
@@ -808,7 +892,7 @@ class JobService:
 
                 else:
                     # Per-file mode (default): one taxspine-nor-report per CSV.
-                    for spec in job.input.csv_files:
+                    for spec in _resolved_csv_files:
                         csv_stem = Path(spec.path).stem
                         html_dest = output_dir / f"report_{csv_stem}.html"
                         rf1159_dest_pf: Path | None = None
@@ -967,7 +1051,7 @@ class JobService:
                     )
 
             # TL-06: scan input CSVs for complex tax treatment events.
-            _complex_treatment_warning = _scan_complex_tax_treatments(job.input.csv_files)
+            _complex_treatment_warning = _scan_complex_tax_treatments(_resolved_csv_files)
             if _complex_treatment_warning:
                 _log.warning("TL-06: job %s — %s", job_id, _complex_treatment_warning)
 
