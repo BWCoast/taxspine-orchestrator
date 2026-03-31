@@ -1197,6 +1197,66 @@ class TestFetchAllPricesWithXrplAssets:
         assert "add RLUSD" not in advisory_texts.lower()
         assert "extra_xrpl_assets" not in advisory_texts.lower()
 
+    def test_rlusd_auto_included_when_not_in_extra(self, tmp_path):
+        """RLUSD is auto-generated even when not passed in extra_xrpl_assets."""
+        import datetime as _dt
+        ts = int(_dt.datetime(2023, 6, 1, tzinfo=_dt.timezone.utc).timestamp())
+        # Kraken XRP/USD response (for nok_rates via _fetch_kraken_usd_prices)
+        kraken_body = json.dumps({
+            "error": [], "result": {
+                "XXRPZUSD": [[ts, "0.5", "0.52", "0.49", "0.51", "0.51", "1000", 100]],
+                "last": ts,
+            },
+        }).encode()
+        # Norges Bank USD/NOK
+        nb_body = json.dumps({
+            "data": {
+                "structure": {
+                    "dimensions": {"observation": [{"values": [{"id": "2023-06-01"}]}]}
+                },
+                "dataSets": [{"series": {"0:0:0:0": {"observations": {"0": ["10.5"]}}}}],
+            }
+        }).encode()
+
+        for asset in ("XRP", "BTC", "ETH", "ADA", "LTC"):
+            (tmp_path / f"{asset.lower()}_nok_2023.csv").write_text(
+                f"date,asset_id,fiat_currency,price_fiat\n2023-06-01,{asset},NOK,1.0000\n"
+            )
+
+        with patch("taxspine_orchestrator.prices.settings") as ms, \
+             patch("taxspine_orchestrator.prices.urllib.request.urlopen") as mock_uo, \
+             patch("taxspine_orchestrator.prices._fetch_and_write_xrpl_iou", return_value=False):
+            ms.PRICES_DIR = tmp_path
+
+            def side_effect(req, timeout=None):
+                ctx = MagicMock()
+                raw = kraken_body if "kraken" in req.full_url else nb_body
+                ctx.__enter__ = MagicMock(return_value=MagicMock(read=MagicMock(return_value=raw)))
+                ctx.__exit__ = MagicMock(return_value=False)
+                return ctx
+            mock_uo.side_effect = side_effect
+
+            # RLUSD not in extra_xrpl_assets — should be auto-included
+            result = fetch_all_prices_for_year(2023, extra_xrpl_assets=["SOLO.rSoloIssuer1234567890"])
+
+        rlusd_csv = tmp_path / "rlusd_nok_2023.csv"
+        assert rlusd_csv.exists(), "RLUSD CSV should be auto-generated"
+        assert "RLUSD" in rlusd_csv.read_text()
+        unsupported = {u.asset for u in result.unsupported_assets}
+        assert "RLUSD" not in unsupported
+
+    def test_rlusd_auto_include_no_error_when_extra_empty(self, tmp_path):
+        """No NameError when extra_xrpl_assets is empty and RLUSD would be skipped."""
+        for asset in ("XRP", "BTC", "ETH", "ADA", "LTC"):
+            (tmp_path / f"{asset.lower()}_nok_2023.csv").write_text(
+                f"date,asset_id,fiat_currency,price_fiat\n2023-06-01,{asset},NOK,1.0000\n"
+            )
+        with patch("taxspine_orchestrator.prices.settings") as ms:
+            ms.PRICES_DIR = tmp_path
+            result = fetch_all_prices_for_year(2023)  # no extra_xrpl_assets
+        # Just confirm no exception and combined CSV exists
+        assert result.rows > 0
+
     def test_ltc_included_in_kraken_assets(self, tmp_path):
         """LTC should now be fetched as part of Kraken tier (new addition)."""
         with patch("taxspine_orchestrator.prices.settings") as ms, \

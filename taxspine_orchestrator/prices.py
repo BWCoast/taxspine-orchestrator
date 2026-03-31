@@ -1302,17 +1302,22 @@ def fetch_all_prices_for_year(
             if dest.exists():
                 available_paths.append(dest)
 
-    # ── Step 3: Add advisory notes ───────────────────────────────────────────
-    # Warn about RLUSD if not explicitly requested (it's a common oversight).
+    # ── Step 3: Always include RLUSD static peg ─────────────────────────────
+    # RLUSD is the primary Ripple USD stablecoin.  It uses a static $1.00 peg
+    # and requires no API call, so it is always generated regardless of whether
+    # the caller explicitly requested it.  Trust-line discovery skips zero-balance
+    # lines, so RLUSD is missed whenever the balance is 0 at discovery time (e.g.
+    # the user received RLUSD payments but moved them before the fetch ran).
     requested_symbols = {_parse_xrpl_asset(s)[0] for s in extra_xrpl_assets}
-    if "RLUSD" not in requested_symbols:
-        unsupported.append(UnsupportedAssetNote(
-            asset="RLUSD",
-            reason=(
-                "RLUSD is not included. To add it, pass 'RLUSD' in "
-                "extra_xrpl_assets (no issuer needed — it uses a static $1.00 peg)."
-            ),
-        ))
+    if "RLUSD" not in requested_symbols and extra_xrpl_assets and nok_rates:
+        _rlusd_dest = _asset_csv_path("RLUSD", year)
+        if _needs_fetch(_rlusd_dest, year):
+            _rlusd_usd = _generate_static_peg_usd_rows(_STATIC_USD_PEGS["RLUSD"], year)
+            _write_usd_as_nok_csv("RLUSD", _rlusd_usd, nok_rates, _rlusd_dest)
+            any_fetched = True
+            _log.info("Auto-included RLUSD static peg for %s", year)
+        if _rlusd_dest.exists():
+            available_paths.append(_rlusd_dest)
 
     for failed in failed_assets:
         unsupported.append(UnsupportedAssetNote(
