@@ -269,8 +269,8 @@ class TestTL07PriceTableCoverageWarning:
                 "TL-07: execution log must contain the coverage warning when "
                 f"valuation_mode=price_table; log was:\n{log_content}"
             )
-            assert "RLUSD" in log_content, (
-                "TL-07: execution log must mention RLUSD in coverage warning"
+            assert "UNRESOLVED" in log_content, (
+                "TL-07: execution log must mention UNRESOLVED valuations in coverage warning"
             )
 
     def test_dummy_mode_no_coverage_warning(self, tmp_path, monkeypatch):
