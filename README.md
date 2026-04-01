@@ -55,15 +55,20 @@ Open `ui/index.html` in a browser (or serve it statically) to use the dashboard.
 ## Authentication
 
 Set `ORCHESTRATOR_KEY` in the environment to enable API key authentication.
-All endpoints require the key in the `X-Orchestrator-Key` header.
+All endpoints require the key in the `X-Api-Key` header.
 
 ```bash
 export ORCHESTRATOR_KEY=my-secret-key
-curl -H "X-Orchestrator-Key: my-secret-key" -X POST http://localhost:8000/jobs ...
+curl -H "X-Api-Key: my-secret-key" -X POST http://localhost:8000/jobs ...
 ```
 
 When `ORCHESTRATOR_KEY` is unset (default for local dev), all endpoints are
 unrestricted.
+
+The dashboard UI (`ui/index.html`) stores the key in `localStorage` under
+`orchestratorKey`.  An auth overlay is shown on first visit and any time a
+`401` response is received.  The 🔑 Key button in the header lets you rotate
+the key without reloading the page.
 
 ---
 
@@ -131,12 +136,13 @@ curl -s http://localhost:8000/jobs/JOB_ID
 | `tax_year`        | int     | required    | Tax year to report (e.g. `2025`)                          |
 | `country`         | enum    | required    | `"norway"` or `"uk"`                                      |
 | `case_name`       | string  | `null`      | Human-friendly label for dashboard display and filtering  |
-| `pipeline_mode`   | enum    | `"per_file"`| `"per_file"` or `"nor_multi"` (Norway CSV jobs only)      |
-| `valuation_mode`  | enum    | `"price_table"` | `"dummy"` or `"price_table"`                          |
-| `csv_prices_path` | string  | `null`      | Path to NOK price table CSV (required for `price_table`)  |
-| `include_trades`  | bool    | `false`     | Include XRPL DEX swap events (OfferCreate)                |
-| `debug_valuation` | bool    | `false`     | Write valuation diagnostics to the execution log          |
-| `dry_run`         | bool    | `false`     | Log commands that would run; skip actual CLI execution    |
+| `pipeline_mode`                   | enum    | `"per_file"`    | `"per_file"` or `"nor_multi"` (Norway CSV jobs only)                                                                                           |
+| `valuation_mode`                  | enum    | `"price_table"` | `"dummy"` or `"price_table"`                                                                                                                   |
+| `csv_prices_path`                 | string  | `null`          | Path to NOK price table CSV (required for `price_table`)                                                                                       |
+| `include_trades`                  | bool    | `false`         | Include XRPL DEX swap events (OfferCreate)                                                                                                     |
+| `debug_valuation`                 | bool    | `false`         | Write valuation diagnostics to the execution log                                                                                               |
+| `dry_run`                         | bool    | `false`         | Log commands that would run; skip actual CLI execution                                                                                         |
+| `unlinked_transfer_out_policy`    | enum    | `"skip"`        | `"skip"` or `"dispose"` — how to treat TRANSFER_OUT events with no matching TRANSFER_IN.  `"dispose"` realises a loss equal to the FIFO cost basis.  Only use `"dispose"` when all own wallets are included in the run. |
 
 ### Pipeline mode (Norway CSV jobs)
 
