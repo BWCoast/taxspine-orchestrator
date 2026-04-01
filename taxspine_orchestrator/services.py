@@ -590,13 +590,14 @@ class JobService:
             # ── TL-12: Content-based CSV format detection ─────────────────
             # When a file is submitted as source_type=generic_events but its
             # header fingerprint matches a known exchange format, we need to
-            # either auto-correct the source_type (CSV-only jobs) or fail fast
+            # either auto-correct the source_type (CSV-only jobs) or auto-split
             # (XRPL+CSV jobs, where taxspine-xrpl-nor only accepts
             # --generic-events-csv).
             #
             # This catches the common case where users upload a Firi or
             # Coinbase CSV through the dashboard UI, which coerces bare paths
             # to source_type=GENERIC_EVENTS before TL-11 can detect the mismatch.
+            _native_csv_specs: list[CsvFileSpec] = []   # populated by TL-12 auto-split
             _resolved_csv_files: list[CsvFileSpec] = []
             _tl12_corrections: list[tuple[str, str, str]] = []  # (path, from, to)
             for spec in job.input.csv_files:
@@ -633,21 +634,28 @@ class JobService:
             if _tl12_corrections:
                 if has_xrpl:
                     # taxspine-xrpl-nor cannot accept non-generic CSVs.
-                    bad = ", ".join(
-                        f"{to_type}:{path}"
-                        for path, _, to_type in _tl12_corrections
+                    # TL-12 auto-split: segregate native-format files into
+                    # _native_csv_specs; they run through taxspine-nor-report
+                    # in Step 1b (independent FIFO pool, per-file mode).
+                    # Only generic-events files stay in _resolved_csv_files
+                    # for the XRPL step.  This mirrors PER_FILE behaviour for
+                    # multi-source workspaces and requires no user intervention.
+                    _native_csv_specs = [
+                        spec for spec in _resolved_csv_files
+                        if spec.source_type != CsvSourceType.GENERIC_EVENTS
+                    ]
+                    _resolved_csv_files = [
+                        spec for spec in _resolved_csv_files
+                        if spec.source_type == CsvSourceType.GENERIC_EVENTS
+                    ]
+                    native_summary = ", ".join(
+                        f"{spec.source_type.value}:{Path(spec.path).name}"
+                        for spec in _native_csv_specs
                     )
-                    return self._fail_job(
-                        job_id,
-                        error=(
-                            "TL-12: XRPL job received non-generic CSV files submitted as "
-                            f"generic_events (auto-detected: {bad}). "
-                            "taxspine-xrpl-nor only accepts generic-events CSV files. "
-                            "Submit the CSV files in a separate Norway-CSV-only job, "
-                            "or set the correct source_type in the job request."
-                        ),
-                        log_lines=log_lines,
-                        output_dir=output_dir,
+                    log_lines.append(
+                        f"[TL-12] XRPL job has non-generic CSV files; auto-splitting "
+                        f"into Step 1b (independent FIFO pool, per-file mode): "
+                        f"{native_summary}"
                     )
                 else:
                     for path, from_type, to_type in _tl12_corrections:
@@ -785,9 +793,81 @@ class JobService:
                         if rf1159_json_path is None:
                             rf1159_json_path = rf1159_dest
 
+            # ── Step 1b: TL-12 auto-split — native CSVs in XRPL+CSV workspace ──
+            # When TL-12 detected non-generic CSV files in a mixed XRPL+CSV job,
+            # those files are queued in _native_csv_specs.  Run each through
+            # taxspine-nor-report here (per-file, independent FIFO lot pool).
+            # Outputs are merged into the same all_html_paths / all_rf1159_json_paths
+            # / all_review_json_paths collections as the XRPL step above.
+            for spec in _native_csv_specs:
+                csv_stem = Path(spec.path).stem
+                html_dest = output_dir / f"report_{csv_stem}.html"
+                rf1159_dest_1b: Path | None = None
+                review_dest_1b: Path | None = None
+                if job.input.country == Country.NORWAY:
+                    rf1159_dest_1b = output_dir / f"rf1159_{csv_stem}.json"
+                    review_dest_1b = output_dir / f"review_{csv_stem}.json"
+
+                csv_cmd = self._build_csv_command(
+                    job.input,
+                    csv_spec=spec,
+                    html_path=html_dest,
+                    rf1159_json_path=rf1159_dest_1b,
+                    review_json_path=review_dest_1b,
+                )
+                log_lines.append(f"$ {' '.join(str(c) for c in csv_cmd)}")
+
+                try:
+                    csv_result = self._run_subprocess_tracked(
+                        job_id, csv_cmd,
+                        timeout=settings.SUBPROCESS_TIMEOUT_SECONDS,
+                    )
+                except subprocess.TimeoutExpired:
+                    return self._fail_job(
+                        job_id,
+                        error=(
+                            f"taxspine-nor-report timed out for {spec.path} "
+                            f"(TL-12 Step 1b; limit={settings.SUBPROCESS_TIMEOUT_SECONDS}s)"
+                        ),
+                        log_lines=log_lines,
+                        output_dir=output_dir,
+                    )
+                log_lines.append(f"  rc={csv_result.returncode}")
+                if csv_result.stdout:
+                    log_lines.append(f"  stdout:\n{csv_result.stdout.rstrip()}")
+                if csv_result.stderr:
+                    log_lines.append(f"  stderr:\n{csv_result.stderr.rstrip()}")
+
+                if csv_result.returncode != 0:
+                    return self._fail_job(
+                        job_id,
+                        error=(
+                            f"taxspine-nor-report failed for {spec.path} "
+                            f"(TL-12 Step 1b; rc={csv_result.returncode})"
+                        ),
+                        log_lines=log_lines,
+                        output_dir=output_dir,
+                    )
+
+                if html_dest.exists():
+                    all_html_paths.append(str(html_dest))
+                    if report_html_path is None:
+                        report_html_path = html_dest
+
+                if rf1159_dest_1b is not None and rf1159_dest_1b.exists():
+                    all_rf1159_json_paths.append(str(rf1159_dest_1b))
+                    if rf1159_json_path is None:
+                        rf1159_json_path = rf1159_dest_1b
+
+                if review_dest_1b is not None and review_dest_1b.exists():
+                    all_review_json_paths.append(str(review_dest_1b))
+                    if review_json_path is None:
+                        review_json_path = review_dest_1b
+
             # ── Step 2: CSVs → taxspine-nor-report / taxspine-nor-multi ───
             # Only run this step for CSV-only workspaces.  When XRPL accounts
-            # are present, generic-events CSV files were already merged in Step 1.
+            # are present, generic-events CSV files were already merged in Step 1
+            # and native-format CSVs were handled in Step 1b.
             if has_csv and not has_xrpl:
                 if (
                     job.input.pipeline_mode == PipelineMode.NOR_MULTI

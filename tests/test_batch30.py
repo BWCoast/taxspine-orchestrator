@@ -76,11 +76,12 @@ class TestTL12SourceAnnotation:
             "content-based CSV detection guard"
         )
 
-    def test_tl12_error_message_present(self):
-        """The XRPL TL-12 error message must identify itself."""
+    def test_tl12_autosplit_log_message_present(self):
+        """The XRPL TL-12 auto-split log message must identify itself."""
         src = _svc()
-        assert "TL-12: XRPL job received non-generic CSV" in src, (
-            "TL-12: services.py must raise a TL-12-prefixed error for XRPL+mismatch case"
+        assert "[TL-12] XRPL job has non-generic CSV files; auto-splitting" in src, (
+            "TL-12: services.py must log a TL-12-prefixed auto-split message for "
+            "XRPL+non-generic CSV case (no longer a hard fail — auto-split instead)"
         )
 
     def test_sniff_mapping_present(self):
@@ -93,10 +94,11 @@ class TestTL12SourceAnnotation:
 # ── XRPL+CSV: Firi CSV submitted as generic_events must fail (TL-12) ─────────
 
 
-class TestTL12XrplFiriCsvRejected:
-    """Firi CSV submitted as generic_events in an XRPL job must be rejected."""
+class TestTL12XrplFiriCsvAutoSplit:
+    """Firi CSV submitted as generic_events in an XRPL job must be auto-split, not rejected."""
 
-    def test_firi_csv_as_generic_in_xrpl_job_fails(self, tmp_path, monkeypatch):
+    def test_firi_csv_as_generic_in_xrpl_job_autosplits(self, tmp_path, monkeypatch):
+        """Auto-split: Firi CSV runs in Step 1b; XRPL step has no CSV attached."""
         from taxspine_orchestrator.main import app
         from taxspine_orchestrator.config import settings
 
@@ -117,30 +119,42 @@ class TestTL12XrplFiriCsvRejected:
              patch("taxspine_orchestrator.services._sniff_csv_source_type",
                    side_effect=_mock_sniff_firi):
             with TestClient(app) as c:
-                resp = c.post("/jobs", json={
-                    "country": "norway",
-                    "tax_year": 2025,
-                    "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
-                    "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
-                })
-                assert resp.status_code == 201
-                job_id = resp.json()["id"]
-                c.post(f"/jobs/{job_id}/start")
+                with patch("taxspine_orchestrator.services.subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                    resp = c.post("/jobs", json={
+                        "country": "norway",
+                        "tax_year": 2025,
+                        "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
+                        "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
+                    })
+                    assert resp.status_code == 201
+                    job_id = resp.json()["id"]
+                    c.post(f"/jobs/{job_id}/start")
 
-                for _ in range(60):
-                    status = c.get(f"/jobs/{job_id}").json()["status"]
-                    if status in ("failed", "completed", "cancelled"):
-                        break
-                    time.sleep(0.05)
+                    for _ in range(60):
+                        status = c.get(f"/jobs/{job_id}").json()["status"]
+                        if status in ("failed", "completed", "cancelled"):
+                            break
+                        time.sleep(0.05)
 
-                job = c.get(f"/jobs/{job_id}").json()
-                assert job["status"] == "failed", (
-                    f"TL-12: XRPL job with Firi CSV as generic_events must fail; "
-                    f"got status={job['status']!r}"
-                )
-                err = _get_error(job)
-                assert "TL-12" in err, f"TL-12: error must contain 'TL-12'; got {err!r}"
-                assert "firi" in err.lower(), f"TL-12: error must mention firi; got {err!r}"
+                    job = c.get(f"/jobs/{job_id}").json()
+                    # Job must NOT fail due to TL-12 — it should auto-split and complete.
+                    err = _get_error(job)
+                    assert "TL-12" not in err, (
+                        f"TL-12: XRPL job with Firi CSV must auto-split (not fail); "
+                        f"got error={err!r}"
+                    )
+                    # The execution log must contain the TL-12 auto-split notice.
+                    logs = _read_log(job)
+                    assert "[TL-12]" in logs, (
+                        f"TL-12: auto-split log message must appear; got log={logs!r}"
+                    )
+                    assert "auto-splitting" in logs, (
+                        f"TL-12: log must mention auto-splitting; got log={logs!r}"
+                    )
+                    assert "firi" in logs.lower(), (
+                        f"TL-12: log must mention firi source; got log={logs!r}"
+                    )
 
     def test_real_generic_csv_still_passes_tl12(self, tmp_path, monkeypatch):
         """A genuine generic-events CSV must not be blocked by TL-12."""
