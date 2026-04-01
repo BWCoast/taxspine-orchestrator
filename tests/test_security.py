@@ -1,7 +1,7 @@
 """Security hardening tests — P2-A.
 
 Covers:
-- X-Orchestrator-Key authentication header (Fix 1)
+- X-Api-Key authentication header (Fix 1)
 - OUTPUT_DIR containment check on the download endpoint (Fix 2)
 - UPLOAD_DIR containment check on the workspace/csv endpoint (Fix 3)
 - XRPL address format validation (Fix 4)
@@ -48,7 +48,7 @@ def client() -> TestClient:
 
 
 class TestAuthHeader:
-    """Fix 1 — X-Orchestrator-Key header."""
+    """Fix 1 — X-Api-Key header."""
 
     def test_post_endpoint_requires_key_when_configured(
         self, client: TestClient
@@ -62,7 +62,7 @@ class TestAuthHeader:
             try:
                 resp = client.post("/jobs", json=_SAMPLE_JOB)
                 assert resp.status_code == 401
-                assert "X-Orchestrator-Key" in resp.json()["detail"]
+                assert "X-Api-Key" in resp.json()["detail"]
             finally:
                 _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
 
@@ -78,7 +78,7 @@ class TestAuthHeader:
             resp = client.post(
                 "/jobs",
                 json=_SAMPLE_JOB,
-                headers={"X-Orchestrator-Key": "secret-key"},
+                headers={"X-Api-Key": "secret-key"},
             )
             assert resp.status_code != 401
         finally:
@@ -115,7 +115,7 @@ class TestAuthHeader:
             resp = client.get("/jobs")
             assert resp.status_code == 401, (
                 "GET /jobs must return 401 when ORCHESTRATOR_KEY is set "
-                "and no X-Orchestrator-Key header is provided"
+                "and no X-Api-Key header is provided"
             )
         finally:
             _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
@@ -127,7 +127,7 @@ class TestAuthHeader:
         original = _s.ORCHESTRATOR_KEY
         _s.ORCHESTRATOR_KEY = "secret-key"  # type: ignore[assignment]
         try:
-            resp = client.get("/jobs", headers={"X-Orchestrator-Key": "secret-key"})
+            resp = client.get("/jobs", headers={"X-Api-Key": "secret-key"})
             assert resp.status_code == 200
         finally:
             _s.ORCHESTRATOR_KEY = original  # type: ignore[assignment]
@@ -156,7 +156,7 @@ class TestAuthHeader:
             resp = client.post(
                 "/jobs",
                 json=_SAMPLE_JOB,
-                headers={"X-Orchestrator-Key": "wrong-key"},
+                headers={"X-Api-Key": "wrong-key"},
             )
             assert resp.status_code == 401
         finally:
@@ -364,7 +364,7 @@ class TestSec14PricesFetchAuth:
                 resp = client.post(
                     "/prices/fetch",
                     json={"year": 2023},
-                    headers={"X-Orchestrator-Key": "secret-key"},
+                    headers={"X-Api-Key": "secret-key"},
                 )
             assert resp.status_code != 401
         finally:

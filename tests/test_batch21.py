@@ -159,7 +159,7 @@ class TestSEC07AlertsAuth:
         original = config.settings.ORCHESTRATOR_KEY
         config.settings.ORCHESTRATOR_KEY = "test-sec07-key"
         try:
-            r = client.get("/alerts", headers={"X-Orchestrator-Key": "test-sec07-key"})
+            r = client.get("/alerts", headers={"X-Api-Key": "test-sec07-key"})
             assert r.status_code == 200
         finally:
             config.settings.ORCHESTRATOR_KEY = original

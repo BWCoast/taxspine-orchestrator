@@ -65,15 +65,15 @@ if os.environ.get("LOG_FORMAT", "").lower() == "json":
 
 # ── SEC-03: Sensitive-header log scrub ────────────────────────────────────────
 # Defensive filter: if DEBUG-level HTTP middleware logging is ever enabled,
-# X-Orchestrator-Key and Authorization header values are replaced with
-# [REDACTED] before any handler emits the record.  Applied to the root logger
-# so it covers ALL handlers (plain-text and JSON) without further configuration.
+# X-Api-Key and Authorization header values are replaced with [REDACTED]
+# before any handler emits the record.  Applied to the root logger so it
+# covers ALL handlers (plain-text and JSON) without further configuration.
 
 class _SensitiveHeaderFilter(logging.Filter):
     """Redact API-key and bearer-token values from every log record."""
 
     _PATTERNS = [
-        (re.compile(r'(?i)(x-orchestrator-key\s*[:=]\s*)\S+'), r'\1[REDACTED]'),
+        (re.compile(r'(?i)(x-api-key\s*[:=]\s*)\S+'), r'\1[REDACTED]'),
         (re.compile(r'(?i)(authorization\s*[:=]\s*\S+\s*)\S+'), r'\1[REDACTED]'),
     ]
 
@@ -106,7 +106,7 @@ app.add_middleware(
 
 # ── Authentication ────────────────────────────────────────────────────────────
 
-_api_key_header = APIKeyHeader(name="X-Orchestrator-Key", auto_error=False)
+_api_key_header = APIKeyHeader(name="X-Api-Key", auto_error=False)
 
 
 async def _require_key(key: str | None = Security(_api_key_header)) -> None:
@@ -120,7 +120,7 @@ async def _require_key(key: str | None = Security(_api_key_header)) -> None:
     if expected and key != expected:
         raise HTTPException(
             status_code=401,
-            detail="Invalid or missing X-Orchestrator-Key header",
+            detail="Invalid or missing X-Api-Key header",
         )
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────

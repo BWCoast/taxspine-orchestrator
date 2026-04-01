@@ -181,9 +181,36 @@
     .xrpl-token-pill { display:inline-flex; align-items:center; gap:6px; background:#1e3a5f; color:#93c5fd; border:1px solid #2563eb; border-radius:20px; padding:4px 12px; font-size:0.8rem; font-family:monospace; margin:3px; }
     .xrpl-token-pill button { background:none; border:none; color:#93c5fd; cursor:pointer; padding:0; font-size:0.9rem; line-height:1; }
     .xrpl-token-pill button:hover { color:#f87171; }
+    /* ── Auth overlay ── */
+    #auth-overlay { position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.88); }
+    #auth-overlay.hidden { display:none; }
+    .auth-card { background:#1a2236; border:1px solid #2d3a4e; border-radius:0.75rem; padding:2rem; max-width:22rem; width:calc(100% - 2rem); display:flex; flex-direction:column; gap:1rem; }
+    .auth-card h2 { color:#e2e8f0; font-size:1rem; font-weight:600; margin:0; }
+    .auth-card p  { color:#6b7280; font-size:0.8rem; margin:0; line-height:1.5; }
+    .auth-card code { color:#93c5fd; font-size:0.8rem; }
+    #auth-error { color:#f87171; font-size:0.75rem; }
+    #auth-key-input { width:100%; background:#0f1117; border:1px solid #374151; border-radius:0.375rem; padding:0.5rem 0.75rem; color:#e2e8f0; font-size:0.875rem; box-sizing:border-box; }
+    #auth-key-input:focus { outline:none; border-color:#3b82f6; }
+    .auth-change-btn { font-size:0.7rem; color:#4b5563; background:none; border:1px solid #374151; border-radius:0.375rem; padding:2px 7px; cursor:pointer; }
+    .auth-change-btn:hover { color:#9ca3af; border-color:#6b7280; }
   </style>
 </head>
 <body class="min-h-screen">
+
+<!-- ── Auth overlay ─────────────────────────────────────────────────────── -->
+<div id="auth-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+  <div class="auth-card">
+    <div style="display:flex;align-items:center;gap:0.5rem;">
+      <span style="font-size:1.25rem;">🔑</span>
+      <h2 id="auth-title">API Key Required</h2>
+    </div>
+    <p>Enter your <code>ORCHESTRATOR_KEY</code> to access the dashboard.<br>
+       Leave blank if the server is running without a key (dev / local mode).</p>
+    <input id="auth-key-input" type="password" placeholder="Paste API key here" autocomplete="current-password" />
+    <div id="auth-error" class="hidden"></div>
+    <button id="auth-save-btn" class="btn-primary" style="width:100%;">Unlock</button>
+  </div>
+</div>
 
 <!-- ── Top bar ─────────────────────────────────────────────────────────── -->
 <header class="sticky top-0 z-50 border-b border-gray-800" style="background:#0f1117;">
@@ -197,6 +224,8 @@
         <div class="dot dot-loading pulse" id="health-dot"></div>
         <span id="health-text">Connecting…</span>
       </div>
+      <span class="text-gray-700 text-xs">|</span>
+      <button class="auth-change-btn" onclick="_changeKey()" title="Change API key">🔑 Key</button>
       <span class="text-gray-700 text-xs">|</span>
       <a href="/docs" target="_blank" class="text-xs text-blue-500 hover:text-blue-400">API Docs ↗</a>
     </div>
@@ -802,6 +831,86 @@
 const API = document.querySelector('meta[name="api-base"]')?.content
   ?? ((location.protocol === 'file:') ? 'http://localhost:8000' : '');
 
+// ── Auth: localStorage key → X-Api-Key header ────────────────────────────────
+// The server reads ORCHESTRATOR_KEY from the environment.  When set, every API
+// request must include a matching X-Api-Key header.  The key is stored in
+// localStorage so the user only needs to enter it once per browser session.
+// When ORCHESTRATOR_KEY is empty on the server (dev mode), any key value works
+// (including empty string) and the overlay can be dismissed with a blank field.
+
+const _KEY_STORAGE = 'orchestratorKey';
+
+/** Returns the stored API key, or '' if none is set. */
+function _apiKey() { return localStorage.getItem(_KEY_STORAGE) ?? ''; }
+
+/** Merges X-Api-Key into a headers object without overwriting caller-supplied headers. */
+function _authHeaders(extra = {}) {
+  const k = _apiKey();
+  return k ? { 'X-Api-Key': k, ...extra } : { ...extra };
+}
+
+/**
+ * Drop-in replacement for fetch() that:
+ *   1. Automatically injects the X-Api-Key header.
+ *   2. On a 401 response, clears the stored key and shows the auth overlay so
+ *      the user can re-enter it without a page reload.
+ */
+async function apiFetch(url, opts = {}) {
+  const { headers: h = {}, ...rest } = opts;
+  const r = await fetch(url, { ...rest, headers: _authHeaders(h) });
+  if (r.status === 401) _handleUnauthorized();
+  return r;
+}
+
+/** Clear stored key and re-show the auth overlay (called on 401 or manual change). */
+function _handleUnauthorized() {
+  localStorage.removeItem(_KEY_STORAGE);
+  const errEl = document.getElementById('auth-error');
+  if (errEl) {
+    errEl.textContent = 'Invalid or expired API key — re-enter to continue.';
+    errEl.classList.remove('hidden');
+  }
+  document.getElementById('auth-overlay').classList.remove('hidden');
+}
+
+/** Called by the 🔑 Key button in the header to change the stored key. */
+function _changeKey() {
+  localStorage.removeItem(_KEY_STORAGE);
+  const errEl = document.getElementById('auth-error');
+  if (errEl) errEl.classList.add('hidden');
+  document.getElementById('auth-key-input').value = '';
+  document.getElementById('auth-overlay').classList.remove('hidden');
+}
+
+// Initialise auth overlay wiring and conditionally start the dashboard.
+(function _initAuth() {
+  const overlay = document.getElementById('auth-overlay');
+  const input   = document.getElementById('auth-key-input');
+  const saveBtn = document.getElementById('auth-save-btn');
+  const errEl   = document.getElementById('auth-error');
+
+  function _saveKey() {
+    // Empty string is allowed — means dev/local mode with no server key.
+    localStorage.setItem(_KEY_STORAGE, input.value.trim());
+    overlay.classList.add('hidden');
+    if (errEl) errEl.classList.add('hidden');
+    input.value = '';
+    _startDashboard();
+  }
+
+  saveBtn.addEventListener('click', _saveKey);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') _saveKey(); });
+
+  // Key already set from a previous visit → skip overlay, start immediately.
+  if (localStorage.getItem(_KEY_STORAGE) !== null) {
+    overlay.classList.add('hidden');
+    // Dashboard is started by the IIFE at the bottom of this script.
+  } else {
+    overlay.classList.remove('hidden');
+    // Dashboard will start after the user saves the key via _saveKey().
+  }
+})();
+
 // ── UX-18: AbortController for the in-flight run request ─────────────────────
 // Holds the active AbortController while a pipeline fetch is in progress.
 // Set to null when no request is running.  dismissRun() aborts it and
@@ -834,7 +943,7 @@ async function checkHealth() {
   const dot = document.getElementById('health-dot');
   const txt = document.getElementById('health-text');
   try {
-    const r = await fetch(`${API}/health`);
+    const r = await apiFetch(`${API}/health`);
     if (r.ok) {
       dot.className = 'dot dot-ok';
       txt.textContent = 'API connected';
@@ -854,7 +963,7 @@ let workspace = { xrpl_accounts: [], csv_files: [] };
 
 async function loadWorkspace() {
   try {
-    const r = await fetch(`${API}/workspace`);
+    const r = await apiFetch(`${API}/workspace`);
     if (!r.ok) throw new Error();
     workspace = await r.json();
     renderWorkspace();
@@ -987,7 +1096,7 @@ async function addAccount() {
   // UX-17: client-side format check before sending to avoid a jarring server-side alert.
   if (!validateXrplAddressInput(inp)) return;
   try {
-    const r = await fetch(`${API}/workspace/accounts`, {
+    const r = await apiFetch(`${API}/workspace/accounts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ account }),
@@ -1009,7 +1118,7 @@ async function removeAccount(account) {
   // UX-16: confirm before removing — matches the existing deleteJob() pattern.
   if (!await showConfirm(`Remove account ${account} from the workspace?\n\nThis only removes the registration; no on-chain data is deleted.`)) return;
   try {
-    const r = await fetch(`${API}/workspace/accounts/${encodeURIComponent(account)}`, { method: 'DELETE' });
+    const r = await apiFetch(`${API}/workspace/accounts/${encodeURIComponent(account)}`, { method: 'DELETE' });
     if (!r.ok) return;
     workspace = await r.json();
     renderWorkspace();
@@ -1020,7 +1129,7 @@ async function removeCsv(path) {
   // UX-16: confirm before removing — matches the existing deleteJob() pattern.
   if (!await showConfirm(`Remove this CSV file from the workspace?\n\n${path}\n\nThe file on disk is not deleted.`)) return;
   try {
-    const r = await fetch(`${API}/workspace/csv`, {
+    const r = await apiFetch(`${API}/workspace/csv`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
@@ -1074,7 +1183,7 @@ async function handleCsvFile(file) {
   const fd = new FormData();
   fd.append('file', file);
   try {
-    const r = await fetch(`${API}/uploads/csv?register=true&source_type=${encodeURIComponent(sourceType)}`, { method: 'POST', body: fd });
+    const r = await apiFetch(`${API}/uploads/csv?register=true&source_type=${encodeURIComponent(sourceType)}`, { method: 'POST', body: fd });
     if (!r.ok) {
       const err = await r.json();
       statusEl.textContent = `Error: ${err.detail || r.statusText}`;
@@ -1128,7 +1237,7 @@ async function fetchPrices() {
   status.className = 'text-xs text-gray-400';
 
   try {
-    const r = await fetch(`${API}/prices/fetch`, {
+    const r = await apiFetch(`${API}/prices/fetch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ year: taxYear }),
@@ -1209,7 +1318,7 @@ async function runReport() {
   // the job itself succeeded.
   let successJob = null;
   try {
-    const r = await fetch(`${API}/workspace/run`, {
+    const r = await apiFetch(`${API}/workspace/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: _runController.signal,
@@ -1276,7 +1385,7 @@ const _POLL_INTERVAL_MS = 3000; // poll every 3 seconds while a job is RUNNING
 
 async function loadJobs() {
   try {
-    const r = await fetch(`${API}/jobs?limit=200`);
+    const r = await apiFetch(`${API}/jobs?limit=200`);
     if (!r.ok) throw new Error();
     _cachedJobs = await r.json();
     renderJobs(_filteredJobs());
@@ -1428,7 +1537,7 @@ async function openResultsById(jobId) {
   // doing nothing — silent failure leaves the panel empty with no explanation.
   const panel = document.getElementById('results-panel');
   try {
-    const r = await fetch(`${API}/jobs/${jobId}`);
+    const r = await apiFetch(`${API}/jobs/${jobId}`);
     if (!r.ok) {
       if (panel) {
         panel.classList.remove('hidden');
@@ -1503,7 +1612,7 @@ async function openResults(job) {
   const dlEl = document.getElementById('results-downloads');
   dlEl.innerHTML = '';
   try {
-    const fr = await fetch(`${API}/jobs/${job.id}/files`);
+    const fr = await apiFetch(`${API}/jobs/${job.id}/files`);
     if (fr.ok) {
       const files = await fr.json();
       const icons = { gains: '📈', wealth: '💰', summary: '🗂️', log: '📋', rf1159: '🇳🇴', review: '🔍' };
@@ -1529,7 +1638,7 @@ async function openResults(job) {
 
       // HTML reports — use the /reports list which supports multiple files
       try {
-        const rr = await fetch(`${API}/jobs/${job.id}/reports`);
+        const rr = await apiFetch(`${API}/jobs/${job.id}/reports`);
         if (rr.ok) {
           const reports = await rr.json();
           const multi = reports.length > 1;
@@ -1606,7 +1715,7 @@ async function loadReportInIframe(jobId, iframe, index = null) {
     const url = index !== null
       ? `${API}/jobs/${jobId}/reports/${index}`
       : `${API}/jobs/${jobId}/files/report`;
-    const r = await fetch(url);
+    const r = await apiFetch(url);
     if (!r.ok) {
       iframe.style.display = 'none';
       const errDiv = document.createElement('div');
@@ -1652,7 +1761,7 @@ async function loadReportInIframe(jobId, iframe, index = null) {
 
 async function loadLog(jobId) {
   try {
-    const r = await fetch(`${API}/jobs/${jobId}/files/log`);
+    const r = await apiFetch(`${API}/jobs/${jobId}/files/log`);
     if (!r.ok) return;
     const text = await r.text();
     const logEl = document.getElementById('results-log');
@@ -1685,7 +1794,7 @@ function _startPolling(jobId) {
     // Stop if the panel was closed or switched to a different job
     if (selectedJobId !== jobId) { _stopPolling(); return; }
     try {
-      const r = await fetch(`${API}/jobs/${encodeURIComponent(jobId)}`);
+      const r = await apiFetch(`${API}/jobs/${encodeURIComponent(jobId)}`);
       if (!r.ok) { _stopPolling(); return; }
       const job = await r.json();
       // Update cache entry
@@ -1701,7 +1810,7 @@ function _startPolling(jobId) {
 
 async function fetchJobsList() {
   try {
-    const r = await fetch(`${API}/jobs?limit=200`);
+    const r = await apiFetch(`${API}/jobs?limit=200`);
     if (r.ok) {
       _cachedJobs = await r.json();
       return _cachedJobs;
@@ -1713,7 +1822,7 @@ async function fetchJobsList() {
 async function deleteJob(jobId) {
   if (!await showConfirm('Delete this job record? Output files on disk are kept.')) return;
   try {
-    const r = await fetch(`${API}/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    const r = await apiFetch(`${API}/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
       alert(`Could not delete job: ${err.detail || r.statusText}`);
@@ -1734,7 +1843,7 @@ async function deleteJob(jobId) {
 async function cancelJob(jobId) {
   if (!await showConfirm('Cancel this running job?')) return;
   try {
-    const r = await fetch(`${API}/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+    const r = await apiFetch(`${API}/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
       alert(`Could not cancel job: ${data.detail || r.statusText}`);
@@ -1832,7 +1941,7 @@ async function loadAlerts() {
   const sevBadges = document.getElementById('alerts-sev-badges');
   try {
     // FE-10: check r.ok before parsing JSON so a 500 doesn't mask a real error
-    const r = await fetch(`${API}/alerts`);
+    const r = await apiFetch(`${API}/alerts`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const alerts = await r.json();
     _cachedAlerts = Array.isArray(alerts) ? alerts : [];
@@ -1985,7 +2094,7 @@ async function loadReviewBadge(jobId) {
   wrap.classList.add('hidden');
   wrap.innerHTML = '';
   try {
-    const r = await fetch(`${API}/jobs/${jobId}/review`);
+    const r = await apiFetch(`${API}/jobs/${jobId}/review`);
     if (!r.ok) return;  // not a Norway job or no data — silently skip
     const rv = await r.json();
 
@@ -2069,8 +2178,8 @@ async function loadReviewQueue(year) {
   try {
     // Fetch year-level summary and per-job cards in parallel
     const [summaryR, jobsR] = await Promise.all([
-      fetch(`${API}/review/summary?year=${encodeURIComponent(year)}`),
-      fetch(`${API}/review/jobs?year=${encodeURIComponent(year)}`),
+      apiFetch(`${API}/review/summary?year=${encodeURIComponent(year)}`),
+      apiFetch(`${API}/review/jobs?year=${encodeURIComponent(year)}`),
     ]);
     if (!summaryR.ok) { _showReviewEmpty(true); return; }
     const [summaryData, jobsData] = await Promise.all([
@@ -2307,7 +2416,7 @@ async function loadAuditLog() {
   const loading = document.getElementById('tc-audit-loading');
   loading.classList.remove('hidden');
   try {
-    const r = await fetch(`${API}/admin/audit?limit=200`);
+    const r = await apiFetch(`${API}/admin/audit?limit=200`);
     if (!r.ok) { _showAuditEmpty(true); return; }
     const entries = await r.json();
     if (!entries.length) { _showAuditEmpty(true); return; }
@@ -2344,7 +2453,7 @@ async function loadDiagnostics() {
     return;
   }
   try {
-    const r = await fetch(`${API}/diagnostics`);
+    const r = await apiFetch(`${API}/diagnostics`);
     if (!r.ok) return;
     const d = await r.json();
     _diagCacheTs = Date.now();
@@ -2581,7 +2690,7 @@ function _copyDiagnostics() {
 async function loadLotYears() {
   const sel = document.getElementById('tc-year-select');
   try {
-    const r = await fetch(`${API}/lots/years`);
+    const r = await apiFetch(`${API}/lots/years`);
     if (!r.ok) throw new Error();
     const data = await r.json();
     const years = (data.years || []).slice().reverse();
@@ -2637,7 +2746,7 @@ async function loadHoldings(year) {
   if (!year) { _showHoldingsEmpty(true); return; }
   try {
     const priceParam = _liveMode ? '&price_type=current' : '';
-    const r = await fetch(`${API}/lots/${year}/portfolio?include_prices=true${priceParam}`);
+    const r = await apiFetch(`${API}/lots/${year}/portfolio?include_prices=true${priceParam}`);
     if (!r.ok) { _showHoldingsEmpty(true); return; }
     const data = await r.json();
     _renderHoldings(data);
@@ -2730,7 +2839,7 @@ function _showHoldingsEmpty(show) {
 async function loadLots(year) {
   if (!year) { _showLotsEmpty(true); return; }
   try {
-    const r = await fetch(`${API}/lots/${year}`);
+    const r = await apiFetch(`${API}/lots/${year}`);
     if (!r.ok) { _showLotsEmpty(true); return; }
     const data = await r.json();
     _renderLots(data);
@@ -2780,7 +2889,7 @@ async function loadDedupSources() {
   const loading = document.getElementById('tc-dedup-loading');
   loading.classList.remove('hidden');
   try {
-    const r = await fetch(`${API}/dedup/sources`);
+    const r = await apiFetch(`${API}/dedup/sources`);
     if (!r.ok) { _showDedupEmpty(true); return; }
     const sources = await r.json();
     _renderDedupSources(sources);
@@ -2829,7 +2938,7 @@ function _showDedupEmpty(show) {
 
 async function loadXrplTokens() {
   try {
-    const r = await fetch(`${API}/workspace`);
+    const r = await apiFetch(`${API}/workspace`);
     if (!r.ok) throw new Error();
     const ws = await r.json();
     renderXrplTokens(ws.xrpl_assets || []);
@@ -2869,7 +2978,7 @@ async function addXrplToken() {
     return;
   }
   try {
-    const r = await fetch(`${API}/workspace/xrpl-assets`, {
+    const r = await apiFetch(`${API}/workspace/xrpl-assets`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ spec }),
@@ -2891,13 +3000,15 @@ async function addXrplToken() {
 
 async function removeXrplToken(spec) {
   try {
-    const r = await fetch(`${API}/workspace/xrpl-assets/${encodeURIComponent(spec)}`, { method: 'DELETE' });
+    const r = await apiFetch(`${API}/workspace/xrpl-assets/${encodeURIComponent(spec)}`, { method: 'DELETE' });
     if (r.ok) await loadXrplTokens();
   } catch { /* silent */ }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-(async () => {
+// _startDashboard() is called either immediately (returning visitor with key
+// in localStorage) or after the user saves their key in the auth overlay.
+async function _startDashboard() {
   await Promise.all([checkHealth(), loadWorkspace(), loadJobs(), loadAlerts(), loadTaxCenter(), loadDiagnostics(), loadXrplTokens()]);
   // FE-07: retain handles so the timers can be cleared if needed (e.g. in
   // tests or when the page is embedded in a shell that re-runs init code).
@@ -2929,7 +3040,14 @@ async function removeXrplToken(spec) {
   const tokenInput  = document.getElementById('xrplTokenInput');
   if (tokenAddBtn) tokenAddBtn.addEventListener('click', addXrplToken);
   if (tokenInput)  tokenInput.addEventListener('keydown', e => { if (e.key === 'Enter') addXrplToken(); });
-})();
+}
+
+// Start the dashboard if the user already has a key (or previously dismissed
+// the overlay with an empty key in dev mode).  Otherwise the auth overlay's
+// _saveKey() handler calls _startDashboard() after the user unlocks.
+if (localStorage.getItem(_KEY_STORAGE) !== null) {
+  _startDashboard();
+}
 </script>
 
 <!-- UX-14: in-page confirmation modal — replaces native browser confirm() dialogs

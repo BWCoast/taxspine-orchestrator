@@ -1,7 +1,7 @@
 """test_low_findings.py — Tests for LOW-priority audit findings.
 
 Covers:
-- SEC-03: _SensitiveHeaderFilter redacts X-Orchestrator-Key and Authorization
+- SEC-03: _SensitiveHeaderFilter redacts X-Api-Key and Authorization
 - BE-06:  after_id keyset pagination on InMemoryJobStore and SqliteJobStore
 """
 
@@ -19,7 +19,7 @@ import pytest
 
 
 class TestSensitiveHeaderFilter:
-    """SEC-03: X-Orchestrator-Key and Authorization are redacted from log records."""
+    """SEC-03: X-Api-Key and Authorization are redacted from log records."""
 
     def _make_filter(self):
         """Import and return a fresh _SensitiveHeaderFilter instance."""
@@ -36,14 +36,14 @@ class TestSensitiveHeaderFilter:
 
     def test_x_orchestrator_key_colon_redacted(self) -> None:
         filt = self._make_filter()
-        rec = self._make_record("Header: X-Orchestrator-Key: supersecret123")
+        rec = self._make_record("Header: X-Api-Key: supersecret123")
         filt.filter(rec)
         assert "supersecret123" not in rec.msg
         assert "[REDACTED]" in rec.msg
 
     def test_x_orchestrator_key_equals_redacted(self) -> None:
         filt = self._make_filter()
-        rec = self._make_record("X-Orchestrator-Key=mytoken")
+        rec = self._make_record("X-Api-Key=mytoken")
         filt.filter(rec)
         assert "mytoken" not in rec.msg
         assert "[REDACTED]" in rec.msg
@@ -57,7 +57,7 @@ class TestSensitiveHeaderFilter:
 
     def test_case_insensitive_match(self) -> None:
         filt = self._make_filter()
-        rec = self._make_record("x-orchestrator-key: lowercase_secret")
+        rec = self._make_record("x-api-key: lowercase_secret")
         filt.filter(rec)
         assert "lowercase_secret" not in rec.msg
 
@@ -71,7 +71,7 @@ class TestSensitiveHeaderFilter:
     def test_filter_always_returns_true(self) -> None:
         """The filter must not suppress log records — it only redacts."""
         filt = self._make_filter()
-        rec = self._make_record("X-Orchestrator-Key: secret")
+        rec = self._make_record("X-Api-Key: secret")
         result = filt.filter(rec)
         assert result is True
 

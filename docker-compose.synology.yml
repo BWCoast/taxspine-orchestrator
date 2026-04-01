@@ -100,6 +100,16 @@ services:
       TAXSPINE_NOR_REPORT_CLI: taxspine-nor-report
       TAXSPINE_UK_REPORT_CLI:  taxspine-uk-report
 
+      # ── Authentication ──────────────────────────────────────────────────────
+      # ORCHESTRATOR_KEY: set a strong random secret to protect the API.
+      # Every request from the UI will send this as the X-Api-Key header.
+      # When empty (default) the API is publicly accessible on your network —
+      # acceptable only on an isolated LAN; set a key for Tailscale / internet.
+      #
+      # Generate a key:  python3 -c "import secrets; print(secrets.token_hex(32))"
+      # Then replace the empty string below with your generated value.
+      ORCHESTRATOR_KEY: ""
+
       # Timezone — helps log timestamps match your local time.
       # Find yours at: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
       TZ: Europe/Oslo
