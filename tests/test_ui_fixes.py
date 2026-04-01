@@ -194,7 +194,9 @@ class TestUX16ConfirmOnRemove:
             p for p in [snippet.find("confirm("), snippet.find("showConfirm(")]
             if p >= 0
         ) if any(p >= 0 for p in [snippet.find("confirm("), snippet.find("showConfirm(")]) else -1
-        fetch_pos = snippet.find("fetch(")
+        # Accept either the raw fetch( or the apiFetch( wrapper added by the auth layer.
+        _fetch_candidates = [p for p in [snippet.find("fetch("), snippet.find("apiFetch(")] if p >= 0]
+        fetch_pos = min(_fetch_candidates) if _fetch_candidates else -1
         assert 0 <= confirm_pos < fetch_pos, (
             "confirm()/showConfirm() must appear before fetch() in removeAccount"
         )
@@ -206,7 +208,9 @@ class TestUX16ConfirmOnRemove:
             p for p in [snippet.find("confirm("), snippet.find("showConfirm(")]
             if p >= 0
         ) if any(p >= 0 for p in [snippet.find("confirm("), snippet.find("showConfirm(")]) else -1
-        fetch_pos = snippet.find("fetch(")
+        # Accept either the raw fetch( or the apiFetch( wrapper added by the auth layer.
+        _fetch_candidates = [p for p in [snippet.find("fetch("), snippet.find("apiFetch(")] if p >= 0]
+        fetch_pos = min(_fetch_candidates) if _fetch_candidates else -1
         assert 0 <= confirm_pos < fetch_pos, (
             "confirm()/showConfirm() must appear before fetch() in removeCsv"
         )
