@@ -17,107 +17,23 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
 
 import pytest
 
 from taxspine_orchestrator.models import JobOutput
 from taxspine_orchestrator.services import JobService
 
-try:
-    import tax_spine.pipeline.lot_store as _ts_lot  # noqa: F401
-    _TAX_SPINE_AVAILABLE = True
-except ImportError:
-    _TAX_SPINE_AVAILABLE = False
-
 
 # ── TL-08: lot carry-forward year-sequence warning ────────────────────────────
 
 class TestTL08LotYearSequenceWarning:
-    """_build_lot_carry_forward_csv warns when running a prior year after a
-    newer year has already been persisted in the lot store.
+    """TL-08 year-sequence warning — now emitted for UK partial-year jobs.
 
-    Skipped when ``tax_spine`` is not installed (CI without tax-nor).
-    patch() targets ``tax_spine.pipeline.lot_store.LotPersistenceStore``
-    which requires the package to be importable at context-manager entry.
+    _maybe_write_carry_forward_csv was removed in favour of native --lot-store
+    support.  The TL-08 tag is preserved in services.py for the UK partial-year
+    warning path.  Source-code inspection tests verify the tag is still present
+    and the warning level is appropriate.
     """
-
-    pytestmark = pytest.mark.skipif(
-        not _TAX_SPINE_AVAILABLE,
-        reason="tax_spine not installed — skipping lot year-sequence tests",
-    )
-
-    def _make_store(self, *, list_years_return: list[int], carry_lots: list | None = None):
-        """Build a minimal LotPersistenceStore mock."""
-        store = MagicMock()
-        store.__enter__ = MagicMock(return_value=store)
-        store.__exit__ = MagicMock(return_value=False)
-        store.list_years.return_value = list_years_return
-        store.load_carry_forward.return_value = carry_lots if carry_lots is not None else []
-        return store
-
-    def test_warns_when_future_year_present(self, tmp_path, caplog):
-        """When lot store has a year >= tax_year, a WARNING is emitted."""
-        import logging
-        db_file = tmp_path / "lots.db"
-        db_file.touch()
-        store = self._make_store(list_years_return=[2024, 2025, 2026])
-        with patch(
-            "tax_spine.pipeline.lot_store.LotPersistenceStore",
-        ) as MockStore, patch("taxspine_orchestrator.services.settings") as mock_settings:
-            MockStore.return_value = store
-            mock_settings.LOT_STORE_DB = db_file
-            with caplog.at_level(logging.WARNING, logger="taxspine_orchestrator.services"):
-                JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
-        assert any("TL-08" in r.message for r in caplog.records)
-
-    def test_warns_includes_future_years_in_message(self, tmp_path, caplog):
-        """The warning message includes the list of future/equal years."""
-        import logging
-        db_file = tmp_path / "lots.db"
-        db_file.touch()
-        store = self._make_store(list_years_return=[2024, 2026, 2027])
-        with patch(
-            "tax_spine.pipeline.lot_store.LotPersistenceStore",
-        ) as MockStore, patch("taxspine_orchestrator.services.settings") as mock_settings:
-            MockStore.return_value = store
-            mock_settings.LOT_STORE_DB = db_file
-            with caplog.at_level(logging.WARNING, logger="taxspine_orchestrator.services"):
-                JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
-        warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("2026" in m or "2027" in m for m in warning_messages)
-
-    def test_no_warning_when_only_prior_years(self, tmp_path, caplog):
-        """No TL-08 warning when all persisted years are strictly before tax_year."""
-        import logging
-        db_file = tmp_path / "lots.db"
-        db_file.touch()
-        store = self._make_store(list_years_return=[2022, 2023, 2024])
-        with patch(
-            "tax_spine.pipeline.lot_store.LotPersistenceStore",
-        ) as MockStore, patch("taxspine_orchestrator.services.settings") as mock_settings:
-            MockStore.return_value = store
-            mock_settings.LOT_STORE_DB = db_file
-            with caplog.at_level(logging.WARNING, logger="taxspine_orchestrator.services"):
-                JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
-        tl08_warnings = [r for r in caplog.records if "TL-08" in r.message]
-        assert tl08_warnings == []
-
-    def test_no_warning_when_store_empty(self, tmp_path, caplog):
-        """No TL-08 warning when the lot store has no persisted years at all."""
-        import logging
-        db_file = tmp_path / "lots.db"
-        db_file.touch()
-        store = self._make_store(list_years_return=[])
-        with patch(
-            "tax_spine.pipeline.lot_store.LotPersistenceStore",
-        ) as MockStore, patch("taxspine_orchestrator.services.settings") as mock_settings:
-            MockStore.return_value = store
-            mock_settings.LOT_STORE_DB = db_file
-            with caplog.at_level(logging.WARNING, logger="taxspine_orchestrator.services"):
-                JobService._maybe_write_carry_forward_csv(tmp_path, 2025)
-        tl08_warnings = [r for r in caplog.records if "TL-08" in r.message]
-        assert tl08_warnings == []
 
     def test_source_code_contains_tl08_tag(self):
         """services.py source contains the TL-08 comment tag."""
@@ -125,15 +41,8 @@ class TestTL08LotYearSequenceWarning:
         src = inspect.getsource(svc_mod)
         assert "TL-08" in src
 
-    def test_source_code_checks_future_years(self):
-        """The warning code checks for years >= tax_year (not just >)."""
-        import taxspine_orchestrator.services as svc_mod
-        src = inspect.getsource(svc_mod)
-        # The guard must handle same-year and newer years
-        assert "future_years" in src
-
     def test_warning_level_not_just_debug(self):
-        """The out-of-order year detection uses _log.warning, not _log.debug."""
+        """The TL-08 block uses _log.warning, not _log.debug."""
         import taxspine_orchestrator.services as svc_mod
         src = inspect.getsource(svc_mod)
         # The TL-08 comment block spans multiple lines; scan 700 chars from the

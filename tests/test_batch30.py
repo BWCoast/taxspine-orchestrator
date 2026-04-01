@@ -110,31 +110,37 @@ class TestTL12XrplFiriCsvRejected:
         csv_file = tmp_path / "uploads" / "firi_export.csv"
         csv_file.write_text(_FIRI_HEADER + "2025-01-01,buy,BTC,0.01,0,,,\n", encoding="utf-8")
 
-        with TestClient(app) as c:
-            resp = c.post("/jobs", json={
-                "country": "norway",
-                "tax_year": 2025,
-                "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
-                "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
-            })
-            assert resp.status_code == 201
-            job_id = resp.json()["id"]
-            c.post(f"/jobs/{job_id}/start")
+        def _mock_sniff_firi(path):
+            return ("Firi CSV", "Use --source-type firi_csv.")
 
-            for _ in range(60):
-                status = c.get(f"/jobs/{job_id}").json()["status"]
-                if status in ("failed", "completed", "cancelled"):
-                    break
-                time.sleep(0.05)
+        with patch("taxspine_orchestrator.services._SNIFF_AVAILABLE", True), \
+             patch("taxspine_orchestrator.services._sniff_csv_source_type",
+                   side_effect=_mock_sniff_firi):
+            with TestClient(app) as c:
+                resp = c.post("/jobs", json={
+                    "country": "norway",
+                    "tax_year": 2025,
+                    "xrpl_accounts": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
+                    "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
+                })
+                assert resp.status_code == 201
+                job_id = resp.json()["id"]
+                c.post(f"/jobs/{job_id}/start")
 
-            job = c.get(f"/jobs/{job_id}").json()
-            assert job["status"] == "failed", (
-                f"TL-12: XRPL job with Firi CSV as generic_events must fail; "
-                f"got status={job['status']!r}"
-            )
-            err = _get_error(job)
-            assert "TL-12" in err, f"TL-12: error must contain 'TL-12'; got {err!r}"
-            assert "firi" in err.lower(), f"TL-12: error must mention firi; got {err!r}"
+                for _ in range(60):
+                    status = c.get(f"/jobs/{job_id}").json()["status"]
+                    if status in ("failed", "completed", "cancelled"):
+                        break
+                    time.sleep(0.05)
+
+                job = c.get(f"/jobs/{job_id}").json()
+                assert job["status"] == "failed", (
+                    f"TL-12: XRPL job with Firi CSV as generic_events must fail; "
+                    f"got status={job['status']!r}"
+                )
+                err = _get_error(job)
+                assert "TL-12" in err, f"TL-12: error must contain 'TL-12'; got {err!r}"
+                assert "firi" in err.lower(), f"TL-12: error must mention firi; got {err!r}"
 
     def test_real_generic_csv_still_passes_tl12(self, tmp_path, monkeypatch):
         """A genuine generic-events CSV must not be blocked by TL-12."""
@@ -198,39 +204,45 @@ class TestTL12CsvOnlyFiriAutoCorrect:
         csv_file = tmp_path / "uploads" / "firi_export.csv"
         csv_file.write_text(_FIRI_HEADER + "2025-01-01,buy,BTC,0.01,0,,,\n", encoding="utf-8")
 
-        with TestClient(app) as c:
-            with patch("taxspine_orchestrator.services.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-                resp = c.post("/jobs", json={
-                    "country": "norway",
-                    "tax_year": 2025,
-                    "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
-                })
-                assert resp.status_code == 201
-                job_id = resp.json()["id"]
-                c.post(f"/jobs/{job_id}/start")
+        def _mock_sniff_firi(path):
+            return ("Firi CSV", "Use --source-type firi_csv.")
 
-                for _ in range(60):
-                    status = c.get(f"/jobs/{job_id}").json()["status"]
-                    if status in ("failed", "completed", "cancelled"):
-                        break
-                    time.sleep(0.05)
+        with patch("taxspine_orchestrator.services._SNIFF_AVAILABLE", True), \
+             patch("taxspine_orchestrator.services._sniff_csv_source_type",
+                   side_effect=_mock_sniff_firi):
+            with TestClient(app) as c:
+                with patch("taxspine_orchestrator.services.subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                    resp = c.post("/jobs", json={
+                        "country": "norway",
+                        "tax_year": 2025,
+                        "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
+                    })
+                    assert resp.status_code == 201
+                    job_id = resp.json()["id"]
+                    c.post(f"/jobs/{job_id}/start")
 
-                job = c.get(f"/jobs/{job_id}").json()
-                logs = _read_log(job)
-                # The auto-correction log message must appear
-                assert "TL-12" in logs, (
-                    f"TL-12: CSV-only job with Firi CSV must log TL-12 auto-correction; "
-                    f"got log={logs!r}"
-                )
-                assert "firi_csv" in logs.lower() or "firi" in logs.lower(), (
-                    f"TL-12: log must mention firi; got {logs!r}"
-                )
-                # Must not fail due to TL-12
-                err = _get_error(job)
-                assert "TL-12" not in err, (
-                    f"TL-12: CSV-only job must not fail with TL-12; got {err!r}"
-                )
+                    for _ in range(60):
+                        status = c.get(f"/jobs/{job_id}").json()["status"]
+                        if status in ("failed", "completed", "cancelled"):
+                            break
+                        time.sleep(0.05)
+
+                    job = c.get(f"/jobs/{job_id}").json()
+                    logs = _read_log(job)
+                    # The auto-correction log message must appear
+                    assert "TL-12" in logs, (
+                        f"TL-12: CSV-only job with Firi CSV must log TL-12 auto-correction; "
+                        f"got log={logs!r}"
+                    )
+                    assert "firi_csv" in logs.lower() or "firi" in logs.lower(), (
+                        f"TL-12: log must mention firi; got {logs!r}"
+                    )
+                    # Must not fail due to TL-12
+                    err = _get_error(job)
+                    assert "TL-12" not in err, (
+                        f"TL-12: CSV-only job must not fail with TL-12; got {err!r}"
+                    )
 
     def test_coinbase_csv_auto_corrected_in_csv_only_job(self, tmp_path, monkeypatch):
         """Coinbase RAWTX CSV as generic_events in CSV-only job must be auto-corrected."""
@@ -246,32 +258,38 @@ class TestTL12CsvOnlyFiriAutoCorrect:
         csv_file = tmp_path / "uploads" / "coinbase_export.csv"
         csv_file.write_text(_COINBASE_HEADER + "2025-01-01,Buy,BTC,0.01,USD,90000,900,900,0,note,BTC,\n", encoding="utf-8")
 
-        with TestClient(app) as c:
-            with patch("taxspine_orchestrator.services.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-                resp = c.post("/jobs", json={
-                    "country": "norway",
-                    "tax_year": 2025,
-                    "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
-                })
-                assert resp.status_code == 201
-                job_id = resp.json()["id"]
-                c.post(f"/jobs/{job_id}/start")
+        def _mock_sniff_coinbase(path):
+            return ("Coinbase RAWTX CSV", "Use --source-type coinbase_csv.")
 
-                for _ in range(60):
-                    status = c.get(f"/jobs/{job_id}").json()["status"]
-                    if status in ("failed", "completed", "cancelled"):
-                        break
-                    time.sleep(0.05)
+        with patch("taxspine_orchestrator.services._SNIFF_AVAILABLE", True), \
+             patch("taxspine_orchestrator.services._sniff_csv_source_type",
+                   side_effect=_mock_sniff_coinbase):
+            with TestClient(app) as c:
+                with patch("taxspine_orchestrator.services.subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                    resp = c.post("/jobs", json={
+                        "country": "norway",
+                        "tax_year": 2025,
+                        "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
+                    })
+                    assert resp.status_code == 201
+                    job_id = resp.json()["id"]
+                    c.post(f"/jobs/{job_id}/start")
 
-                job = c.get(f"/jobs/{job_id}").json()
-                logs = _read_log(job)
-                assert "TL-12" in logs, (
-                    f"TL-12: CSV-only job with Coinbase CSV must log TL-12 auto-correction; "
-                    f"got log={logs!r}"
-                )
-                err = _get_error(job)
-                assert "TL-12" not in err
+                    for _ in range(60):
+                        status = c.get(f"/jobs/{job_id}").json()["status"]
+                        if status in ("failed", "completed", "cancelled"):
+                            break
+                        time.sleep(0.05)
+
+                    job = c.get(f"/jobs/{job_id}").json()
+                    logs = _read_log(job)
+                    assert "TL-12" in logs, (
+                        f"TL-12: CSV-only job with Coinbase CSV must log TL-12 auto-correction; "
+                        f"got log={logs!r}"
+                    )
+                    err = _get_error(job)
+                    assert "TL-12" not in err
 
 
 # ── Unknown format: Bybit CSV as generic_events must fail ─────────────────────
@@ -296,29 +314,35 @@ class TestTL12UnknownFormatRejected:
         csv_file = tmp_path / "uploads" / "bybit_export.csv"
         csv_file.write_text(bybit_header + "12345,BTCUSDT,90000,x\n", encoding="utf-8")
 
-        with TestClient(app) as c:
-            resp = c.post("/jobs", json={
-                "country": "norway",
-                "tax_year": 2025,
-                "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
-            })
-            assert resp.status_code == 201
-            job_id = resp.json()["id"]
-            c.post(f"/jobs/{job_id}/start")
+        def _mock_sniff_bybit(path):
+            return ("Bybit UTA CSV", "Use --source-type bybit_uta.")
 
-            for _ in range(60):
-                status = c.get(f"/jobs/{job_id}").json()["status"]
-                if status in ("failed", "completed", "cancelled"):
-                    break
-                time.sleep(0.05)
+        with patch("taxspine_orchestrator.services._SNIFF_AVAILABLE", True), \
+             patch("taxspine_orchestrator.services._sniff_csv_source_type",
+                   side_effect=_mock_sniff_bybit):
+            with TestClient(app) as c:
+                resp = c.post("/jobs", json={
+                    "country": "norway",
+                    "tax_year": 2025,
+                    "csv_files": [{"path": str(csv_file), "source_type": "generic_events"}],
+                })
+                assert resp.status_code == 201
+                job_id = resp.json()["id"]
+                c.post(f"/jobs/{job_id}/start")
 
-            job = c.get(f"/jobs/{job_id}").json()
-            assert job["status"] == "failed"
-            err = _get_error(job)
-            assert "TL-12" in err, f"TL-12: unknown format must fail with TL-12; got {err!r}"
-            assert "bybit" in err.lower() or "Bybit" in err, (
-                f"TL-12: error must mention Bybit; got {err!r}"
-            )
+                for _ in range(60):
+                    status = c.get(f"/jobs/{job_id}").json()["status"]
+                    if status in ("failed", "completed", "cancelled"):
+                        break
+                    time.sleep(0.05)
+
+                job = c.get(f"/jobs/{job_id}").json()
+                assert job["status"] == "failed"
+                err = _get_error(job)
+                assert "TL-12" in err, f"TL-12: unknown format must fail with TL-12; got {err!r}"
+                assert "bybit" in err.lower() or "Bybit" in err, (
+                    f"TL-12: error must mention Bybit; got {err!r}"
+                )
 
 
 # ── sniff unavailable: guard degrades gracefully ──────────────────────────────

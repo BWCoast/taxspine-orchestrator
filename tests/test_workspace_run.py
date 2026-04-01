@@ -229,6 +229,42 @@ class TestWorkspaceRunFieldForwarding:
         assert resp.json()["input"]["valuation_mode"] == "dummy"
 
 
+# ── TestWorkspaceRunValuationDefault ─────────────────────────────────────────
+
+
+class TestWorkspaceRunValuationDefault:
+    """Default valuation_mode behaviour for WorkspaceRunRequest and /workspace/run."""
+
+    def test_workspace_run_request_default_is_price_table(self) -> None:
+        """WorkspaceRunRequest() constructed in Python defaults to PRICE_TABLE."""
+        from taxspine_orchestrator.main import WorkspaceRunRequest
+
+        req = WorkspaceRunRequest(tax_year=2025)
+        assert req.valuation_mode == ValuationMode.PRICE_TABLE
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    def test_omitted_valuation_mode_defaults_to_price_table(
+        self, mock_run: MagicMock, client_with_account: TestClient
+    ) -> None:
+        """POST /workspace/run with no valuation_mode → job input uses price_table."""
+        mock_run.return_value = _make_ok()
+        resp = client_with_account.post("/workspace/run", json=_BASE_RUN)
+        assert resp.status_code == 200
+        assert resp.json()["input"]["valuation_mode"] == "price_table"
+
+    @patch("taxspine_orchestrator.services.subprocess.run")
+    def test_explicit_price_table_forwarded(
+        self, mock_run: MagicMock, client_with_account: TestClient
+    ) -> None:
+        """POST /workspace/run with valuation_mode='price_table' → job input is price_table."""
+        mock_run.return_value = _make_ok()
+        resp = client_with_account.post(
+            "/workspace/run", json={**_BASE_RUN, "valuation_mode": "price_table"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["input"]["valuation_mode"] == "price_table"
+
+
 # ── TestWorkspaceRunExecution ─────────────────────────────────────────────────
 
 

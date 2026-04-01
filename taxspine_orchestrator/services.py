@@ -656,24 +656,6 @@ class JobService:
                             f"source_type corrected {from_type} → {to_type}."
                         )
 
-            # ── Carry-forward lots (Norway jobs only) ─────────────────────
-            # Load FIFO lots saved from tax_year-1 and inject them as
-            # synthetic opening-position TRADE events.  The CSV is prepended
-            # to XRPL and NOR_MULTI invocations so all sources share the same
-            # opening inventory.  PER_FILE mode does not support carry-forward
-            # (each invocation has an isolated lot pool).
-            carry_forward_spec: CsvFileSpec | None = None
-            if job.input.country == Country.NORWAY:
-                carry_csv = self._maybe_write_carry_forward_csv(
-                    output_dir, job.input.tax_year
-                )
-                if carry_csv is not None:
-                    carry_forward_spec = CsvFileSpec(path=str(carry_csv))
-                    log_lines.append(
-                        f"[carry-forward] injecting {len(carry_csv.read_text(encoding='utf-8').splitlines()) - 1} "
-                        f"lot(s) from {job.input.tax_year - 1}: {carry_csv}"
-                    )
-
             # ── Step 1: XRPL accounts → taxspine-xrpl-nor ────────────────
             # taxspine-xrpl-nor handles the full XRPL → Norway pipeline
             # internally (no separate blockchain-reader step required).
@@ -739,10 +721,6 @@ class JobService:
                     csv_files_for_account: list[CsvFileSpec] = (
                         list(_resolved_csv_files) if (has_csv and idx == 0) else []
                     )
-                    # Prepend carry-forward lots to the primary account so
-                    # the opening position is established before any events.
-                    if carry_forward_spec is not None and idx == 0:
-                        csv_files_for_account = [carry_forward_spec] + csv_files_for_account
 
                     xrpl_cmd = self._build_xrpl_command(
                         job.input,
@@ -826,19 +804,13 @@ class JobService:
                         "consistently across all tax years."
                     )
                     # Single combined invocation — all CSV sources in one shot.
-                    # Prepend carry-forward lots (if any) so the FIFO engine
-                    # sees the prior-year opening inventory first.
+                    # NOR_MULTI mode persists lots natively via --lot-store.
                     html_dest = output_dir / "report_combined.html"
                     rf1159_dest_nm = output_dir / "rf1159.json"
                     review_dest_nm = output_dir / "review.json"
-                    nor_multi_specs = (
-                        [carry_forward_spec] + list(_resolved_csv_files)
-                        if carry_forward_spec is not None
-                        else list(_resolved_csv_files)
-                    )
                     nor_multi_cmd = self._build_nor_multi_command(
                         job.input,
-                        csv_specs=nor_multi_specs,
+                        csv_specs=list(_resolved_csv_files),
                         html_path=html_dest,
                         rf1159_json_path=rf1159_dest_nm,
                         review_json_path=review_dest_nm,
@@ -892,6 +864,9 @@ class JobService:
 
                 else:
                     # Per-file mode (default): one taxspine-nor-report per CSV.
+                    # PER_FILE mode has no unified lot pool and does not support
+                    # --lot-store. NOR_MULTI and XRPL modes persist lots natively
+                    # via --lot-store.
                     for spec in _resolved_csv_files:
                         csv_stem = Path(spec.path).stem
                         html_dest = output_dir / f"report_{csv_stem}.html"
@@ -1202,6 +1177,9 @@ class JobService:
         if job_input.include_trades:
             cmd.append("--include-trades")
 
+        if settings.LOT_STORE_DB is not None:
+            cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
+
         if job_input.debug_valuation:
             cmd.append("--debug-valuation")
 
@@ -1325,107 +1303,10 @@ class JobService:
         if review_json_path is not None:
             cmd.extend(["--review-json", str(review_json_path)])
 
+        if settings.LOT_STORE_DB is not None:
+            cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
+
         return cmd
-
-    @staticmethod
-    def _maybe_write_carry_forward_csv(output_dir: Path, tax_year: int) -> Path | None:
-        """Load prior-year FIFO lots and write them as synthetic TRADE events.
-
-        Reads carry-forward lots from the lot persistence store for
-        ``tax_year - 1`` and writes a generic-events CSV that the tax CLI
-        will process as opening positions for ``tax_year``.  This bridges
-        the orchestrator's lot store into the CLI's FIFO engine.
-
-        Returns the path to the generated CSV, or ``None`` when:
-        - the ``tax_spine`` package is not installed
-        - the lot store database does not exist yet
-        - no lots were saved for the prior year
-        - all prior-year lots have a missing cost basis
-
-        The synthetic events are dated ``{tax_year-1}-12-31T23:59:59Z`` so
-        they sit chronologically before the current year's events in the
-        FIFO engine, yet do not appear in the current year's tax report.
-        """
-        try:
-            from tax_spine.pipeline.lot_store import LotPersistenceStore  # noqa: PLC0415
-        except ImportError:
-            _log.debug("LotPersistenceStore not available — skipping carry-forward")
-            return None
-
-        db_path = settings.LOT_STORE_DB
-        if not db_path.is_file():
-            _log.debug("Lot store not found at %s — no carry-forward", db_path)
-            return None
-
-        prior_year = tax_year - 1
-        try:
-            with LotPersistenceStore(str(db_path)) as store:
-                all_years = store.list_years()
-                # TL-08: warn when the lot store already contains data for a
-                # year >= tax_year.  Running an older tax year after a newer
-                # one has been persisted means the carry-forward chain may be
-                # inconsistent — earlier years would overwrite the carry-forward
-                # baseline that later years depended on.
-                future_years = [y for y in all_years if y >= tax_year]
-                if future_years:
-                    _log.warning(
-                        "TL-08: job tax_year=%d but lot store already contains "
-                        "data for year(s) %s. Running an older year after a "
-                        "newer one may produce incorrect carry-forward lots.",
-                        tax_year,
-                        sorted(future_years),
-                    )
-                if prior_year not in all_years:
-                    _log.debug("No lots saved for %d — skipping carry-forward", prior_year)
-                    return None
-                lots = store.load_carry_forward(prior_year)
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("Could not read carry-forward lots for %d: %s", prior_year, exc)
-            return None
-
-        if not lots:
-            return None
-
-        # Build synthetic TRADE rows: one buy per lot with a resolved basis.
-        # Lots without a resolved NOK basis are skipped; they cannot be
-        # expressed as a cost-basis TRADE event.
-        ts = f"{prior_year}-12-31T23:59:59Z"
-        rows: list[str] = []
-        for i, lot in enumerate(lots):
-            if lot.remaining_cost_basis_nok is None:
-                _log.debug(
-                    "Skipping carry-forward lot %s for %s — missing basis",
-                    lot.lot_id, lot.asset,
-                )
-                continue
-            event_id = f"carry_{prior_year}_{i}"
-            rows.append(
-                f"{event_id},{ts},TRADE,carry_forward,orchestrator,"
-                f"{lot.asset},{lot.remaining_quantity},"
-                f"NOK,{lot.remaining_cost_basis_nok},"
-                f",,,,,,"
-            )
-
-        if not rows:
-            _log.debug("All carry-forward lots for %d have missing basis — skipping", prior_year)
-            return None
-
-        carry_csv = output_dir / f"carry_forward_{prior_year}.csv"
-        header = (
-            "event_id,timestamp,event_type,source,account,"
-            "asset_in,amount_in,asset_out,amount_out,"
-            "fee_asset,fee_amount,tx_hash,exchange_tx_id,label,"
-            "complex_tax_treatment,note"
-        )
-        carry_csv.write_text(
-            header + "\n" + "\n".join(rows) + "\n",
-            encoding="utf-8",
-        )
-        _log.info(
-            "Wrote carry-forward CSV: %d lots from %d → %s",
-            len(rows), prior_year, carry_csv,
-        )
-        return carry_csv
 
     @staticmethod
     def _dedup_store_path(source_slug: str) -> Path:
@@ -1528,23 +1409,6 @@ class JobService:
 
         has_csv = bool(job.input.csv_files)
 
-        # Note carry-forward availability without writing the actual CSV.
-        dry_carry_forward_spec: CsvFileSpec | None = None
-        if job.input.country == Country.NORWAY:
-            prior_year = job.input.tax_year - 1
-            carry_path = output_dir / f"carry_forward_{prior_year}.csv"
-            if settings.LOT_STORE_DB.is_file():
-                log_lines.append(
-                    f"[carry-forward] lot store found at {settings.LOT_STORE_DB}; "
-                    f"carry-forward CSV would be written to {carry_path}"
-                )
-                dry_carry_forward_spec = CsvFileSpec(path=str(carry_path))
-            else:
-                log_lines.append(
-                    f"[carry-forward] lot store not found at {settings.LOT_STORE_DB} — "
-                    "no carry-forward (first run or lot store not yet initialised)"
-                )
-
         if has_xrpl:
             for idx, account in enumerate(job.input.xrpl_accounts):
                 suffix = f"_{idx}" if len(job.input.xrpl_accounts) > 1 else ""
@@ -1559,8 +1423,6 @@ class JobService:
                 dry_csv_files: list[CsvFileSpec] = (
                     list(job.input.csv_files) if (has_csv and idx == 0) else []
                 )
-                if dry_carry_forward_spec is not None and idx == 0:
-                    dry_csv_files = [dry_carry_forward_spec] + dry_csv_files
                 cmd = self._build_xrpl_command(
                     job.input,
                     account=account,
@@ -1578,14 +1440,9 @@ class JobService:
                 and job.input.country == Country.NORWAY
             ):
                 html_path = output_dir / "report_combined.html"
-                dry_nm_specs = (
-                    [dry_carry_forward_spec] + list(job.input.csv_files)
-                    if dry_carry_forward_spec is not None
-                    else list(job.input.csv_files)
-                )
                 cmd = self._build_nor_multi_command(
                     job.input,
-                    csv_specs=dry_nm_specs,
+                    csv_specs=list(job.input.csv_files),
                     html_path=html_path,
                     rf1159_json_path=output_dir / "rf1159.json",
                     review_json_path=output_dir / "review.json",

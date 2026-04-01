@@ -96,6 +96,21 @@
     }
     .add-wallet-btn:hover { border-color: #818cf8; background: rgba(99,102,241,0.1); }
 
+    /* ── XRPL token pills ── */
+    .xrpl-token-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.35);
+      color: #a5b4fc; border-radius: 20px;
+      padding: 4px 10px; font-size: 0.78rem; font-family: 'Consolas','Monaco',monospace;
+      margin: 3px 4px 3px 0;
+    }
+    .xrpl-token-pill button {
+      background: none; border: none; color: #6366f1; cursor: pointer;
+      font-size: 0.9rem; padding: 0 2px; line-height: 1;
+      border-radius: 50%; transition: color 0.15s;
+    }
+    .xrpl-token-pill button:hover { color: #f87171; }
+
     /* ── Upload zone ── */
     .upload-zone {
       border: 2px dashed rgba(255,255,255,0.2);
@@ -421,6 +436,25 @@
       <span id="run-icon">▶</span>
       <span id="run-label">Calculate My Taxes</span>
     </button>
+  </div>
+
+  <!-- ── Card 2b: XRPL Token Prices ── -->
+  <div class="card">
+    <h3>🪙 XRPL Token Prices</h3>
+    <p style="font-size:0.82rem;color:#94a3b8;margin-bottom:14px;">Assets fetched during auto-price runs (format: SYMBOL.rIssuerAddress)</p>
+
+    <div id="xrplTokenList">
+      <p id="xrplTokenEmpty" style="color:#64748b;font-size:0.85rem;padding:8px 0;">No XRPL tokens configured. Add tokens above to include them in price fetches.</p>
+    </div>
+
+    <div class="wallet-row" style="margin-top:12px;">
+      <input id="xrplTokenInput" type="text" class="mono"
+             placeholder="SOLO.rHZwvHes4tF5uDQjVcMTsW7iBEHLBFYGkG"
+             spellcheck="false" autocomplete="off">
+      <button id="xrplTokenAddBtn" type="button" class="add-wallet-btn" style="width:auto;padding:8px 16px;margin-top:0;">＋ Add</button>
+    </div>
+    <p id="xrplTokenHint" style="font-size:0.75rem;color:#64748b;margin-top:6px;">e.g. SOLO.rHZwvHes4tF5uDQjVcMTsW7iBEHLBFYGkG</p>
+    <p id="xrplTokenError" style="display:none;font-size:0.82rem;color:#fca5a5;margin-top:6px;">Invalid format. Use SYMBOL.rIssuerAddress</p>
   </div>
 
   <!-- ── Card 3: Job status + results ── -->
@@ -1202,6 +1236,67 @@ function _showDedupEmpty(show) {
   document.getElementById('tc-dedup-table').style.display = show ? 'none' : '';
 }
 
+// ── XRPL Token management ─────────────────────────────────────────────────────
+
+async function loadXrplTokens() {
+  try {
+    const ws = await apiFetch('GET', '/workspace');
+    renderXrplTokens(ws.xrpl_assets || []);
+  } catch (e) { /* silent — workspace may not be configured yet */ }
+}
+
+function renderXrplTokens(tokens) {
+  const list  = document.getElementById('xrplTokenList');
+  const empty = document.getElementById('xrplTokenEmpty');
+  // Remove existing pills (keep the empty-state element)
+  list.querySelectorAll('.xrpl-token-pill').forEach(el => el.remove());
+  if (tokens.length === 0) {
+    if (empty) empty.style.display = '';
+  } else {
+    if (empty) empty.style.display = 'none';
+    tokens.forEach(spec => {
+      const pill = document.createElement('span');
+      pill.className = 'xrpl-token-pill';
+      pill.innerHTML = `${escHtml(spec)} <button onclick="removeXrplToken('${escHtml(spec).replace(/'/g, "\\'")}')">✕</button>`;
+      list.appendChild(pill);
+    });
+  }
+}
+
+async function addXrplToken() {
+  const input  = document.getElementById('xrplTokenInput');
+  const errEl  = document.getElementById('xrplTokenError');
+  errEl.style.display = 'none';
+  const spec = (input.value || '').trim();
+  if (!spec) return;
+  try {
+    const res = await fetch(apiBase() + '/workspace/xrpl-assets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spec }),
+    });
+    if (res.status === 422) {
+      errEl.style.display = '';
+      return;
+    }
+    if (res.ok) {
+      input.value = '';
+      errEl.style.display = 'none';
+      await loadXrplTokens();
+    }
+  } catch (e) {
+    errEl.textContent = `Error: ${e.message}`;
+    errEl.style.display = '';
+  }
+}
+
+async function removeXrplToken(spec) {
+  try {
+    const res = await fetch(apiBase() + `/workspace/xrpl-assets/${encodeURIComponent(spec)}`, { method: 'DELETE' });
+    if (res.ok) await loadXrplTokens();
+  } catch (e) { /* silent */ }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   addWallet();               // seed one empty wallet row
@@ -1210,6 +1305,11 @@ document.addEventListener('DOMContentLoaded', () => {
   loadAlerts();              // populate Alerts on page load
   setInterval(loadAlerts, 60_000);  // refresh alerts every 60 s
   loadTaxCenter();           // populate Tax Center on page load
+  loadXrplTokens();          // populate XRPL token list on page load
+  document.getElementById('xrplTokenAddBtn').addEventListener('click', addXrplToken);
+  document.getElementById('xrplTokenInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addXrplToken();
+  });
 });
 </script>
 </body>

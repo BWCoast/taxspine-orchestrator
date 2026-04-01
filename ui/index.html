@@ -177,6 +177,10 @@
     .diag-health-badge.error { background:rgba(239,68,68,.15); color:#f87171; }
     .diag-copy-btn { font-size:10px; padding:2px 7px; border-radius:5px; border:1px solid #1e2a3a; background:transparent; color:#4b5563; cursor:pointer; transition:all .15s; }
     .diag-copy-btn:hover { border-color:#374151; color:#9ca3af; }
+    /* ── XRPL token pills ── */
+    .xrpl-token-pill { display:inline-flex; align-items:center; gap:6px; background:#1e3a5f; color:#93c5fd; border:1px solid #2563eb; border-radius:20px; padding:4px 12px; font-size:0.8rem; font-family:monospace; margin:3px; }
+    .xrpl-token-pill button { background:none; border:none; color:#93c5fd; cursor:pointer; padding:0; font-size:0.9rem; line-height:1; }
+    .xrpl-token-pill button:hover { color:#f87171; }
   </style>
 </head>
 <body class="min-h-screen">
@@ -227,6 +231,28 @@
       </div>
       <!-- UX-17: inline format hint shown before the request is sent -->
       <p id="add-account-error" class="text-xs text-red-400 mt-1" style="display:none"></p>
+    </div>
+
+    <!-- Workspace: XRPL Token Prices -->
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-1">
+        <h2 class="font-semibold text-white text-xs uppercase tracking-widest">XRPL Token Prices</h2>
+      </div>
+      <p class="text-xs text-gray-500 mb-3">Assets fetched during auto-price runs (format: SYMBOL.rIssuerAddress)</p>
+
+      <!-- Token pills list -->
+      <div id="xrplTokenList" class="mb-3">
+        <p id="xrplTokenEmpty" class="text-gray-600 text-xs italic">No XRPL tokens configured. Add tokens below to include them in price fetches.</p>
+      </div>
+
+      <!-- Add token form -->
+      <div class="flex gap-2">
+        <input id="xrplTokenInput" class="input text-xs flex-1" placeholder="SOLO.rHZwvHes4tF5uDQjVcMTsW7iBEHLBFYGkG"
+          style="font-family:monospace;" spellcheck="false" autocomplete="off">
+        <button id="xrplTokenAddBtn" class="btn-primary text-xs px-3">Add</button>
+      </div>
+      <p class="text-xs text-gray-600 mt-1">e.g. SOLO.rHZwvHes4tF5uDQjVcMTsW7iBEHLBFYGkG</p>
+      <p id="xrplTokenError" class="text-xs text-red-400 mt-1" style="display:none">Invalid format. Use SYMBOL.rIssuerAddress</p>
     </div>
 
     <!-- Workspace: CSV Files -->
@@ -2799,9 +2825,80 @@ function _showDedupEmpty(show) {
   document.getElementById('tc-dedup-table').classList.toggle('hidden', show);
 }
 
+// ── XRPL Token management ─────────────────────────────────────────────────────
+
+async function loadXrplTokens() {
+  try {
+    const r = await fetch(`${API}/workspace`);
+    if (!r.ok) throw new Error();
+    const ws = await r.json();
+    renderXrplTokens(ws.xrpl_assets || []);
+  } catch { /* silent — workspace may not be configured yet */ }
+}
+
+function renderXrplTokens(tokens) {
+  const list  = document.getElementById('xrplTokenList');
+  const empty = document.getElementById('xrplTokenEmpty');
+  // Remove existing pills (keep the empty-state element)
+  list.querySelectorAll('.xrpl-token-pill').forEach(el => el.remove());
+  if (!tokens.length) {
+    if (empty) empty.style.display = '';
+  } else {
+    if (empty) empty.style.display = 'none';
+    tokens.forEach(spec => {
+      const pill = document.createElement('span');
+      pill.className = 'xrpl-token-pill';
+      const safeSpec = escHtml(spec);
+      pill.innerHTML = `${safeSpec} <button onclick="removeXrplToken('${safeSpec.replace(/'/g, "\\'")}')">✕</button>`;
+      list.appendChild(pill);
+    });
+  }
+}
+
+const _XRPL_TOKEN_PATTERN = /^[A-Za-z0-9]{1,20}\.r[1-9A-HJ-NP-Za-km-z]{24,33}$/;
+
+async function addXrplToken() {
+  const input = document.getElementById('xrplTokenInput');
+  const errEl = document.getElementById('xrplTokenError');
+  errEl.style.display = 'none';
+  const spec = (input.value || '').trim();
+  if (!spec) return;
+  if (!_XRPL_TOKEN_PATTERN.test(spec)) {
+    errEl.textContent = 'Invalid format. Use SYMBOL.rIssuerAddress';
+    errEl.style.display = '';
+    return;
+  }
+  try {
+    const r = await fetch(`${API}/workspace/xrpl-assets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spec }),
+    });
+    if (r.ok) {
+      input.value = '';
+      errEl.style.display = 'none';
+      await loadXrplTokens();
+    } else {
+      const err = await r.json().catch(() => ({}));
+      errEl.textContent = err.detail || 'Failed to add token.';
+      errEl.style.display = '';
+    }
+  } catch (e) {
+    errEl.textContent = `Error: ${e.message}`;
+    errEl.style.display = '';
+  }
+}
+
+async function removeXrplToken(spec) {
+  try {
+    const r = await fetch(`${API}/workspace/xrpl-assets/${encodeURIComponent(spec)}`, { method: 'DELETE' });
+    if (r.ok) await loadXrplTokens();
+  } catch { /* silent */ }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
-  await Promise.all([checkHealth(), loadWorkspace(), loadJobs(), loadAlerts(), loadTaxCenter(), loadDiagnostics()]);
+  await Promise.all([checkHealth(), loadWorkspace(), loadJobs(), loadAlerts(), loadTaxCenter(), loadDiagnostics(), loadXrplTokens()]);
   // FE-07: retain handles so the timers can be cleared if needed (e.g. in
   // tests or when the page is embedded in a shell that re-runs init code).
   window._jobsTimer   = setInterval(loadJobs,    30_000);
@@ -2826,6 +2923,12 @@ function _showDedupEmpty(show) {
       if (diagDetails.open) loadDiagnostics();
     });
   }
+
+  // Wire XRPL token add button and Enter key.
+  const tokenAddBtn = document.getElementById('xrplTokenAddBtn');
+  const tokenInput  = document.getElementById('xrplTokenInput');
+  if (tokenAddBtn) tokenAddBtn.addEventListener('click', addXrplToken);
+  if (tokenInput)  tokenInput.addEventListener('keydown', e => { if (e.key === 'Enter') addXrplToken(); });
 })();
 </script>
 
