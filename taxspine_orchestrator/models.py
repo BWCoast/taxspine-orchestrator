@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -213,6 +213,20 @@ class JobInput(BaseModel):
             "taxspine-nor-multi invocation with all CSV files, producing a "
             "unified FIFO lot pool and a single combined HTML report.  "
             "Has no effect on XRPL jobs or UK jobs."
+        ),
+    )
+    unlinked_transfer_out_policy: Literal["skip", "dispose"] = Field(
+        default="skip",
+        description=(
+            "How to treat TRANSFER_OUT events that have no matching TRANSFER_IN "
+            "(could not be transfer-linked to a known receiving wallet). "
+            "'skip' (default): treat as tax-neutral — lot remains in inventory, "
+            "consistent with the assumption that the asset moved to another own "
+            "wallet not included in this run. "
+            "'dispose': treat as a disposal at zero NOK proceeds, realising a "
+            "loss equal to the FIFO cost basis of the transferred lot.  Use this "
+            "only when all own wallets are included in the run and unlinked "
+            "outbound transfers are therefore presumed to have left your control."
         ),
     )
 

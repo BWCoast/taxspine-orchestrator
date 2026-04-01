@@ -11,7 +11,7 @@ import re
 import shutil
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Response, Security, UploadFile, File
@@ -1192,6 +1192,7 @@ class WorkspaceRunRequest(BaseModel):
     include_trades: bool = False
     debug_valuation: bool = False
     dry_run: bool = False
+    unlinked_transfer_out_policy: Literal["skip", "dispose"] = "skip"
 
 
 @app.post("/workspace/run", response_model=Job, tags=["workspace"], dependencies=[Depends(_require_key)])
@@ -1233,6 +1234,7 @@ async def run_workspace_report(body: WorkspaceRunRequest, background_tasks: Back
         include_trades=body.include_trades,
         debug_valuation=body.debug_valuation,
         dry_run=body.dry_run,
+        unlinked_transfer_out_policy=body.unlinked_transfer_out_policy,
     )
 
     job = _job_service.create_job(job_input)

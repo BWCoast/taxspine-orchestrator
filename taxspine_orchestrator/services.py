@@ -1183,6 +1183,9 @@ class JobService:
         if job_input.debug_valuation:
             cmd.append("--debug-valuation")
 
+        if job_input.unlinked_transfer_out_policy != "skip":
+            cmd.extend(["--unlinked-transfer-out-policy", job_input.unlinked_transfer_out_policy])
+
         return cmd
 
     @staticmethod
@@ -1240,6 +1243,8 @@ class JobService:
                 cmd.extend(["--rf1159-json", str(rf1159_json_path)])
             if review_json_path is not None:
                 cmd.extend(["--review-json", str(review_json_path)])
+            if job_input.unlinked_transfer_out_policy != "skip":
+                cmd.extend(["--unlinked-transfer-out-policy", job_input.unlinked_transfer_out_policy])
 
         return cmd
 
@@ -1305,6 +1310,9 @@ class JobService:
 
         if settings.LOT_STORE_DB is not None:
             cmd.extend(["--lot-store", str(settings.LOT_STORE_DB)])
+
+        if job_input.unlinked_transfer_out_policy != "skip":
+            cmd.extend(["--unlinked-transfer-out-policy", job_input.unlinked_transfer_out_policy])
 
         return cmd
 
