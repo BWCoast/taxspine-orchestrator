@@ -1,0 +1,25 @@
+# requirements-lock.txt
+# Pinned production + dev dependency versions for taxspine-orchestrator.
+# S-M2: commit this file to reduce supply-chain substitution risk.
+# Regenerate with: uv pip compile pyproject.toml -o requirements-lock.txt
+#
+# Last generated: 2026-03-29
+
+# Production
+fastapi==0.135.1
+uvicorn[standard]==0.41.0
+pydantic==2.12.5
+pydantic-settings==2.13.1
+python-multipart==0.0.22
+
+# Transitive (pinned for reproducibility)
+anyio==4.12.1
+h11==0.16.0
+httpcore==1.0.9
+pydantic_core==2.41.5
+starlette==0.52.1
+
+# Dev / CI
+pytest==9.0.2
+httpx==0.28.1
+ruff==0.15.7

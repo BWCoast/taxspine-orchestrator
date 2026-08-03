@@ -1,0 +1,237 @@
+# ── Taxspine Orchestrator — Synology NAS Production Compose ───────────────────
+#
+# This file is for production deployment on a Synology NAS via Container Manager.
+# It pulls the pre-built image from GitHub Container Registry (ghcr.io) rather
+# than building from source on the NAS.
+#
+# PREREQUISITES on Synology DSM:
+#   1. Open Container Manager → Registry → Add registry:
+#         URL:  ghcr.io
+#         (no login needed for public images)
+#   2. Create a shared folder for taxspine data, e.g.:
+#         DSM → File Station → Create shared folder → name it "taxspine"
+#         This creates /volume1/taxspine on the NAS filesystem.
+#   3. Copy or paste this file to the NAS via File Station or SSH.
+#
+# HOW TO DEPLOY (Container Manager — Projects tab):
+#   Container Manager → Project → Create
+#     Path:       /volume1/docker/taxspine/          (or wherever you put this file)
+#     Source:     Upload docker-compose.synology.yml  (or point to git repo)
+#   → Build the project → containers start automatically.
+#
+# HOW TO UPDATE (pull new image):
+#   Automatic: Watchtower (see service below) checks every 5 min and redeploys.
+#   Manual:    Container Manager → Project → taxspine → Action → Stop
+#              Container Manager → Image → bwcoast/taxspine-orchestrator → Update
+#              Container Manager → Project → taxspine → Action → Build
+#
+# ACCESSING THE DASHBOARD:
+#   http://<NAS-IP>:8000/ui/
+#   Via Tailscale: http://<NAS-Tailscale-hostname>:8000/ui/
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  orchestrator:
+    # ── INFRA-16: image tag pinned to a specific SHA build ─────────────────
+    # DO NOT use :latest — combined with Watchtower auto-deploy, a broken or
+    # malicious :latest push would be live within 5 minutes with no gating.
+    #
+    # HOW TO UPDATE to a new release:
+    #   1. Push to the main branch (GitHub Actions builds and pushes the image).
+    #   2. In the GitHub Actions run summary, copy the sha- tag shown under
+    #      "Deploy this build".  It looks like:  sha-a1b2c3d
+    #   3. Replace the tag below with that sha- value.
+    #   4. Commit the change to this file (the commit becomes your deployment record).
+    #   5. Pull the new image on the NAS and restart the container:
+    #        Container Manager → Project → taxspine → Action → Stop
+    #        Container Manager → Image → Pull (enter the new sha- tag)
+    #        Container Manager → Project → taxspine → Action → Build
+    #
+    # The sha- tag is produced by docker/metadata-action in docker.yml and
+    # matches the short Git commit SHA that built the image.
+    # ─────────────────────────────────────────────────────────────────────────
+    image: ghcr.io/bwcoast/taxspine-orchestrator:sha-0000000
+    # ↑ Replace sha-0000000 with the sha- tag from the GitHub Actions summary.
+    # Example: ghcr.io/bwcoast/taxspine-orchestrator:sha-a1b2c3d
+
+    container_name: taxspine-orchestrator
+    restart: unless-stopped
+
+    # ── Platform ─────────────────────────────────────────────────────────────
+    # Most Synology NAS (DS218+, DS920+, DS1621+, etc.) use Intel/AMD x86_64.
+    # ARM-based Synology (RTD1619B chip, e.g. DS223j) would need linux/arm64.
+    platform: linux/amd64
+
+    ports:
+      # Host port 8000 → container port 8000.
+      # Access at http://<NAS-IP>:8000/ui/
+      # Change the left number if 8000 is taken on your NAS (e.g. "8080:8000").
+      - "8000:8000"
+
+    volumes:
+      # ── IMPORTANT: update this path to match your Synology shared folder ──
+      # The left side must be the real path on your NAS filesystem.
+      # Common Synology paths:
+      #   /volume1/taxspine/data      ← if you created a "taxspine" shared folder
+      #   /volume1/docker/taxspine    ← if you use a "docker" shared folder
+      #
+      # Create the shared folder in DSM → Control Panel → Shared Folder first.
+      - /volume1/docker/taxspine/data:/data
+
+    environment:
+      # All paths resolve inside /data (the volume above).
+      OUTPUT_DIR: /data/output
+      TEMP_DIR:   /data/tmp
+      UPLOAD_DIR: /data/uploads
+      DATA_DIR:   /data/state
+      # Cached price CSVs from CoinGecko — must be on the mounted volume so
+      # they survive Watchtower image updates (avoids re-fetching every restart).
+      PRICES_DIR:   /data/prices
+      # LOT_STORE_DB: SQLite database for FIFO lot carry-forward across tax years.
+      # Must be inside the mounted volume so lots persist across image updates.
+      LOT_STORE_DB: /data/state/lots.db
+      # DEDUP_DIR: per-source SQLite deduplication databases (one .db file per source).
+      # Must be inside the mounted volume so dedup history persists across image updates.
+      DEDUP_DIR:    /data/state/dedup
+
+      # CLI binary names (installed inside the image from tax-nor).
+      # Only change these if you have a custom build with different CLI names.
+      TAXSPINE_XRPL_NOR_CLI:  taxspine-xrpl-nor
+      TAXSPINE_NOR_REPORT_CLI: taxspine-nor-report
+      TAXSPINE_UK_REPORT_CLI:  taxspine-uk-report
+
+      # ── Authentication ──────────────────────────────────────────────────────
+      # ORCHESTRATOR_KEY: set a strong random secret to protect the API.
+      # Every request from the UI will send this as the X-Api-Key header.
+      # When empty (default) the API is publicly accessible on your network —
+      # acceptable only on an isolated LAN; set a key for Tailscale / internet.
+      #
+      # Generate a key:  python3 -c "import secrets; print(secrets.token_hex(32))"
+      # Then replace the empty string below with your generated value.
+      ORCHESTRATOR_KEY: ""
+
+      # Timezone — helps log timestamps match your local time.
+      # Find yours at: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+      TZ: Europe/Oslo
+
+    healthcheck:
+      # Python's urllib is built-in — no curl needed.
+      test: ["CMD", "python", "-c",
+             "import urllib.request, sys; r = urllib.request.urlopen('http://localhost:8000/health'); sys.exit(0 if r.status == 200 else 1)"]
+      interval: 30s
+      timeout:  5s
+      retries:  3
+      start_period: 20s
+
+    # ── Resource limits ──────────────────────────────────────────────────────
+    # INFRA-18: prevent a runaway pipeline job from consuming all NAS memory
+    # or CPU and causing DSM services to become unresponsive.
+    # Tune mem_limit to the RAM available on your NAS model:
+    #   DS218+  (2 GB RAM)  → 1G limit leaves headroom for DSM
+    #   DS920+  (4 GB RAM)  → 2G limit is reasonable
+    #   DS1621+ (4-32 GB)   → adjust accordingly
+    # cpus: "1.5" leaves at least 0.5 cores for DSM background tasks
+    # on a 2-core NAS; increase on 4+ core models.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    # Keeps log files small — visible in Container Manager → Project → Logs.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # ── Synology notes ───────────────────────────────────────────────────────
+    # Permissions: files written to /data will be owned by root inside the
+    # container, appearing as root:root on the NAS shared folder.  This is fine
+    # for a single-user private NAS.  You can read/download files via DSM
+    # File Station or the dashboard's download buttons.
+    #
+    # Tailscale: no container-level network config needed.  Install Tailscale
+    # on the NAS (DSM Package Center → Tailscale), then access the dashboard
+    # at http://<NAS-Tailscale-IP>:8000/ui/ from any Tailscale device.
+    #
+    # Cloudflare Tunnel: point the tunnel at localhost:8000 on the NAS.
+    # No additional Docker network config required.
+
+  # ── Watchtower — manual-only image update trigger ────────────────────────────
+  # INFRA-16: Watchtower auto-polling has been DISABLED.
+  #
+  # Rationale: the image is now pinned to a sha- tag (see above).  Auto-polling
+  # a pinned tag is a no-op and gives a false sense of safety.  More importantly,
+  # enabling auto-poll on :latest would mean a malicious or broken registry push
+  # auto-deploys to production within 5 minutes.
+  #
+  # Deployment process (replaces auto-poll):
+  #   1. Update the image tag in this file to the new sha- tag.
+  #   2. Commit and push the change (creates an auditable deployment record).
+  #   3. On the NAS: Container Manager → Project → taxspine → Action → Build
+  #      (Container Manager will pull the new tag and restart the container).
+  #
+  # Watchtower is kept here in run-once mode (--run-once) so it can still be
+  # triggered manually via:
+  #   docker run containrrr/watchtower --run-once taxspine-orchestrator
+  # if a one-shot update is needed without editing the Compose file.
+  #
+  # ── INFRA-23: Docker socket security ─────────────────────────────────────────
+  # Watchtower mounts /var/run/docker.sock directly.  A compromised Watchtower
+  # container would have root-equivalent control over every container on the host.
+  #
+  # RECOMMENDED HARDENING (advanced):
+  #   Replace the direct socket mount with a docker-socket-proxy that restricts
+  #   Watchtower to only the Docker API calls it actually needs.  See the
+  #   commented-out "socket-proxy" service below.
+  #
+  # To enable the hardened mode:
+  #   1. Uncomment the "socket-proxy" service below.
+  #   2. In the "watchtower" service, comment out the /var/run/docker.sock volume.
+  #   3. Add DOCKER_HOST: tcp://socket-proxy:2375 to watchtower's environment.
+  # ─────────────────────────────────────────────────────────────────────────────
+  watchtower:
+    image: containrrr/watchtower
+    container_name: taxspine-watchtower
+    # Do not auto-restart — run-once exits after a single pass.
+    restart: "no"
+    volumes:
+      # INFRA-23: direct Docker socket mount — grants root-equivalent container
+      # control.  Replace with socket-proxy (see comments above) for hardened
+      # production environments where the NAS is network-reachable.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      TZ: Europe/Oslo
+      # INFRA-16: polling disabled; Watchtower exits after one check.
+      WATCHTOWER_RUN_ONCE: "true"
+      # Remove old image versions after pulling a new one (keeps disk clean).
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_NO_STARTUP_MESSAGE: "false"
+    # Only watch the orchestrator container, not everything on the NAS.
+    command: taxspine-orchestrator
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ── INFRA-23: Optional docker-socket-proxy (hardened Watchtower) ─────────────
+  # Uncomment this block and follow the INFRA-23 instructions above to restrict
+  # Watchtower to only the Docker API endpoints it needs, eliminating root-
+  # equivalent host access through the raw Docker socket.
+  #
+  # socket-proxy:
+  #   image: tecnativa/docker-socket-proxy:latest
+  #   container_name: taxspine-socket-proxy
+  #   restart: unless-stopped
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   environment:
+  #     # Allow Watchtower to list containers and pull/restart images.
+  #     CONTAINERS: 1
+  #     IMAGES: 1
+  #     # Deny everything else — no exec, no swarm, no networks, no volumes.
+  #     POST: 1
+  #   ports: []  # internal only — Watchtower connects via the Docker network

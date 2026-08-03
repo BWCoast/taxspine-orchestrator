@@ -1,0 +1,44 @@
+# requirements.lock — INFRA-04: pinned transitive dependency snapshot
+# Generated: 2026-05-22  Python 3.14  pip freeze (clean orchestrator venv)
+# Regenerate with (always use a FRESH throwaway venv):
+#   python -m venv C:\tmp\fresh-orch-venv
+#   C:\tmp\fresh-orch-venv\Scripts\pip install -e .[dev]
+#   C:\tmp\fresh-orch-venv\Scripts\pip freeze | Where-Object { $_ -notmatch '^(taxspine-orchestrator|-e )' } > requirements.lock
+#
+# INFRA-04: This file IS used by the Dockerfile to pin production deps to exact
+# versions, preventing Docker image builds from silently picking up a new upstream
+# release between CI runs.
+# IMPORTANT: Only install from a CLEAN venv. A polluted venv will add packages
+# (huggingface_hub, weasyprint, etc.) that break Docker builds on Linux/Python 3.11.
+# See docs/CI_BUILD_GOTCHAS.md §1 for the full list of forbidden packages.
+
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.13.0
+certifi==2026.5.20
+click==8.4.1
+colorama==0.4.6
+fastapi==0.136.1
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.7.1
+httpx==0.28.1
+idna==3.16
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0
+pydantic==2.13.4
+pydantic-settings==2.14.1
+pydantic_core==2.46.4
+Pygments==2.20.0
+pytest==9.0.3
+python-dotenv==1.2.2
+python-multipart==0.0.29
+PyYAML==6.0.3
+ruff==0.15.14
+starlette==1.0.1
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+uvicorn==0.47.0
+watchfiles==1.2.0
+websockets==16.0

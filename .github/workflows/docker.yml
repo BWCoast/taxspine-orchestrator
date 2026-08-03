@@ -1,0 +1,255 @@
+# .github/workflows/docker.yml
+#
+# Builds the taxspine-orchestrator Docker image and pushes it to the
+# GitHub Container Registry (ghcr.io) on every push to main.
+#
+# The image is then available at:
+#   ghcr.io/bwcoast/taxspine-orchestrator:latest
+#   ghcr.io/bwcoast/taxspine-orchestrator:sha-<commit>
+#
+# Synology Container Manager pulls this image via docker-compose.synology.yml.
+#
+# ── SETUP (one-time) ──────────────────────────────────────────────────────────
+# If tax-nor (the CLI source) is PUBLIC:
+#   No setup needed. The workflow uses GITHUB_TOKEN automatically.
+#
+# If tax-nor is PRIVATE:
+#   1. Create a GitHub Personal Access Token with "read:packages" + "repo" scope.
+#   2. Go to taxspine-orchestrator repo → Settings → Secrets → Actions.
+#   3. Add secret: GH_READ_TOKEN = <your PAT>
+#   4. Uncomment the GH_READ_TOKEN build-arg below.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Allow manual trigger from GitHub Actions UI.
+  workflow_dispatch:
+  # Triggered by tax-nor CI after a successful push to its main branch.
+  # Requires GH_DISPATCH_TOKEN secret in tax-nor with repo scope on this repo.
+  repository_dispatch:
+    types: [tax-nor-updated]
+
+env:
+  REGISTRY:   ghcr.io
+  IMAGE_NAME: ${{ github.repository }}   # → bwcoast/taxspine-orchestrator
+
+jobs:
+  # ── Test suite ──────────────────────────────────────────────────────────────
+  # Run pytest BEFORE the Docker build so a broken test suite never produces
+  # a published image.  The build-and-push job declares `needs: test` to
+  # enforce this ordering.
+  test:
+    # INFRA-25: matrix across Python 3.11 and 3.12 so that regressions on
+    # newer interpreters are caught before a broken image can be published.
+    # pyproject.toml declares requires-python = ">=3.11", so both versions
+    # must be green for the build-and-push job to proceed.
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: "pyproject.toml"
+
+      - name: Install orchestrator + dev dependencies
+        run: pip install -e ".[dev]"
+
+      # INFRA-20: lint with ruff before running tests so style and type-annotation
+      # regressions are caught in CI before a broken image could be published.
+      - name: Lint with ruff
+        run: |
+          pip install --quiet "ruff>=0.4"
+          ruff check .
+
+      - name: Run tests
+        run: python -m pytest --tb=short -q
+
+  # ── Docker build ─────────────────────────────────────────────────────────────
+  build-and-push:
+    needs: test   # ← Docker build only runs when tests are green
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write   # needed to push to ghcr.io
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Log in to GitHub Container Registry ────────────────────────────────
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Derive image tags ───────────────────────────────────────────────────
+      # Produces:
+      #   latest          (only on pushes to main, not PRs)
+      #   sha-<short-sha> (every build)
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short
+
+      # ── Set up QEMU for multi-arch builds (optional) ────────────────────────
+      # Uncomment if you need an ARM image for older Synology NAS.
+      # - name: Set up QEMU
+      #   uses: docker/setup-qemu-action@v3
+
+      # ── Set up Docker Buildx ────────────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Fetch tax-nor HEAD SHA (cache-busting) ──────────────────────────────
+      # The Dockerfile installs tax-nor via pip install git+https://...
+      # Docker caches that layer by the RUN instruction text — it cannot
+      # detect that the remote repo has new commits.  We pass the current
+      # tax-nor HEAD SHA as a build ARG so the cache key changes whenever
+      # tax-nor is updated, forcing pip to re-install the latest version.
+      #
+      # Falls back to "unknown" if GH_READ_TOKEN is not set or the API call
+      # fails (e.g. public repo, rate-limited) — "unknown" still busts the
+      # GHA layer cache relative to a SHA-keyed build, but may reuse a
+      # previous "unknown" layer.  In practice GH_READ_TOKEN is always set.
+      - name: Fetch tax-nor HEAD SHA
+        id: altana_sha
+        env:
+          GH_READ_TOKEN: ${{ secrets.GH_READ_TOKEN }}
+        run: |
+          if [ -n "$GH_READ_TOKEN" ]; then
+            SHA=$(curl -sf \
+              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+              "https://api.github.com/repos/BWCoast/tax-nor/commits/main" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'][:12])" \
+              2>/dev/null || echo "unknown")
+          else
+            SHA="unknown"
+          fi
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "tax-nor HEAD: ${SHA}"
+
+      # ── INF-09: Fetch Python base image digest ──────────────────────────────
+      # Resolves the mutable python:3.11.9-slim tag to a content-addressable
+      # digest (sha256:…) and passes it as PYTHON_IMAGE build-arg.  This pins
+      # the base image to an exact layer set — a subsequent tag update on Docker
+      # Hub cannot silently change what the build uses.
+      #
+      # The Dockerfile already accepts PYTHON_IMAGE as a build-arg (INFRA-03).
+      # docker/build-push-action pulls the image before building, so the digest
+      # is always fresh at build time.  If the pull fails, the step fails fast
+      # (no silent fallback to the mutable tag).
+      - name: Resolve Python base image digest
+        id: python_digest
+        run: |
+          docker pull python:3.11.9-slim
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' python:3.11.9-slim)
+          if [ -z "$DIGEST" ]; then
+            echo "ERROR: Could not resolve digest for python:3.11.9-slim" >&2
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Python base image: ${DIGEST}"
+
+      # ── Fetch blockchain-reader HEAD SHA (INFRA-01: supply-chain pin) ─────────
+      # The full 40-character SHA is passed to the Dockerfile as
+      # BLOCKCHAIN_READER_SHA and used as the git ref in the pip install URL.
+      # This pins the installed package to an exact commit — any upstream
+      # change (including a branch-tip compromise) will not affect an existing
+      # image build.  The sha- image tag produced by this workflow records
+      # which orchestrator commit built against which blockchain-reader commit.
+      #
+      # INFRA-01: GH_READ_TOKEN is required.  The step fails hard if the token
+      # is absent or the API call fails — the Dockerfile now rejects "main" as
+      # a build arg, so a fallback to "main" would just produce a broken build.
+      # Add GH_READ_TOKEN as a repository secret if it is missing.
+      - name: Fetch blockchain-reader HEAD SHA
+        id: blockchain_reader_sha
+        env:
+          GH_READ_TOKEN: ${{ secrets.GH_READ_TOKEN }}
+        run: |
+          if [ -z "$GH_READ_TOKEN" ]; then
+            echo "ERROR: GH_READ_TOKEN secret is not set." >&2
+            echo "       Add it at: repo → Settings → Secrets → Actions → GH_READ_TOKEN" >&2
+            exit 1
+          fi
+          SHA=$(curl -sf \
+            -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+            "https://api.github.com/repos/BWCoast/blockchain-reader/commits/main" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'])")
+          if [ -z "$SHA" ] || [ "$SHA" = "main" ]; then
+            echo "ERROR: Could not fetch blockchain-reader HEAD SHA from GitHub API." >&2
+            exit 1
+          fi
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "blockchain-reader pinned ref: ${SHA}"
+
+      # ── Build and push ──────────────────────────────────────────────────────
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          # Push only on real commits to main; for PRs just build (no push).
+          push: ${{ github.event_name != 'pull_request' }}
+          tags:   ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache layers in GitHub's cache — speeds up subsequent builds.
+          # The ALTANA_SHA build arg ensures the tax-nor install layer is
+          # invalidated whenever tax-nor has new commits.
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          build-args: |
+            PYTHON_IMAGE=${{ steps.python_digest.outputs.digest }}
+            ALTANA_SHA=${{ steps.altana_sha.outputs.sha }}
+            ALTANA_TAG=${{ steps.altana_sha.outputs.sha }}
+            BLOCKCHAIN_READER_SHA=${{ steps.blockchain_reader_sha.outputs.sha }}
+          # ── tax-nor auth ────────────────────────────────────────────────────
+          # GH_READ_TOKEN is a repository secret containing a GitHub PAT with
+          # read access to the tax-nor repo.
+          #
+          # Add it at: taxspine-orchestrator → Settings → Secrets → Actions
+          #              → New repository secret → Name: GH_READ_TOKEN
+          #
+          # The token is injected via BuildKit secret mount — it does NOT
+          # appear in docker history or any image layer.
+          #
+          # If GH_READ_TOKEN is not set (public repo), the secret is empty
+          # and the Dockerfile falls back to the unauthenticated URL.
+          secrets: |
+            gh_token=${{ secrets.GH_READ_TOKEN }}
+
+      # ── Summary (INFRA-16: sha- tag shown for Compose pin update) ──────────
+      - name: Print image digest
+        if: github.event_name != 'pull_request'
+        run: |
+          SHA_TAG="sha-$(echo '${{ github.sha }}' | cut -c1-7)"
+          echo "### Docker image pushed" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`ghcr.io/bwcoast/taxspine-orchestrator:${SHA_TAG}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**All tags:** ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Deploy this build (INFRA-16: pin Compose to this tag)" >> $GITHUB_STEP_SUMMARY
+          echo "Update \`docker-compose.synology.yml\` image line to:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`yaml" >> $GITHUB_STEP_SUMMARY
+          echo "image: ghcr.io/bwcoast/taxspine-orchestrator:${SHA_TAG}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "Then restart the container on the NAS." >> $GITHUB_STEP_SUMMARY

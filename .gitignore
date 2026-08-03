@@ -1,0 +1,38 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+.mypy_cache/
+*.egg
+Temporch-clean-venv/
+
+# ── Local secrets & runtime ───────────────────────────────────────────────────
+.env
+uvicorn.log
+
+# ── Editor / IDE backups ──────────────────────────────────────────────────────
+*.bak
+*.blue
+
+# ── Build artifacts ───────────────────────────────────────────────────────────
+ALTANA.zip
+
+# ── Tool state (non-project) ──────────────────────────────────────────────────
+.sentrux/
+.graphify_python
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# ── Design assets (large binary / not source) ─────────────────────────────────
+ALTANA_extracted/ALTANA Brand Guide.html
+ALTANA_extracted/brand/
+ALTANA_extracted/scraps/
+
+# ── Upload directories (user data, never source) ──────────────────────────────
+ALTANA_extracted/uploads/
+altana-design/uploads/
+ui/uploads/

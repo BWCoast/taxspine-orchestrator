@@ -1,0 +1,3 @@
+date,asset_id,fiat_currency,price_fiat,source
+2025-01-01,XRP,NOK,7.50,kraken
+2025-01-01,BTC,NOK,850000,kraken
